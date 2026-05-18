@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import soundfile as sf
 from voxcpm import VoxCPM
 
@@ -44,6 +47,22 @@ def find_ffmpeg() -> str | None:
     return None
 
 
+# Filter chain explained:
+# - highpass 80 Hz: kill rumble/HVAC
+# - lowpass 8000 Hz: trim hiss above speech band (we resample to 16 kHz anyway)
+# - silenceremove: strip leading + trailing silence, threshold -40 dB, 0.1 s pad
+# - loudnorm: EBU R128 normalize to I=-23 LUFS, LRA=11, TP=-1.5 dBTP
+FFMPEG_FILTER_CHAIN = (
+    "highpass=f=80,"
+    "lowpass=f=8000,"
+    "silenceremove="
+    "start_periods=1:start_duration=0.1:start_threshold=-40dB:"
+    "stop_periods=1:stop_duration=0.1:stop_threshold=-40dB:"
+    "detection=peak,"
+    "loudnorm=I=-23:LRA=11:TP=-1.5"
+)
+
+
 def convert_reference_audio(input_path: Path, run_dir: Path) -> Path:
     output_path = run_dir / "reference_16k_mono.wav"
     ffmpeg = find_ffmpeg()
@@ -58,6 +77,8 @@ def convert_reference_audio(input_path: Path, run_dir: Path) -> Path:
                 "error",
                 "-i",
                 str(input_path),
+                "-af",
+                FFMPEG_FILTER_CHAIN,
                 "-ar",
                 "16000",
                 "-ac",
@@ -68,10 +89,157 @@ def convert_reference_audio(input_path: Path, run_dir: Path) -> Path:
         )
         return output_path
 
+    # No ffmpeg: best-effort fallback. Only safe for wav inputs.
     if input_path.suffix.lower() == ".wav":
         return input_path
 
-    raise RuntimeError("ffmpeg is required to use non-wav reference audio.")
+    raise RuntimeError("ffmpeg is required to preprocess non-wav reference audio.")
+
+
+def _frame_rms(samples: np.ndarray, sr: int, window_ms: float = 20.0) -> np.ndarray:
+    win = max(1, int(sr * window_ms / 1000.0))
+    if samples.size < win:
+        return np.array([float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)) or 0.0)])
+    n_frames = samples.size // win
+    trimmed = samples[: n_frames * win].astype(np.float64)
+    frames = trimmed.reshape(n_frames, win)
+    rms = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
+    return rms
+
+
+def _to_db(x: float) -> float:
+    return 20.0 * math.log10(max(x, 1e-10))
+
+
+def analyze_reference_quality(wav_path: Path) -> dict[str, Any]:
+    """Compute duration / clipping / VAD-active-ratio / SNR-ish for a reference clip.
+
+    Always returns a dict — never raises for "bad quality"; just grades it.
+    """
+    warnings: list[str] = []
+    try:
+        data, sr = sf.read(str(wav_path), always_2d=False)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"read_failed:{exc}")
+        return {
+            "grade": "D",
+            "durationSec": 0.0,
+            "snrDb": None,
+            "clippingRatio": 0.0,
+            "vadActiveRatio": 0.0,
+            "warnings": warnings,
+        }
+
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    data = data.astype(np.float32, copy=False)
+
+    duration = float(data.size) / float(sr) if sr else 0.0
+
+    peak = float(np.max(np.abs(data))) if data.size else 0.0
+    clip_threshold = 0.99
+    clipping_ratio = float(np.mean(np.abs(data) >= clip_threshold)) if data.size else 0.0
+
+    # 20 ms RMS frames
+    rms = _frame_rms(data, sr, window_ms=20.0)
+
+    # VAD-active ratio: frames whose RMS exceeds (30th percentile noise floor + 6 dB).
+    # Falls back gracefully on near-silent clips.
+    if rms.size:
+        noise_floor = float(np.percentile(rms, 30))
+        threshold = noise_floor * (10 ** (6.0 / 20.0))  # +6 dB
+        vad_active_ratio = float(np.mean(rms >= threshold))
+    else:
+        vad_active_ratio = 0.0
+
+    # Coarse SNR: 90th percentile RMS (signal) vs 10th percentile RMS (noise), in dB.
+    if rms.size >= 4:
+        signal = float(np.percentile(rms, 90))
+        noise = float(np.percentile(rms, 10))
+        if noise > 0 and signal > 0:
+            snr_db: float | None = _to_db(signal) - _to_db(noise)
+        else:
+            snr_db = None
+    else:
+        snr_db = None
+
+    if duration < 3.0:
+        warnings.append("short_clip")
+    if duration > 30.0:
+        warnings.append("long_clip")
+    if clipping_ratio > 0.001:
+        warnings.append("clipping_detected")
+    if vad_active_ratio < 0.3:
+        warnings.append("low_voice_activity")
+    if snr_db is not None and snr_db < 10.0:
+        warnings.append("low_snr")
+    if peak < 0.05:
+        warnings.append("very_quiet")
+
+    def grade() -> str:
+        snr_val = snr_db if snr_db is not None else -math.inf
+        if (
+            6.0 <= duration <= 20.0
+            and snr_val >= 25.0
+            and clipping_ratio <= 0.001
+            and vad_active_ratio >= 0.65
+        ):
+            return "A"
+        if (
+            4.0 <= duration <= 25.0
+            and snr_val >= 18.0
+            and clipping_ratio <= 0.01
+            and vad_active_ratio >= 0.5
+        ):
+            return "B"
+        if (
+            3.0 <= duration <= 30.0
+            and snr_val >= 10.0
+            and clipping_ratio <= 0.05
+            and vad_active_ratio >= 0.3
+        ):
+            return "C"
+        return "D"
+
+    return {
+        "grade": grade(),
+        "durationSec": round(duration, 3),
+        "snrDb": (round(snr_db, 2) if snr_db is not None else None),
+        "clippingRatio": round(clipping_ratio, 5),
+        "vadActiveRatio": round(vad_active_ratio, 4),
+        "warnings": warnings,
+    }
+
+
+def transcribe_reference(
+    wav_path: Path, model_size: str
+) -> tuple[str | None, str | None, str | None]:
+    """Return (transcript, language, error). Any failure returns (None, None, reason)."""
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"faster_whisper_unavailable:{exc}"
+
+    try:
+        # Default to CPU+int8 so we don't require CUDA; faster-whisper will pick
+        # available providers automatically on Mac (CPU).
+        model = WhisperModel(model_size, device="auto", compute_type="auto")
+        segments, info = model.transcribe(str(wav_path), vad_filter=True)
+        pieces = [seg.text for seg in segments]
+        text = "".join(pieces).strip()
+        language = getattr(info, "language", None)
+        if not text:
+            return None, language, "empty_transcript"
+        return text, language, None
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"whisper_failed:{exc}"
+
+
+QUALITY_PRESETS: dict[str, dict[str, Any]] = {
+    "speed": {"timesteps": 10, "cfg": 2.0, "denoise": "off"},
+    "balanced": {"timesteps": 25, "cfg": 2.5, "denoise": "auto"},
+    "quality": {"timesteps": 40, "cfg": 3.0, "denoise": "on"},
+}
 
 
 def should_enable_optimize(requested: bool) -> tuple[bool, str]:
@@ -88,8 +256,18 @@ def should_enable_optimize(requested: bool) -> tuple[bool, str]:
     return False, "disabled_on_non_cuda"
 
 
+def _flag_was_passed(argv: list[str], *names: str) -> bool:
+    for token in argv:
+        for name in names:
+            if token == name or token.startswith(name + "="):
+                return True
+    return False
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Synthesize speech from any permitted voice reference with VoxCPM2.")
+    parser = argparse.ArgumentParser(
+        description="Synthesize speech from any permitted voice reference with VoxCPM2."
+    )
     parser.add_argument("--text")
     parser.add_argument("--text-file")
     parser.add_argument("--reference-audio", required=True)
@@ -104,12 +282,47 @@ def main() -> None:
     parser.add_argument("--max-len", type=int, default=4096)
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--denoise", action="store_true")
-    parser.add_argument("--load-denoiser", action="store_true")
+    parser.add_argument("--load-denoiser", action="store_true", default=True)
+    parser.add_argument(
+        "--no-load-denoiser",
+        dest="load_denoiser",
+        action="store_false",
+        help="Skip loading the denoiser model.",
+    )
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--no-optimize", action="store_true")
+    parser.add_argument(
+        "--quality",
+        choices=("speed", "balanced", "quality"),
+        default="balanced",
+        help="Quality preset; sets timesteps/cfg/denoise unless overridden by explicit flags.",
+    )
+    parser.add_argument(
+        "--auto-transcribe",
+        dest="auto_transcribe",
+        action="store_true",
+        default=True,
+        help="Auto-transcribe the reference clip with faster-whisper when --prompt-text is absent.",
+    )
+    parser.add_argument(
+        "--no-auto-transcribe",
+        dest="auto_transcribe",
+        action="store_false",
+        help="Disable Whisper-based auto-transcription of the reference clip.",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default="small",
+        help="faster-whisper model size (tiny/base/small/medium/large-v3).",
+    )
     parser.add_argument("--metadata-output")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+
+    argv = sys.argv[1:]
+    cfg_explicit = _flag_was_passed(argv, "--cfg-value")
+    timesteps_explicit = _flag_was_passed(argv, "--inference-timesteps")
+    denoise_explicit = _flag_was_passed(argv, "--denoise")
 
     run_dir = Path(args.output).resolve().parent
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +332,7 @@ def main() -> None:
     if style:
         text = f"({style}){text}"
 
-    prompt_text = None
+    prompt_text: str | None = None
     if args.prompt_text and args.prompt_text_file:
         raise ValueError("Provide --prompt-text or --prompt-text-file, not both.")
     if args.prompt_text:
@@ -132,6 +345,43 @@ def main() -> None:
         raise FileNotFoundError(f"reference audio not found: {reference_input}")
 
     reference_wav = convert_reference_audio(reference_input, run_dir)
+
+    # 1) Reference quality analysis
+    reference_quality = analyze_reference_quality(reference_wav)
+
+    # 2) Auto-transcribe (only when caller didn't supply prompt text)
+    reference_transcript: str | None = None
+    reference_language: str | None = None
+    whisper_error: str | None = None
+    user_supplied_prompt = prompt_text is not None
+    if args.auto_transcribe and not user_supplied_prompt:
+        reference_transcript, reference_language, whisper_error = transcribe_reference(
+            reference_wav, args.whisper_model
+        )
+        if whisper_error:
+            print(f"voxcpm auto-transcribe skipped: {whisper_error}", file=sys.stderr)
+        if reference_transcript:
+            prompt_text = reference_transcript
+
+    # 3) Quality preset resolution (explicit flags win)
+    preset = QUALITY_PRESETS[args.quality]
+    effective_timesteps = (
+        args.inference_timesteps if timesteps_explicit else int(preset["timesteps"])
+    )
+    effective_cfg = args.cfg_value if cfg_explicit else float(preset["cfg"])
+
+    if denoise_explicit:
+        effective_denoise = bool(args.denoise)
+    else:
+        mode = preset["denoise"]
+        if mode == "on":
+            effective_denoise = True
+        elif mode == "off":
+            effective_denoise = False
+        else:  # auto
+            snr = reference_quality.get("snrDb")
+            effective_denoise = bool(snr is not None and snr < 18.0)
+
     prompt_wav_path = str(reference_wav) if prompt_text else None
 
     optimize_requested = not args.no_optimize
@@ -152,33 +402,47 @@ def main() -> None:
         prompt_wav_path=prompt_wav_path,
         prompt_text=prompt_text,
         reference_wav_path=str(reference_wav),
-        cfg_value=args.cfg_value,
-        inference_timesteps=args.inference_timesteps,
+        cfg_value=effective_cfg,
+        inference_timesteps=effective_timesteps,
         min_len=args.min_len,
         max_len=args.max_len,
         normalize=args.normalize,
-        denoise=args.denoise,
+        denoise=effective_denoise,
     )
 
     output_path = ensure_parent(args.output)
     sf.write(str(output_path), wav, model.tts_model.sample_rate)
 
-    metadata = {
+    metadata: dict[str, Any] = {
         "model_id": args.model_id,
         "mode": "ultimate" if prompt_text else "reference",
         "reference_audio": str(reference_input),
         "converted_reference_audio": str(reference_wav),
         "prompt_text_present": bool(prompt_text),
+        "prompt_text_source": (
+            "user" if user_supplied_prompt else ("whisper" if reference_transcript else "none")
+        ),
         "style_present": bool(style),
         "char_count": len(text),
-        "cfg_value": args.cfg_value,
-        "inference_timesteps": args.inference_timesteps,
+        "cfg_value": effective_cfg,
+        "inference_timesteps": effective_timesteps,
         "sample_rate": model.tts_model.sample_rate,
         "optimize_requested": optimize_requested,
         "optimize_enabled": optimize_enabled,
         "optimize_reason": optimize_reason,
         "output": str(output_path),
+        "referenceQuality": reference_quality,
+        "referenceTranscript": reference_transcript,
+        "referenceLanguage": reference_language,
+        "effectiveParams": {
+            "timesteps": effective_timesteps,
+            "cfgValue": effective_cfg,
+            "denoise": effective_denoise,
+            "qualityPreset": args.quality,
+        },
     }
+    if whisper_error:
+        metadata["whisperError"] = whisper_error
 
     if args.metadata_output:
         ensure_parent(args.metadata_output).write_text(
