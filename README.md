@@ -2,7 +2,7 @@
 
 AnyVoice is a consent-gated voice cloning web app. Users record or upload a voice reference, enter target text, and the app sends the request to a local/GPU VoxCPM2 worker.
 
-The Vercel deployment hosts the product UI and API contract. Real VoxCPM2 inference should run on a machine with the model installed; the Vercel preview defaults to safe worker-missing mode because VoxCPM2 is a large PyTorch model and is not a good fit for Vercel serverless.
+The Vercel deployment hosts the product UI and API contract. Real VoxCPM2 inference should run on a machine with the model installed; production can forward synthesis requests to a token-protected Mac Studio worker.
 
 ## Local Run
 
@@ -21,6 +21,27 @@ npm run dev
 The local bridge is `scripts/synthesize_voxcpm_anyvoice.py`. It accepts mp3, wav, m4a, and other ffmpeg-readable audio, converts the reference to 16k mono wav, then calls `openbmb/VoxCPM2` through the `voxcpm` Python package.
 
 Reference-only mode works with just uploaded audio. Ultimate mode is enabled when the user also provides an exact transcript for that same reference clip.
+
+## Mac Studio Worker
+
+Run the protected worker on the Mac Studio with local VoxCPM2 enabled:
+
+```bash
+ANYVOICE_ENABLE_LOCAL_VOXCPM=1 \
+ANYVOICE_STUB=0 \
+ANYVOICE_VOXCPM_PYTHON=/path/to/voxcpm/python \
+ANYVOICE_WORKER_TOKEN=<local-secret-token> \
+npm run dev -- --port 3001
+```
+
+Expose that local server through a stable HTTPS tunnel, then set Vercel env:
+
+```bash
+ANYVOICE_WORKER_URL=https://your-worker-host.example
+ANYVOICE_WORKER_TOKEN=<same-local-secret-token>
+```
+
+The public `/api/clone` route forwards to `/api/local-worker/clone`. Generated audio stays on the worker and `/api/runs/:jobId/audio` proxies it back through Vercel with the server-side token.
 
 ## Verification
 

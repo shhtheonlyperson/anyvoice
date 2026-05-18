@@ -8,6 +8,8 @@ export interface CloneEnv {
   ANYVOICE_MODEL_ID?: string;
   ANYVOICE_MAX_UPLOAD_MB?: string;
   ANYVOICE_RUNS_DIR?: string;
+  ANYVOICE_WORKER_URL?: string;
+  ANYVOICE_WORKER_TOKEN?: string;
   VERCEL?: string;
 }
 

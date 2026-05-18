@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -27,9 +28,25 @@ def ensure_parent(path: str | Path) -> Path:
     return resolved
 
 
+def find_ffmpeg() -> str | None:
+    configured = os.environ.get("ANYVOICE_FFMPEG_PATH") or os.environ.get("FFMPEG_PATH")
+    if configured and Path(configured).exists():
+        return configured
+
+    discovered = shutil.which("ffmpeg")
+    if discovered:
+        return discovered
+
+    for candidate in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+        if Path(candidate).exists():
+            return candidate
+
+    return None
+
+
 def convert_reference_audio(input_path: Path, run_dir: Path) -> Path:
     output_path = run_dir / "reference_16k_mono.wav"
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_ffmpeg()
 
     if ffmpeg:
         subprocess.run(

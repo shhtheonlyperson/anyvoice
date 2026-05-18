@@ -25,6 +25,16 @@ describe("clone config", () => {
     ).toBe(false);
   });
 
+  it("does not treat a remote worker URL as local VoxCPM2", () => {
+    expect(
+      shouldReturnWorkerMissing({
+        VERCEL: "1",
+        ANYVOICE_WORKER_URL: "https://worker.example",
+        ANYVOICE_WORKER_TOKEN: "token",
+      }),
+    ).toBe(true);
+  });
+
   it("enables the local worker only when stub is off", () => {
     expect(isWorkerEnabled({ ANYVOICE_ENABLE_LOCAL_VOXCPM: "1", ANYVOICE_STUB: "0" })).toBe(true);
     expect(isWorkerEnabled({ ANYVOICE_ENABLE_LOCAL_VOXCPM: "1", ANYVOICE_STUB: "1" })).toBe(false);
