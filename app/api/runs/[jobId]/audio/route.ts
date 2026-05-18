@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { NextRequest } from "next/server";
 import { safeRunFile } from "@/lib/run-paths";
 import {
+  isWorkerMode,
   isWorkerProxyConfigured,
   workerAudioUrl,
   workerAuthFailure,
@@ -38,7 +39,7 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ jobId:
     });
   }
 
-  if (workerToken()) {
+  if (isWorkerMode()) {
     const authFailure = workerAuthFailure(_req);
     if (authFailure) {
       return new Response(authFailure.body.message, { status: authFailure.statusCode });

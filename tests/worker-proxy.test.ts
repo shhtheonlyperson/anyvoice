@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { constantTimeEqual, workerAudioUrl, workerBaseUrl, workerCloneUrl, workerToken } from "@/lib/worker-proxy";
+import {
+  constantTimeEqual,
+  isWorkerMode,
+  workerAudioUrl,
+  workerBaseUrl,
+  workerCloneUrl,
+  workerToken,
+} from "@/lib/worker-proxy";
 
 describe("worker proxy", () => {
   it("derives clone and audio URLs from a worker base URL", () => {
@@ -30,5 +37,12 @@ describe("worker proxy", () => {
     expect(workerToken({ ANYVOICE_WORKER_TOKEN: " token-value " })).toBe("token-value");
     expect(constantTimeEqual("token-value", "token-value")).toBe(true);
     expect(constantTimeEqual("token-value", "other-value")).toBe(false);
+  });
+
+  it("treats worker mode as an explicit opt-in, not implied by a token", () => {
+    expect(isWorkerMode({ ANYVOICE_WORKER_TOKEN: "secret" })).toBe(false);
+    expect(isWorkerMode({ ANYVOICE_WORKER_MODE: "1" })).toBe(true);
+    expect(isWorkerMode({ ANYVOICE_WORKER_MODE: "true" })).toBe(false);
+    expect(isWorkerMode({})).toBe(false);
   });
 });

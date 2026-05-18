@@ -31,8 +31,11 @@ ANYVOICE_ENABLE_LOCAL_VOXCPM=1 \
 ANYVOICE_STUB=0 \
 ANYVOICE_VOXCPM_PYTHON=/path/to/voxcpm/python \
 ANYVOICE_WORKER_TOKEN=<local-secret-token> \
+ANYVOICE_WORKER_MODE=1 \
 npm run dev -- --port 3001
 ```
+
+`ANYVOICE_WORKER_MODE=1` is the explicit opt-in to worker mode. When set, `/api/runs/:jobId/audio` requires `Authorization: Bearer ANYVOICE_WORKER_TOKEN`. Leave it unset for studio/dev — the audio route is then public so the browser can play locally-generated clips without a token.
 
 Expose that local server through a stable HTTPS tunnel, then set Vercel env:
 

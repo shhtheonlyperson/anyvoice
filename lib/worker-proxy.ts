@@ -4,6 +4,7 @@ export interface WorkerEnv {
   [key: string]: string | undefined;
   ANYVOICE_WORKER_URL?: string;
   ANYVOICE_WORKER_TOKEN?: string;
+  ANYVOICE_WORKER_MODE?: string;
 }
 
 export interface WorkerAuthFailure {
@@ -60,6 +61,10 @@ function joinWorkerPath(base: string, pathname: string): string {
 
 export function isWorkerProxyConfigured(env: WorkerEnv = process.env): boolean {
   return Boolean(configuredWorkerUrl(env));
+}
+
+export function isWorkerMode(env: WorkerEnv = process.env): boolean {
+  return env.ANYVOICE_WORKER_MODE === "1";
 }
 
 export function workerCloneUrl(env: WorkerEnv = process.env): string {
