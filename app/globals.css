@@ -1144,3 +1144,99 @@ details:focus-within > summary {
   line-height: 1.45;
   color: var(--accent-amber);
 }
+
+.step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-sm);
+  margin-bottom: var(--s-sm);
+  flex-wrap: wrap;
+}
+
+.step-title {
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  color: var(--on-dark);
+}
+
+.mode-tabs {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.mode-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--on-dark-soft);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.mode-tab.is-active {
+  background: var(--on-dark);
+  color: var(--surface-dark);
+}
+
+.script-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: var(--s-md);
+  margin-bottom: var(--s-md);
+}
+
+.script-intro {
+  color: var(--on-dark-soft);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 var(--s-sm);
+}
+
+.script-text {
+  margin: 0;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1.75;
+  color: var(--on-dark);
+  border-left: 3px solid var(--primary);
+  padding-left: var(--s-md);
+}
+
+.field--transcript {
+  margin-top: var(--s-md);
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.field-label strong {
+  color: var(--on-dark);
+  font-size: 13px;
+  display: block;
+}
+
+.field-hint {
+  color: var(--on-dark-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  display: block;
+  margin-top: 2px;
+}
+
+.surface--dark .field--transcript textarea {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--on-dark);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+

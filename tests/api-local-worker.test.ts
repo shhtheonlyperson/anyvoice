@@ -20,6 +20,7 @@ function buildForm(): FormData {
   const form = new FormData();
   form.set("voice", new File([new Uint8Array([1, 2, 3])], "ref.wav", { type: "audio/wav" }));
   form.set("targetText", "hello");
+  form.set("promptTranscript", "hello");
   form.set("consent", "yes");
   return form;
 }
@@ -90,7 +91,6 @@ describe("POST /api/local-worker/clone", () => {
       status: "ready",
       jobId: "lw-job-id",
       modelId: "openbmb/VoxCPM2",
-      mode: "reference",
       audioUrl: "/api/runs/lw-job-id/audio",
       referenceQuality: {
         grade: "B",
@@ -100,8 +100,6 @@ describe("POST /api/local-worker/clone", () => {
         vadActiveRatio: 0.8,
         warnings: [],
       },
-      referenceTranscript: null,
-      referenceLanguage: null,
       targetLanguage: "en",
       effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced" },
     });

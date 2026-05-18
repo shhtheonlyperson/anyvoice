@@ -1,4 +1,4 @@
-import { maxUploadBytes, normalizeStyle, normalizeTargetText } from "@/lib/clone-config";
+import { maxUploadBytes, normalizeTargetText } from "@/lib/clone-config";
 
 export type QualityPreset = "speed" | "balanced" | "quality";
 
@@ -10,7 +10,6 @@ export interface CloneInput {
   voice: File;
   targetText: string;
   promptTranscript: string;
-  style: string;
   quality: QualityPreset;
 }
 
@@ -35,7 +34,6 @@ export function parseCloneForm(form: FormData): CloneInput | CloneInputError {
   const consent = form.get("consent");
   const targetText = normalizeTargetText(String(form.get("targetText") || ""));
   const promptTranscript = normalizeTargetText(String(form.get("promptTranscript") || ""));
-  const style = normalizeStyle(String(form.get("style") || ""));
   const qualityRaw = form.get("quality");
 
   if (!(voice instanceof File)) {
@@ -49,6 +47,15 @@ export function parseCloneForm(form: FormData): CloneInput | CloneInputError {
   }
   if (!targetText) {
     return { statusCode: 400, body: { status: "error", message: "target text required" } };
+  }
+  if (!promptTranscript) {
+    return {
+      statusCode: 400,
+      body: {
+        status: "error",
+        message: "reference transcript required: type exactly what the reference clip says",
+      },
+    };
   }
   if (consent !== "yes") {
     return { statusCode: 400, body: { status: "error", message: "voice permission confirmation required" } };
@@ -70,7 +77,6 @@ export function parseCloneForm(form: FormData): CloneInput | CloneInputError {
     voice,
     targetText,
     promptTranscript,
-    style,
     quality,
   };
 }
@@ -79,7 +85,6 @@ export function cloneInputToFormData(input: CloneInput): FormData {
   const form = new FormData();
   form.set("voice", input.voice, input.voice.name || "reference.audio");
   form.set("targetText", input.targetText);
-  form.set("style", input.style);
   form.set("promptTranscript", input.promptTranscript);
   form.set("quality", input.quality);
   form.set("consent", "yes");
@@ -115,10 +120,8 @@ export function detectTargetLanguage(text: string): "zh" | "ja" | "ko" | "en" {
     }
   }
 
-  // Japanese kana takes priority over Han when present (Japanese text mixes Han + kana).
   if (ja > 0 && ja >= ko) return "ja";
   if (ko > 0 && ko >= ja) return "ko";
-  // Any CJK ideograph presence beats Latin (script presence, not count).
   if (zh > 0) return "zh";
   if (latin > 0) return "en";
   return "en";

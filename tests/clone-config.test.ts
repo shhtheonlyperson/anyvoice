@@ -5,7 +5,6 @@ import {
   isWorkerEnabled,
   maxUploadBytes,
   modelId,
-  normalizeStyle,
   normalizeTargetText,
   runsRoot,
   shouldReturnWorkerMissing,
@@ -48,8 +47,7 @@ describe("clone config", () => {
     expect(maxUploadBytes({ ANYVOICE_MAX_UPLOAD_MB: "999" })).toBe(512 * 1024 * 1024);
   });
 
-  it("normalizes user-controlled prompt strings", () => {
-    expect(normalizeStyle("  calm   and warm  ")).toBe("calm and warm");
+  it("normalizes target text line endings", () => {
     expect(normalizeTargetText("hello\r\nworld")).toBe("hello\nworld");
   });
 

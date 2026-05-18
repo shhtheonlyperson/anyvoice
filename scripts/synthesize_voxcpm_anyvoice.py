@@ -140,11 +140,8 @@ def analyze_reference_quality(wav_path: Path) -> dict[str, Any]:
     clip_threshold = 0.99
     clipping_ratio = float(np.mean(np.abs(data) >= clip_threshold)) if data.size else 0.0
 
-    # 20 ms RMS frames
     rms = _frame_rms(data, sr, window_ms=20.0)
 
-    # VAD-active ratio: frames whose RMS exceeds (30th percentile noise floor + 6 dB).
-    # Falls back gracefully on near-silent clips.
     if rms.size:
         noise_floor = float(np.percentile(rms, 30))
         threshold = noise_floor * (10 ** (6.0 / 20.0))  # +6 dB
@@ -152,7 +149,6 @@ def analyze_reference_quality(wav_path: Path) -> dict[str, Any]:
     else:
         vad_active_ratio = 0.0
 
-    # Coarse SNR: 90th percentile RMS (signal) vs 10th percentile RMS (noise), in dB.
     if rms.size >= 4:
         signal = float(np.percentile(rms, 90))
         noise = float(np.percentile(rms, 10))
@@ -211,30 +207,6 @@ def analyze_reference_quality(wav_path: Path) -> dict[str, Any]:
     }
 
 
-def transcribe_reference(
-    wav_path: Path, model_size: str
-) -> tuple[str | None, str | None, str | None]:
-    """Return (transcript, language, error). Any failure returns (None, None, reason)."""
-    try:
-        from faster_whisper import WhisperModel  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        return None, None, f"faster_whisper_unavailable:{exc}"
-
-    try:
-        # Default to CPU+int8 so we don't require CUDA; faster-whisper will pick
-        # available providers automatically on Mac (CPU).
-        model = WhisperModel(model_size, device="auto", compute_type="auto")
-        segments, info = model.transcribe(str(wav_path), vad_filter=True)
-        pieces = [seg.text for seg in segments]
-        text = "".join(pieces).strip()
-        language = getattr(info, "language", None)
-        if not text:
-            return None, language, "empty_transcript"
-        return text, language, None
-    except Exception as exc:  # noqa: BLE001
-        return None, None, f"whisper_failed:{exc}"
-
-
 QUALITY_PRESETS: dict[str, dict[str, Any]] = {
     "speed": {"timesteps": 10, "cfg": 2.0, "denoise": "off"},
     "balanced": {"timesteps": 25, "cfg": 2.5, "denoise": "auto"},
@@ -266,14 +238,19 @@ def _flag_was_passed(argv: list[str], *names: str) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Synthesize speech from any permitted voice reference with VoxCPM2."
+        description=(
+            "Synthesize speech from a voice reference + verified transcript "
+            "with VoxCPM2 (ultimate mode only)."
+        )
     )
     parser.add_argument("--text")
     parser.add_argument("--text-file")
     parser.add_argument("--reference-audio", required=True)
-    parser.add_argument("--prompt-text")
+    parser.add_argument(
+        "--prompt-text",
+        help="Verified transcript of the reference clip. Required (or --prompt-text-file).",
+    )
     parser.add_argument("--prompt-text-file")
-    parser.add_argument("--style")
     parser.add_argument("--model-id", default="openbmb/VoxCPM2")
     parser.add_argument("--cache-dir")
     parser.add_argument("--cfg-value", type=float, default=2.0)
@@ -297,24 +274,6 @@ def main() -> None:
         default="balanced",
         help="Quality preset; sets timesteps/cfg/denoise unless overridden by explicit flags.",
     )
-    parser.add_argument(
-        "--auto-transcribe",
-        dest="auto_transcribe",
-        action="store_true",
-        default=True,
-        help="Auto-transcribe the reference clip with faster-whisper when --prompt-text is absent.",
-    )
-    parser.add_argument(
-        "--no-auto-transcribe",
-        dest="auto_transcribe",
-        action="store_false",
-        help="Disable Whisper-based auto-transcription of the reference clip.",
-    )
-    parser.add_argument(
-        "--whisper-model",
-        default="small",
-        help="faster-whisper model size (tiny/base/small/medium/large-v3).",
-    )
     parser.add_argument("--metadata-output")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -328,42 +287,27 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     text = read_text_arg(args.text, args.text_file)
-    style = (args.style or "").strip()
-    if style:
-        text = f"({style}){text}"
 
-    prompt_text: str | None = None
     if args.prompt_text and args.prompt_text_file:
         raise ValueError("Provide --prompt-text or --prompt-text-file, not both.")
     if args.prompt_text:
         prompt_text = args.prompt_text.strip()
     elif args.prompt_text_file:
         prompt_text = Path(args.prompt_text_file).read_text(encoding="utf-8").strip()
+    else:
+        raise ValueError(
+            "Reference transcript is required: pass --prompt-text or --prompt-text-file."
+        )
+    if not prompt_text:
+        raise ValueError("Reference transcript must not be empty.")
 
     reference_input = Path(args.reference_audio)
     if not reference_input.exists():
         raise FileNotFoundError(f"reference audio not found: {reference_input}")
 
     reference_wav = convert_reference_audio(reference_input, run_dir)
-
-    # 1) Reference quality analysis
     reference_quality = analyze_reference_quality(reference_wav)
 
-    # 2) Auto-transcribe (only when caller didn't supply prompt text)
-    reference_transcript: str | None = None
-    reference_language: str | None = None
-    whisper_error: str | None = None
-    user_supplied_prompt = prompt_text is not None
-    if args.auto_transcribe and not user_supplied_prompt:
-        reference_transcript, reference_language, whisper_error = transcribe_reference(
-            reference_wav, args.whisper_model
-        )
-        if whisper_error:
-            print(f"voxcpm auto-transcribe skipped: {whisper_error}", file=sys.stderr)
-        if reference_transcript:
-            prompt_text = reference_transcript
-
-    # 3) Quality preset resolution (explicit flags win)
     preset = QUALITY_PRESETS[args.quality]
     effective_timesteps = (
         args.inference_timesteps if timesteps_explicit else int(preset["timesteps"])
@@ -382,8 +326,6 @@ def main() -> None:
             snr = reference_quality.get("snrDb")
             effective_denoise = bool(snr is not None and snr < 18.0)
 
-    prompt_wav_path = str(reference_wav) if prompt_text else None
-
     optimize_requested = not args.no_optimize
     optimize_enabled, optimize_reason = should_enable_optimize(optimize_requested)
     if optimize_requested and not optimize_enabled:
@@ -399,7 +341,7 @@ def main() -> None:
 
     wav = model.generate(
         text=text,
-        prompt_wav_path=prompt_wav_path,
+        prompt_wav_path=str(reference_wav),
         prompt_text=prompt_text,
         reference_wav_path=str(reference_wav),
         cfg_value=effective_cfg,
@@ -415,14 +357,10 @@ def main() -> None:
 
     metadata: dict[str, Any] = {
         "model_id": args.model_id,
-        "mode": "ultimate" if prompt_text else "reference",
+        "mode": "ultimate",
         "reference_audio": str(reference_input),
         "converted_reference_audio": str(reference_wav),
-        "prompt_text_present": bool(prompt_text),
-        "prompt_text_source": (
-            "user" if user_supplied_prompt else ("whisper" if reference_transcript else "none")
-        ),
-        "style_present": bool(style),
+        "prompt_text_present": True,
         "char_count": len(text),
         "cfg_value": effective_cfg,
         "inference_timesteps": effective_timesteps,
@@ -432,8 +370,6 @@ def main() -> None:
         "optimize_reason": optimize_reason,
         "output": str(output_path),
         "referenceQuality": reference_quality,
-        "referenceTranscript": reference_transcript,
-        "referenceLanguage": reference_language,
         "effectiveParams": {
             "timesteps": effective_timesteps,
             "cfgValue": effective_cfg,
@@ -441,8 +377,6 @@ def main() -> None:
             "qualityPreset": args.quality,
         },
     }
-    if whisper_error:
-        metadata["whisperError"] = whisper_error
 
     if args.metadata_output:
         ensure_parent(args.metadata_output).write_text(

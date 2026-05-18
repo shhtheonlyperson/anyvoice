@@ -34,8 +34,7 @@ function makeInput(overrides: Partial<CloneInput> = {}): CloneInput {
   return {
     voice: new File([new Uint8Array([1, 2, 3, 4])], "ref.wav", { type: "audio/wav" }),
     targetText: "hello world",
-    promptTranscript: "",
-    style: "",
+    promptTranscript: "hello world",
     quality: "balanced",
     ...overrides,
   };
@@ -117,31 +116,27 @@ describe("workerMissingPayload", () => {
 describe("recordWorkerMissingRun", () => {
   it("writes input files and request.json", async () => {
     const jobId = "jobMiss1";
-    const input = makeInput({ promptTranscript: "transcript text", style: "warm" });
+    const input = makeInput({ promptTranscript: "transcript text" });
     await recordWorkerMissingRun(jobId, input);
     const runDir = path.join(tmpRoot, jobId);
     const requestText = await readFile(path.join(runDir, "request.json"), "utf-8");
     const parsed = JSON.parse(requestText);
     expect(parsed.status).toBe("needs_worker");
     expect(parsed.voiceName).toBe("ref.wav");
-    expect(parsed.ultimateMode).toBe(true);
-    expect(parsed.stylePresent).toBe(true);
     expect(parsed.quality).toBe("balanced");
 
     const targetText = await readFile(path.join(runDir, "target.txt"), "utf-8");
     expect(targetText).toBe("hello world");
     const prompt = await readFile(path.join(runDir, "prompt-transcript.txt"), "utf-8");
     expect(prompt).toBe("transcript text");
-    const style = await readFile(path.join(runDir, "style.txt"), "utf-8");
-    expect(style).toBe("warm");
   });
 
-  it("omits optional prompt/style files when not provided", async () => {
+  it("always writes the prompt transcript file (required field)", async () => {
     const jobId = "jobMiss2";
     await recordWorkerMissingRun(jobId, makeInput());
     const runDir = path.join(tmpRoot, jobId);
-    await expect(readFile(path.join(runDir, "prompt-transcript.txt"), "utf-8")).rejects.toThrow();
-    await expect(readFile(path.join(runDir, "style.txt"), "utf-8")).rejects.toThrow();
+    const prompt = await readFile(path.join(runDir, "prompt-transcript.txt"), "utf-8");
+    expect(prompt).toBe("hello world");
   });
 
   it("uses mp3 extension when type indicates mpeg", async () => {
@@ -185,8 +180,6 @@ describe("runLocalClone", () => {
           vadActiveRatio: 0.9,
           warnings: ["warn-one"],
         },
-        referenceTranscript: "transcribed text",
-        referenceLanguage: "en",
         effectiveParams: {
           timesteps: 50,
           cfgValue: 1.5,
@@ -201,12 +194,9 @@ describe("runLocalClone", () => {
     expect(result.audioUrl).toBe("/api/runs/jobOK/audio");
     expect(result.referenceQuality.grade).toBe("A");
     expect(result.referenceQuality.warnings).toContain("warn-one");
-    expect(result.referenceTranscript).toBe("transcribed text");
-    expect(result.referenceLanguage).toBe("en");
     expect(result.effectiveParams.timesteps).toBe(50);
     expect(result.effectiveParams.qualityPreset).toBe("quality");
     expect(result.effectiveParams.denoise).toBe(true);
-    expect(result.mode).toBe("ultimate");
   });
 
   it("accepts snake_case metadata keys and defaults missing fields", async () => {
@@ -236,45 +226,6 @@ describe("runLocalClone", () => {
     expect(result.effectiveParams.cfgValue).toBe(2.0);
     expect(result.effectiveParams.denoise).toBe(false);
     expect(result.effectiveParams.qualityPreset).toBe("speed");
-    expect(result.referenceTranscript).toBeNull();
-    expect(result.referenceLanguage).toBeNull();
-    expect(result.mode).toBe("reference");
-  });
-
-  it("appends a cross-lingual warning when reference and target differ", async () => {
-    spawnMock.mockImplementation(() =>
-      fakeSuccess({
-        referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
-        referenceLanguage: "en",
-      }) as never,
-    );
-    const result = await runLocalClone("jobLang", makeInput({ targetText: "你好世界" }));
-    expect(result.targetLanguage).toBe("zh");
-    expect(result.referenceQuality.warnings.some((w) => w.startsWith("cross_lingual:"))).toBe(true);
-  });
-
-  it("returns reference-mode when no transcript provided or detected", async () => {
-    spawnMock.mockImplementation(() =>
-      fakeSuccess({
-        referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
-        referenceTranscript: "",
-      }) as never,
-    );
-    const result = await runLocalClone("jobRef", makeInput());
-    expect(result.mode).toBe("reference");
-  });
-
-  it("ultimate mode when promptTranscript is provided", async () => {
-    spawnMock.mockImplementation(() =>
-      fakeSuccess({
-        referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
-      }) as never,
-    );
-    const result = await runLocalClone(
-      "jobUlt",
-      makeInput({ promptTranscript: "anchored prompt" }),
-    );
-    expect(result.mode).toBe("ultimate");
   });
 
   it("returns sensible defaults when metadata file is missing/invalid", async () => {
@@ -309,19 +260,15 @@ describe("runLocalClone", () => {
     await expect(runLocalClone("jobFail", makeInput())).rejects.toThrow(/model crashed/);
   });
 
-  it("passes prompt-text-file and style args to python", async () => {
+  it("always passes --prompt-text-file to python (transcript is required)", async () => {
     spawnMock.mockImplementation(() =>
       fakeSuccess({
         referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
       }) as never,
     );
-    await runLocalClone(
-      "jobArgs",
-      makeInput({ promptTranscript: "transcript here", style: "calm" }),
-    );
+    await runLocalClone("jobArgs", makeInput({ promptTranscript: "transcript here" }));
     const args = spawnMock.mock.calls[0][1] as string[];
     expect(args).toContain("--prompt-text-file");
-    expect(args).toContain("--style");
-    expect(args[args.indexOf("--style") + 1]).toBe("calm");
+    expect(args).toContain("--quality");
   });
 });

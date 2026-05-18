@@ -3,7 +3,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { modelId } from "@/lib/clone-config";
 import {
-  crossLingualWarning,
   detectTargetLanguage,
   type CloneInput,
   type QualityPreset,
@@ -37,11 +36,8 @@ export interface CloneReadyPayload {
   status: "ready";
   jobId: string;
   modelId: string;
-  mode: "reference" | "ultimate";
   audioUrl: string;
   referenceQuality: ReferenceQuality;
-  referenceTranscript: string | null;
-  referenceLanguage: string | null;
   targetLanguage: string | null;
   effectiveParams: EffectiveParams;
 }
@@ -108,12 +104,7 @@ async function writeInputFiles(jobId: string, input: CloneInput) {
   const referencePath = path.join(runDir, `reference${extension}`);
   await writeFile(referencePath, Buffer.from(await input.voice.arrayBuffer()));
   await writeFile(path.join(runDir, "target.txt"), input.targetText, "utf-8");
-  if (input.promptTranscript) {
-    await writeFile(path.join(runDir, "prompt-transcript.txt"), input.promptTranscript, "utf-8");
-  }
-  if (input.style) {
-    await writeFile(path.join(runDir, "style.txt"), input.style, "utf-8");
-  }
+  await writeFile(path.join(runDir, "prompt-transcript.txt"), input.promptTranscript, "utf-8");
 
   return { runDir, referencePath };
 }
@@ -129,8 +120,6 @@ export async function recordWorkerMissingRun(jobId: string, input: CloneInput) {
         voiceName: input.voice.name,
         voiceType: input.voice.type,
         voiceSize: input.voice.size,
-        ultimateMode: Boolean(input.promptTranscript),
-        stylePresent: Boolean(input.style),
         quality: input.quality,
         createdAt: new Date().toISOString(),
       },
@@ -229,48 +218,24 @@ export async function runLocalClone(jobId: string, input: CloneInput): Promise<C
     outputPath,
     "--quality",
     input.quality,
+    "--prompt-text-file",
+    path.join(runDir, "prompt-transcript.txt"),
   ];
-
-  if (input.promptTranscript) {
-    args.push("--prompt-text-file", path.join(runDir, "prompt-transcript.txt"));
-  }
-  if (input.style) {
-    args.push("--style", input.style);
-  }
 
   const result = await runCommand(python, args, process.cwd());
   await writeFile(path.join(runDir, "worker.log"), result.stderr, "utf-8");
 
   const metadata = await readMetadata(metadataPath);
   const referenceQuality = parseReferenceQuality(metadata?.referenceQuality);
-  const referenceTranscriptRaw =
-    metadata && typeof metadata.referenceTranscript === "string" ? metadata.referenceTranscript : null;
-  const referenceTranscript =
-    referenceTranscriptRaw && referenceTranscriptRaw.length > 0 ? referenceTranscriptRaw : null;
-  const referenceLanguage =
-    metadata && typeof metadata.referenceLanguage === "string" && metadata.referenceLanguage.length > 0
-      ? metadata.referenceLanguage
-      : null;
   const effectiveParams = parseEffectiveParams(metadata?.effectiveParams, input.quality);
-
   const targetLanguage = detectTargetLanguage(input.targetText);
-  const crossWarning = crossLingualWarning(referenceLanguage, targetLanguage);
-  if (crossWarning) {
-    referenceQuality.warnings = [...referenceQuality.warnings, crossWarning];
-  }
-
-  const mode: "reference" | "ultimate" =
-    (referenceTranscript && referenceTranscript.length > 0) || input.promptTranscript ? "ultimate" : "reference";
 
   return {
     status: "ready",
     jobId,
     modelId: modelId(),
-    mode,
     audioUrl: `/api/runs/${jobId}/audio`,
     referenceQuality,
-    referenceTranscript,
-    referenceLanguage,
     targetLanguage,
     effectiveParams,
   };

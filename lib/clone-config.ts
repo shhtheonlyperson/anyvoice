@@ -39,10 +39,6 @@ export function runsRoot(env: CloneEnv = process.env): string {
   return path.join(process.cwd(), configured);
 }
 
-export function normalizeStyle(value: string): string {
-  return value.trim().replace(/\s+/g, " ").slice(0, 180);
-}
-
 export function normalizeTargetText(value: string): string {
   return value.trim().replace(/\r\n/g, "\n").slice(0, 4096);
 }

@@ -13,6 +13,7 @@ function buildForm(overrides: Record<string, string | Blob> = {}): FormData {
   const voice = new File([new Uint8Array([1, 2, 3, 4])], "ref.wav", { type: "audio/wav" });
   form.set("voice", voice);
   form.set("targetText", "hello world");
+  form.set("promptTranscript", "hello world");
   form.set("consent", "yes");
   for (const [key, value] of Object.entries(overrides)) {
     form.set(key, value);
@@ -55,8 +56,7 @@ describe("cloneInputToFormData", () => {
     const input: CloneInput = {
       voice: new File([new Uint8Array([1, 2, 3])], "ref.wav", { type: "audio/wav" }),
       targetText: "hi",
-      promptTranscript: "",
-      style: "",
+      promptTranscript: "hello",
       quality: "quality",
     };
     const form = cloneInputToFormData(input);
@@ -73,8 +73,7 @@ describe("cloneInputToFormData", () => {
     const input: CloneInput = {
       voice: new File([new Uint8Array([1, 2, 3])], "ref.wav", { type: "audio/wav" }),
       targetText: "hi",
-      promptTranscript: "",
-      style: "",
+      promptTranscript: "hello",
       quality: "balanced",
     };
     const form = cloneInputToFormData(input);

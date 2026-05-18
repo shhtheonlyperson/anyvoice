@@ -8,6 +8,7 @@ import {
   Mic,
   Monitor,
   Moon,
+  PlayCircle,
   Sun,
   TriangleAlert,
   Upload,
@@ -17,7 +18,8 @@ import {
 type Locale = "zh-Hant" | "en";
 type Theme = "system" | "light" | "dark";
 type Status = "idle" | "requesting_mic" | "recording" | "submitting" | "ready" | "needs_worker" | "error";
-type SourceKind = "sample" | "uploaded" | "recorded";
+type Mode = "scripted" | "freeform";
+type SourceKind = "sample" | "scripted" | "freeform" | "uploaded";
 type ReferenceGrade = "A" | "B" | "C" | "D";
 
 interface ReferenceQuality {
@@ -35,7 +37,6 @@ interface ClonePayload {
   message?: string;
   jobId?: string;
   referenceQuality?: ReferenceQuality;
-  referenceLanguage?: string | null;
   targetLanguage?: string | null;
   effectiveParams?: {
     timesteps?: number;
@@ -47,10 +48,24 @@ interface ClonePayload {
 
 const SONOGRAM_BARS = 64;
 const MAX_TARGET_CHARS = 4096;
+const MAX_TRANSCRIPT_CHARS = 1024;
 const MAX_RECORDING_SECONDS = 60;
 
 const SAMPLE_VOICE_URL = "/sample-voice.wav";
 const SAMPLE_VOICE_FILENAME = "sample-voice.wav";
+
+// Verified transcript of /public/sample-voice.wav (Petit Prince excerpt).
+const SAMPLE_VOICE_TRANSCRIPT =
+  "當你看著夜空時，因為我住在其中一顆星星上，因為我會在其中一顆星星上笑，那麼對你來說，就好像所有的星星都在笑。";
+
+// Fixed reading script for scripted mode. Both locales selected to cover
+// the dominant phonemes / tones the model needs to align speaker → text.
+const SCRIPT_TEXT: Record<Locale, string> = {
+  "zh-Hant":
+    "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，遠方傳來陣陣鳥鳴，世界顯得格外安靜。",
+  en:
+    "Hello, I'm recording a short voice sample. The quick brown fox jumps over a lazy dog while bright sunlight breaks through the morning clouds.",
+};
 
 const DEFAULT_TARGET_TEXT = {
   "zh-Hant": "你好，這是我的聲音。",
@@ -70,13 +85,28 @@ const copy = {
     errorTitle: "失敗",
     sectionVoice: "你的聲音",
     sectionText: "要說的話",
+    stepRecordTitle: "步驟 1 — 錄一段你的聲音",
+    scriptedIntro: "請自然地朗讀以下這段話。系統會用這段稿做為發音對齊的基準，唸越完整，合成發音越準。",
+    scriptedRecordCta: "開始朗讀錄音",
+    scriptedReRecordCta: "重新朗讀",
+    scriptedUsing: "已錄到朗讀片段",
+    freeformIntro: "自由錄製或上傳一段乾淨的人聲（5–30 秒最佳），並把這段聲音裡實際說的內容逐字打進來。",
+    freeformRecordCta: "自由錄音",
+    freeformReRecordCta: "重新錄音",
+    transcriptLabel: "這段錄音的逐字稿（必填）",
+    transcriptHelp: "請一字不漏地輸入錄音內容，包含語氣詞。逐字越精準，合成發音越準。",
+    transcriptPlaceholder: "把錄音中聽到的每一個字打進來…",
+    noTranscript: "請輸入這段錄音的逐字稿。",
+    modeScripted: "讀稿錄音（推薦）",
+    modeFreeform: "自由錄音 / 上傳",
+    useSample: "或試試示範聲音",
     sourceSample: "示範聲音（小王子節錄）",
-    sourceRecorded: "瀏覽器錄音",
+    sourceScripted: "讀稿錄音",
+    sourceFreeform: "瀏覽器錄音",
     sourceUploaded: "上傳音檔",
-    record: "錄音",
     requestingMic: "要求麥克風",
     stop: "停止",
-    upload: "上傳",
+    upload: "上傳音檔",
     targetPlaceholder: "輸入你想讓這個聲音說出的內容…",
     consent: "我擁有這段聲音、或已取得明確授權，且不會用於冒充、詐欺或誤導聽眾。",
     submit: "產生聲音",
@@ -91,7 +121,7 @@ const copy = {
     warningClipping: "參考音有削波，建議重新錄製音量小一點。",
     warningShort: "參考音偏短，相似度可能受影響。",
     warningNoise: "參考音背景雜訊偏高，請在安靜環境再錄一次。",
-    noAudio: "請先錄音、上傳或保留示範聲音。",
+    noAudio: "請先錄一段聲音、或選擇示範聲音。",
     noText: "請輸入要合成的文字。",
     noConsent: "請先確認聲音授權。",
     recordingUnavailable: "這個瀏覽器不支援直接錄音，請改用上傳音檔。",
@@ -117,13 +147,31 @@ const copy = {
     errorTitle: "Failed",
     sectionVoice: "Your voice",
     sectionText: "What to say",
+    stepRecordTitle: "Step 1 — Record a sample of your voice",
+    scriptedIntro:
+      "Read the line below naturally. The model uses this script as the speaker → text alignment anchor — the more accurately you read it, the more accurate the generated speech.",
+    scriptedRecordCta: "Start reading",
+    scriptedReRecordCta: "Re-record",
+    scriptedUsing: "Scripted recording captured",
+    freeformIntro:
+      "Record or upload a clean voice clip (5–30 s works best), then type the exact transcript of that clip word-for-word.",
+    freeformRecordCta: "Record freeform",
+    freeformReRecordCta: "Re-record",
+    transcriptLabel: "Transcript of this recording (required)",
+    transcriptHelp:
+      "Type the audio word-for-word, including filler words. Accurate transcripts make pronunciation accurate.",
+    transcriptPlaceholder: "Type every word you hear in the recording…",
+    noTranscript: "Type the transcript of this recording first.",
+    modeScripted: "Scripted (recommended)",
+    modeFreeform: "Freeform / upload",
+    useSample: "Or try the sample voice",
     sourceSample: "Sample voice (Petit Prince excerpt)",
-    sourceRecorded: "Browser recording",
+    sourceScripted: "Scripted recording",
+    sourceFreeform: "Browser recording",
     sourceUploaded: "Uploaded audio",
-    record: "Record",
     requestingMic: "Requesting mic",
     stop: "Stop",
-    upload: "Upload",
+    upload: "Upload audio",
     targetPlaceholder: "Write the line you want this voice to say…",
     consent:
       "I own this voice recording, or have explicit permission from the speaker to use it, and I will not use it for impersonation, fraud, or to mislead listeners.",
@@ -139,7 +187,7 @@ const copy = {
     warningClipping: "Reference clips at peaks. Record again with lower input gain.",
     warningShort: "Reference is short. Similarity may suffer.",
     warningNoise: "Reference has high background noise. Record in a quieter room.",
-    noAudio: "Record, upload, or keep the sample voice first.",
+    noAudio: "Record a clip first, or pick the sample voice.",
     noText: "Enter target text first.",
     noConsent: "Confirm voice permission first.",
     recordingUnavailable: "This browser does not support direct recording. Upload an audio file instead.",
@@ -239,7 +287,7 @@ function localizeLanguage(code: string | null | undefined, t: typeof copy[Locale
 function describeWarning(code: string, payload: ClonePayload, t: typeof copy[Locale]): string | null {
   if (code.startsWith("cross_lingual")) {
     const parts = code.split(":")[1]?.split("->") ?? [];
-    const refLang = localizeLanguage(parts[0] || payload.referenceLanguage, t);
+    const refLang = localizeLanguage(parts[0], t);
     const targetLang = localizeLanguage(parts[1] || payload.targetLanguage, t);
     return t.warningCrossLingual(refLang, targetLang);
   }
@@ -262,13 +310,15 @@ export function VoiceCloneStudio() {
   });
   const t = copy[locale];
 
+  const [mode, setMode] = useState<Mode>("scripted");
   const [status, setStatus] = useState<Status>("idle");
   const [voiceFile, setVoiceFile] = useState<File | null>(null);
-  const [sourceKind, setSourceKind] = useState<SourceKind>("sample");
+  const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
   const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
   const [wavePeaks, setWavePeaks] = useState<number[]>([]);
   const [playbackProgress, setPlaybackProgress] = useState(0);
   const [userTargetText, setUserTargetText] = useState<string | null>(null);
+  const [freeformTranscript, setFreeformTranscript] = useState("");
   const [consent, setConsent] = useState(false);
   const [audioUrl, setAudioUrl] = useState("");
   const [message, setMessage] = useState("");
@@ -289,6 +339,7 @@ export function VoiceCloneStudio() {
   const animationFrameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const recordingDeadlineRef = useRef<number | null>(null);
+  const recordingKindRef = useRef<"scripted" | "freeform">("scripted");
 
   /* ---------- Theme & locale ---------- */
   useEffect(() => {
@@ -338,21 +389,15 @@ export function VoiceCloneStudio() {
     }
   }, []);
 
-  /* ---------- Load sample voice on mount ---------- */
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const sample = await fetchSampleVoiceFile();
-        if (active) await adoptVoiceFile(sample, "sample");
-      } catch {
-        /* sample is optional; user can still record/upload */
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [adoptVoiceFile]);
+  async function loadSampleVoice() {
+    try {
+      const sample = await fetchSampleVoiceFile();
+      await adoptVoiceFile(sample, "sample");
+    } catch {
+      setStatus("error");
+      setMessage(t.noAudio);
+    }
+  }
 
   function stopRecordingTimer() {
     if (recordingTimerRef.current) {
@@ -421,10 +466,11 @@ export function VoiceCloneStudio() {
     stopInputMeter();
   }
 
-  async function startRecording() {
+  async function startRecording(kind: "scripted" | "freeform") {
     cleanupRecordingSession();
     setMessage("");
     setAudioUrl("");
+    recordingKindRef.current = kind;
 
     if (typeof navigator.mediaDevices?.getUserMedia !== "function" || typeof MediaRecorder === "undefined") {
       setRecordingSupported(false);
@@ -460,7 +506,7 @@ export function VoiceCloneStudio() {
           return;
         }
         const file = createRecordedFile(chunksRef.current, recorder.mimeType, Date.now());
-        await adoptVoiceFile(file, "recorded");
+        await adoptVoiceFile(file, recordingKindRef.current);
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
@@ -498,13 +544,20 @@ export function VoiceCloneStudio() {
     }
   }
 
+  // Resolve the transcript that pairs with the current reference audio.
+  function resolvePromptTranscript(): string {
+    if (sourceKind === "scripted") return SCRIPT_TEXT[locale];
+    if (sourceKind === "sample") return SAMPLE_VOICE_TRANSCRIPT;
+    return freeformTranscript.trim();
+  }
+
   async function submit() {
     setMessage("");
     setAudioUrl("");
     setReferenceQuality(null);
     setLastResponse(null);
 
-    if (!voiceFile) {
+    if (!voiceFile || !sourceKind) {
       setStatus("error");
       setMessage(t.noAudio);
       return;
@@ -512,6 +565,12 @@ export function VoiceCloneStudio() {
     if (!targetText.trim()) {
       setStatus("error");
       setMessage(t.noText);
+      return;
+    }
+    const promptTranscript = resolvePromptTranscript();
+    if (!promptTranscript) {
+      setStatus("error");
+      setMessage(t.noTranscript);
       return;
     }
     if (!consent) {
@@ -524,8 +583,7 @@ export function VoiceCloneStudio() {
     const form = new FormData();
     form.set("voice", voiceFile);
     form.set("targetText", targetText);
-    form.set("style", "");
-    form.set("promptTranscript", "");
+    form.set("promptTranscript", promptTranscript);
     form.set("consent", "yes");
     form.set("quality", "balanced");
 
@@ -557,9 +615,13 @@ export function VoiceCloneStudio() {
   const sourceLabel =
     sourceKind === "sample"
       ? t.sourceSample
-      : sourceKind === "recorded"
-        ? t.sourceRecorded
-        : t.sourceUploaded;
+      : sourceKind === "scripted"
+        ? t.sourceScripted
+        : sourceKind === "freeform"
+          ? t.sourceFreeform
+          : sourceKind === "uploaded"
+            ? t.sourceUploaded
+            : "";
 
   const submitDisabled = status === "submitting" || isRecording;
   const recordingApproachingLimit = isRecording && recordingElapsed >= MAX_RECORDING_SECONDS - 8;
@@ -572,7 +634,6 @@ export function VoiceCloneStudio() {
       .filter((line): line is string => Boolean(line));
   }, [referenceQuality, lastResponse, t]);
 
-  /* ---------- Sonogram bar heights ---------- */
   const sonogramBars = useMemo(() => {
     const bars = new Array(SONOGRAM_BARS).fill(0).map((_, index) => {
       if (isRecording) {
@@ -589,6 +650,11 @@ export function VoiceCloneStudio() {
     });
     return bars;
   }, [isRecording, inputLevel, wavePeaks]);
+
+  const hasReferenceInMode =
+    voiceFile !== null &&
+    ((mode === "scripted" && (sourceKind === "scripted" || sourceKind === "sample")) ||
+      (mode === "freeform" && (sourceKind === "freeform" || sourceKind === "uploaded")));
 
   return (
     <main className="shell">
@@ -642,6 +708,41 @@ export function VoiceCloneStudio() {
         <section className="surface surface--dark" aria-labelledby="h-voice">
           <h2 id="h-voice" className="visually-hidden">{t.sectionVoice}</h2>
 
+          <div className="step-header">
+            <strong className="step-title">{t.stepRecordTitle}</strong>
+            <div className="mode-tabs" role="tablist" aria-label={t.sectionVoice}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "scripted"}
+                className={`mode-tab ${mode === "scripted" ? "is-active" : ""}`}
+                onClick={() => setMode("scripted")}
+              >
+                {t.modeScripted}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "freeform"}
+                className={`mode-tab ${mode === "freeform" ? "is-active" : ""}`}
+                onClick={() => setMode("freeform")}
+              >
+                {t.modeFreeform}
+              </button>
+            </div>
+          </div>
+
+          {mode === "scripted" ? (
+            <div className="script-card">
+              <p className="script-intro">{t.scriptedIntro}</p>
+              <blockquote className="script-text" lang={locale}>
+                {SCRIPT_TEXT[locale]}
+              </blockquote>
+            </div>
+          ) : (
+            <p className="script-intro">{t.freeformIntro}</p>
+          )}
+
           <div className="booth">
             <div className={`sonogram ${isRecording ? "is-recording" : voiceFile ? "is-captured" : "is-idle"}`} aria-hidden>
               {sonogramBars.map((bar, index) => (
@@ -674,27 +775,47 @@ export function VoiceCloneStudio() {
                 <button className="btn btn--on-dark btn--lg" type="button" onClick={stopRecording}>
                   <CircleStop size={16} /> {t.stop}
                 </button>
+              ) : mode === "scripted" ? (
+                <>
+                  <button
+                    className="btn btn--primary btn--lg"
+                    type="button"
+                    onClick={() => startRecording("scripted")}
+                    disabled={!recordingSupported}
+                  >
+                    <Mic size={16} />{" "}
+                    {hasReferenceInMode && sourceKind === "scripted"
+                      ? t.scriptedReRecordCta
+                      : t.scriptedRecordCta}
+                  </button>
+                  <button className="btn btn--on-dark" type="button" onClick={loadSampleVoice}>
+                    <PlayCircle size={14} /> {t.useSample}
+                  </button>
+                </>
               ) : (
-                <button
-                  className="btn btn--primary btn--lg"
-                  type="button"
-                  onClick={startRecording}
-                  disabled={!recordingSupported}
-                >
-                  <Mic size={16} /> {t.record}
-                </button>
+                <>
+                  <button
+                    className="btn btn--primary btn--lg"
+                    type="button"
+                    onClick={() => startRecording("freeform")}
+                    disabled={!recordingSupported}
+                  >
+                    <Mic size={16} />{" "}
+                    {hasReferenceInMode && sourceKind === "freeform"
+                      ? t.freeformReRecordCta
+                      : t.freeformRecordCta}
+                  </button>
+                  <label className="btn btn--on-dark file-trigger">
+                    <Upload size={14} /> {t.upload}
+                    <input type="file" accept="audio/*" onChange={onUpload} aria-label={t.upload} />
+                  </label>
+                </>
               )}
-              <label className="btn btn--on-dark file-trigger">
-                <Upload size={14} /> {t.upload}
-                <input type="file" accept="audio/*" onChange={onUpload} aria-label={t.upload} />
-              </label>
             </div>
           </div>
 
           <div className="source-readout">
-            {sourceKind !== "sample" ? (
-              <strong title={voiceFile?.name}>{sourceLabel}</strong>
-            ) : null}
+            {sourceKind ? <strong title={voiceFile?.name}>{sourceLabel}</strong> : null}
             {isRecording ? (
               <div className={`recording-cap ${recordingApproachingLimit ? "is-warn" : ""}`}>
                 <strong>{formatDuration(recordingElapsed)}</strong>
@@ -713,6 +834,25 @@ export function VoiceCloneStudio() {
               />
             ) : null}
           </div>
+
+          {mode === "freeform" ? (
+            <div className="field field--transcript">
+              <label className="field-label" htmlFor="freeform-transcript">
+                <strong>{t.transcriptLabel}</strong>
+                <span className="field-hint">{t.transcriptHelp}</span>
+              </label>
+              <textarea
+                id="freeform-transcript"
+                className="textarea"
+                value={freeformTranscript}
+                onChange={(event) =>
+                  setFreeformTranscript(event.target.value.slice(0, MAX_TRANSCRIPT_CHARS))
+                }
+                placeholder={t.transcriptPlaceholder}
+                rows={3}
+              />
+            </div>
+          ) : null}
         </section>
 
         {/* 2. Target text */}
@@ -739,7 +879,7 @@ export function VoiceCloneStudio() {
           </div>
         </section>
 
-        {/* 3. Submit panel — inline consent + generate button */}
+        {/* 3. Submit panel */}
         <div className="submit-panel">
           <label className="consent-inline">
             <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
@@ -756,7 +896,7 @@ export function VoiceCloneStudio() {
           </button>
         </div>
 
-        {/* 4. Output (conditional) */}
+        {/* 4. Output */}
         {showOutput ? (
           <section className="surface surface--dark surface--output" aria-labelledby="h-output">
             <h2 id="h-output" className="visually-hidden">{t.outputAside}</h2>

@@ -35,6 +35,7 @@ function buildForm(overrides: Record<string, string | Blob> = {}): FormData {
   const voice = new File([new Uint8Array([1, 2, 3, 4])], "ref.wav", { type: "audio/wav" });
   form.set("voice", voice);
   form.set("targetText", "hello world");
+  form.set("promptTranscript", "hello world");
   form.set("consent", "yes");
   for (const [k, v] of Object.entries(overrides)) form.set(k, v);
   return form;
@@ -93,7 +94,6 @@ describe("POST /api/clone", () => {
       status: "ready",
       jobId: "test-job-id",
       modelId: "openbmb/VoxCPM2",
-      mode: "reference",
       audioUrl: "/api/runs/test-job-id/audio",
       referenceQuality: {
         grade: "B",
@@ -103,8 +103,6 @@ describe("POST /api/clone", () => {
         vadActiveRatio: 0.8,
         warnings: [],
       },
-      referenceTranscript: null,
-      referenceLanguage: null,
       targetLanguage: "en",
       effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced" },
     });
