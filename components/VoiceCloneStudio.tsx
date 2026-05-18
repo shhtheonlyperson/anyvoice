@@ -1,225 +1,252 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
-  CheckCircle2,
   CircleStop,
-  Languages,
   Loader2,
   Mic,
-  Play,
-  ShieldCheck,
+  Monitor,
+  Moon,
+  Sun,
+  TriangleAlert,
   Upload,
   Wand2,
-  AudioLines,
 } from "lucide-react";
 
 type Locale = "zh-Hant" | "en";
+type Theme = "system" | "light" | "dark";
 type Status = "idle" | "requesting_mic" | "recording" | "submitting" | "ready" | "needs_worker" | "error";
-type SourceKind = "uploaded" | "recorded";
-type TranscriptSupport = "unknown" | "supported" | "unsupported";
+type SourceKind = "sample" | "uploaded" | "recorded";
+type ReferenceGrade = "A" | "B" | "C" | "D";
 
-interface SpeechRecognitionAlternativeLike {
-  transcript: string;
+interface ReferenceQuality {
+  grade: ReferenceGrade;
+  durationSec: number;
+  snrDb: number;
+  clippingRatio: number;
+  vadActiveRatio: number;
+  warnings: string[];
 }
 
-interface SpeechRecognitionResultLike {
-  isFinal: boolean;
-  length: number;
-  [index: number]: SpeechRecognitionAlternativeLike;
-}
-
-interface SpeechRecognitionEventLike {
-  resultIndex: number;
-  results: {
-    length: number;
-    [index: number]: SpeechRecognitionResultLike;
+interface ClonePayload {
+  status: Status;
+  audioUrl?: string;
+  message?: string;
+  jobId?: string;
+  referenceQuality?: ReferenceQuality;
+  referenceLanguage?: string | null;
+  targetLanguage?: string | null;
+  effectiveParams?: {
+    timesteps?: number;
+    cfgValue?: number;
+    denoise?: boolean;
+    qualityPreset?: string;
   };
 }
 
-interface SpeechRecognitionLike {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onend: (() => void) | null;
-  onerror: (() => void) | null;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  abort: () => void;
-  start: () => void;
-  stop: () => void;
-}
+const SONOGRAM_BARS = 64;
+const MAX_TARGET_CHARS = 4096;
+const MAX_RECORDING_SECONDS = 60;
 
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+const SAMPLE_VOICE_URL = "/sample-voice.wav";
+const SAMPLE_VOICE_FILENAME = "sample-voice.wav";
 
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitAudioContext?: typeof AudioContext;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  }
-}
+const DEFAULT_TARGET_TEXT = {
+  "zh-Hant": "你好，這是我的聲音。",
+  en: "Hello, this is my voice.",
+} as const;
 
 const copy = {
   "zh-Hant": {
     brand: "AnyVoice",
-    navModel: "VoxCPM2",
-    navPrd: "PRD",
     locale: "EN",
-    title: "把允許使用的聲音，變成可測試的語音分身。",
-    subtitle: "錄一段或上傳音檔，輸入要說的文字。接上本機 VoxCPM2 worker 後，就能產生同聲線的新語音。",
+    themeLight: "Light",
+    themeDark: "Dark",
+    themeSystem: "Auto",
+    workerMissingTitle: "目前環境沒有 VoxCPM2 worker",
+    workerMissingBody:
+      "Vercel 預覽不能跑 VoxCPM2。設 ANYVOICE_ENABLE_LOCAL_VOXCPM=1 並把 ANYVOICE_VOXCPM_PYTHON 指到本機後再送一次。",
+    errorTitle: "失敗",
+    sectionVoice: "你的聲音",
+    sectionText: "要說的話",
+    sourceSample: "示範聲音（小王子節錄）",
+    sourceRecorded: "瀏覽器錄音",
+    sourceUploaded: "上傳音檔",
     record: "錄音",
     requestingMic: "要求麥克風",
     stop: "停止",
-    upload: "上傳音檔",
-    sourceTitle: "聲音來源",
-    sourceHint: "支援錄音、mp3、wav、m4a、webm 與 ffmpeg 可讀音檔。",
-    selectedFile: "已選取",
-    targetTitle: "要合成的文字",
-    targetPlaceholder: "輸入你想讓這個聲音說出的內容。",
-    styleTitle: "語氣控制",
-    stylePlaceholder: "例如：calm, warm, slightly faster",
-    transcriptTitle: "參考音檔逐字稿",
-    transcriptPlaceholder: "選填。若逐字稿精準，會走 VoxCPM2 ultimate cloning。",
-    consent:
-      "我確認自己擁有這段聲音，或已取得明確授權，並且不會用於冒充、詐欺或誤導。",
+    upload: "上傳",
+    targetPlaceholder: "輸入你想讓這個聲音說出的內容…",
+    consent: "我擁有這段聲音、或已取得明確授權，且不會用於冒充、詐欺或誤導聽眾。",
     submit: "產生聲音",
     submitting: "送出中",
-    outputTitle: "輸出",
-    idleOutput: "完成後會在這裡播放。",
-    ready: "已完成",
-    needsWorker: "需要 VoxCPM2 worker",
-    needsWorkerBody:
-      "Vercel 預覽已啟用，但這個環境沒有跑大型 PyTorch 模型。把 ANYVOICE_ENABLE_LOCAL_VOXCPM=1 指到本機 VoxCPM2 Python 後再送出。",
-    error: "失敗",
-    runtimeTitle: "Runtime",
-    modeReference: "Reference clone",
-    modeUltimate: "Ultimate clone",
-    model: "Model",
-    worker: "Worker",
-    localWorker: "Local/GPU",
-    vercelHost: "Vercel UI",
-    safetyTitle: "Safety",
-    safetyBody: "API 會拒絕沒有授權確認的請求。v1 不做長期聲音庫。",
-    workflowTitle: "Clone Console",
-    workflowBody: "錄音或上傳、輸入文字、確認授權，送到 VoxCPM2。",
-    uploadCta: "選擇檔案",
-    uploadedSource: "上傳音檔",
-    recordedSource: "瀏覽器錄音",
-    sourceReady: "聲音來源已就緒，可先預覽或直接送出。",
-    fileSize: "大小",
-    fileDuration: "長度",
-    fileType: "格式",
-    recordReady: "瀏覽器錄音可用",
-    recording: "錄音中。按停止後會把錄音設為聲音來源。",
-    liveTranscriptTitle: "即時逐字稿",
-    liveTranscriptWaiting: "開始說話後，支援的瀏覽器會在這裡顯示即時文字。",
-    liveTranscriptUnsupported: "這個瀏覽器不支援即時逐字稿；錄音仍會正常保存。",
-    recordingTimer: "錄音時間",
+    outputStatusPending: "Processing",
+    outputStatusReady: "Ready",
+    outputStatusWarn: "Worker missing",
+    outputStatusError: "Failed",
+    outputAside: "結果",
+    warningCrossLingual: (refLang: string, targetLang: string) =>
+      `參考音是${refLang}，但目標文字是${targetLang} — 口音可能不自然。`,
+    warningClipping: "參考音有削波，建議重新錄製音量小一點。",
+    warningShort: "參考音偏短，相似度可能受影響。",
+    warningNoise: "參考音背景雜訊偏高，請在安靜環境再錄一次。",
+    noAudio: "請先錄音、上傳或保留示範聲音。",
+    noText: "請輸入要合成的文字。",
+    noConsent: "請先確認聲音授權。",
     recordingUnavailable: "這個瀏覽器不支援直接錄音，請改用上傳音檔。",
     micPermissionDenied: "瀏覽器沒有取得麥克風權限。請允許麥克風後再按一次錄音。",
     micMissing: "找不到可用的麥克風。請接上或啟用音訊輸入裝置。",
     recorderStartFailed: "無法啟動瀏覽器錄音。請改用上傳音檔，或換一個瀏覽器再試。",
     recordingEmpty: "沒有收到錄音資料。請再錄一次，或改用上傳音檔。",
-    noAudio: "請先錄音或上傳音檔。",
-    noText: "請輸入要合成的文字。",
-    noConsent: "請先確認聲音授權。",
+    langZh: "中文",
+    langEn: "英文",
+    langJa: "日文",
+    langKo: "韓文",
+    langOther: "另一種語言",
   },
   en: {
     brand: "AnyVoice",
-    navModel: "VoxCPM2",
-    navPrd: "PRD",
     locale: "繁中",
-    title: "Turn a permitted voice into a testable speech double.",
-    subtitle:
-      "Record or upload audio, enter the line, then connect a local VoxCPM2 worker to synthesize new speech in that voice.",
+    themeLight: "Light",
+    themeDark: "Dark",
+    themeSystem: "Auto",
+    workerMissingTitle: "No VoxCPM2 worker on this environment",
+    workerMissingBody:
+      "Vercel preview cannot run VoxCPM2. Set ANYVOICE_ENABLE_LOCAL_VOXCPM=1 and point ANYVOICE_VOXCPM_PYTHON at a local runtime, then resubmit.",
+    errorTitle: "Failed",
+    sectionVoice: "Your voice",
+    sectionText: "What to say",
+    sourceSample: "Sample voice (Petit Prince excerpt)",
+    sourceRecorded: "Browser recording",
+    sourceUploaded: "Uploaded audio",
     record: "Record",
     requestingMic: "Requesting mic",
     stop: "Stop",
-    upload: "Upload audio",
-    sourceTitle: "Voice source",
-    sourceHint: "Supports recording, mp3, wav, m4a, webm, and other ffmpeg-readable audio.",
-    selectedFile: "Selected",
-    targetTitle: "Text to synthesize",
-    targetPlaceholder: "Write what this voice should say.",
-    styleTitle: "Style control",
-    stylePlaceholder: "Example: calm, warm, slightly faster",
-    transcriptTitle: "Reference transcript",
-    transcriptPlaceholder: "Optional. Exact transcript enables VoxCPM2 ultimate cloning.",
+    upload: "Upload",
+    targetPlaceholder: "Write the line you want this voice to say…",
     consent:
-      "I own this voice or have explicit permission to use it, and I will not use it for impersonation, fraud, or deception.",
+      "I own this voice recording, or have explicit permission from the speaker to use it, and I will not use it for impersonation, fraud, or to mislead listeners.",
     submit: "Generate voice",
     submitting: "Submitting",
-    outputTitle: "Output",
-    idleOutput: "Generated audio will play here.",
-    ready: "Ready",
-    needsWorker: "VoxCPM2 worker needed",
-    needsWorkerBody:
-      "The Vercel preview is live, but this environment is not running the large PyTorch model. Set ANYVOICE_ENABLE_LOCAL_VOXCPM=1 and point ANYVOICE_VOXCPM_PYTHON at a local VoxCPM2 runtime.",
-    error: "Failed",
-    runtimeTitle: "Runtime",
-    modeReference: "Reference clone",
-    modeUltimate: "Ultimate clone",
-    model: "Model",
-    worker: "Worker",
-    localWorker: "Local/GPU",
-    vercelHost: "Vercel UI",
-    safetyTitle: "Safety",
-    safetyBody: "The API rejects requests without permission confirmation. v1 does not keep a long-term voice library.",
-    workflowTitle: "Clone Console",
-    workflowBody: "Record or upload, enter text, confirm permission, send to VoxCPM2.",
-    uploadCta: "Choose file",
-    uploadedSource: "Uploaded audio",
-    recordedSource: "Browser recording",
-    sourceReady: "Voice source is ready. Preview it or submit the request.",
-    fileSize: "Size",
-    fileDuration: "Duration",
-    fileType: "Format",
-    recordReady: "Browser recording available",
-    recording: "Recording. Press stop to use this clip as the voice source.",
-    liveTranscriptTitle: "Live transcript",
-    liveTranscriptWaiting: "Start speaking; supported browsers will stream text here.",
-    liveTranscriptUnsupported: "This browser does not support live transcription. Recording still works.",
-    recordingTimer: "Recording time",
+    outputStatusPending: "Processing",
+    outputStatusReady: "Ready",
+    outputStatusWarn: "Worker missing",
+    outputStatusError: "Failed",
+    outputAside: "Result",
+    warningCrossLingual: (refLang: string, targetLang: string) =>
+      `Reference is ${refLang} but the target is ${targetLang} — accent may be unnatural.`,
+    warningClipping: "Reference clips at peaks. Record again with lower input gain.",
+    warningShort: "Reference is short. Similarity may suffer.",
+    warningNoise: "Reference has high background noise. Record in a quieter room.",
+    noAudio: "Record, upload, or keep the sample voice first.",
+    noText: "Enter target text first.",
+    noConsent: "Confirm voice permission first.",
     recordingUnavailable: "This browser does not support direct recording. Upload an audio file instead.",
     micPermissionDenied: "Microphone permission was not granted. Allow mic access, then press Record again.",
     micMissing: "No available microphone was found. Connect or enable an audio input device.",
     recorderStartFailed: "Browser recording could not start. Upload audio instead, or try another browser.",
     recordingEmpty: "No recording data was captured. Record again, or upload an audio file instead.",
-    noAudio: "Record or upload audio first.",
-    noText: "Enter target text first.",
-    noConsent: "Confirm voice permission first.",
+    langZh: "Mandarin",
+    langEn: "English",
+    langJa: "Japanese",
+    langKo: "Korean",
+    langOther: "another language",
   },
-};
+} satisfies Record<Locale, Record<string, unknown>>;
 
-function createRecordedFile(chunks: Blob[], mimeType: string): File {
+function createRecordedFile(chunks: Blob[], mimeType: string, stamp: number): File {
   const type = mimeType || "audio/webm";
   const extension = type.includes("mp4") ? "m4a" : type.includes("wav") ? "wav" : "webm";
-  return new File(chunks, `recording-${Date.now()}.${extension}`, { type });
+  return new File(chunks, `recording-${stamp}.${extension}`, { type });
 }
 
 function formatDuration(seconds: number | null): string {
-  if (!seconds || !Number.isFinite(seconds)) return "--:--";
+  if (seconds === null || !Number.isFinite(seconds)) return "--:--";
   const total = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(total / 60);
   const remainingSeconds = total % 60;
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 function supportedRecorderOptions(): MediaRecorderOptions | undefined {
   if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
     return undefined;
   }
-
   const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/wav"].find((type) =>
     MediaRecorder.isTypeSupported(type),
   );
-
   return mimeType ? { mimeType } : undefined;
+}
+
+async function fetchSampleVoiceFile(): Promise<File> {
+  const response = await fetch(SAMPLE_VOICE_URL, { cache: "force-cache" });
+  if (!response.ok) throw new Error(`sample voice fetch failed: ${response.status}`);
+  const buffer = await response.arrayBuffer();
+  return new File([buffer], SAMPLE_VOICE_FILENAME, { type: "audio/wav" });
+}
+
+function extractWaveformPeaks(file: File, bins: number): Promise<number[]> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextConstructor) {
+        resolve([]);
+        return;
+      }
+      const arrayBuffer = await file.arrayBuffer();
+      const audioContext = new AudioContextConstructor();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      const channel = audioBuffer.getChannelData(0);
+      const samplesPerBin = Math.max(1, Math.floor(channel.length / bins));
+      const peaks: number[] = new Array(bins).fill(0);
+      for (let i = 0; i < bins; i += 1) {
+        let max = 0;
+        const start = i * samplesPerBin;
+        const end = Math.min(channel.length, start + samplesPerBin);
+        for (let j = start; j < end; j += 1) {
+          const value = Math.abs(channel[j] ?? 0);
+          if (value > max) max = value;
+        }
+        peaks[i] = max;
+      }
+      const ceiling = Math.max(...peaks, 0.001);
+      const normalized = peaks.map((peak) => peak / ceiling);
+      await audioContext.close();
+      resolve(normalized);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+declare global {
+  interface Window {
+    webkitAudioContext?: typeof AudioContext;
+  }
+}
+
+function localizeLanguage(code: string | null | undefined, t: typeof copy[Locale]): string {
+  if (!code) return t.langOther;
+  const c = code.toLowerCase();
+  if (c.startsWith("zh")) return t.langZh;
+  if (c.startsWith("en")) return t.langEn;
+  if (c.startsWith("ja")) return t.langJa;
+  if (c.startsWith("ko")) return t.langKo;
+  return t.langOther;
+}
+
+function describeWarning(code: string, payload: ClonePayload, t: typeof copy[Locale]): string | null {
+  if (code.startsWith("cross_lingual")) {
+    const parts = code.split(":")[1]?.split("->") ?? [];
+    const refLang = localizeLanguage(parts[0] || payload.referenceLanguage, t);
+    const targetLang = localizeLanguage(parts[1] || payload.targetLanguage, t);
+    return t.warningCrossLingual(refLang, targetLang);
+  }
+  if (code === "clipping" || code.startsWith("clipping")) return t.warningClipping;
+  if (code === "short" || code.startsWith("short")) return t.warningShort;
+  if (code === "noisy" || code === "low_snr" || code.startsWith("snr")) return t.warningNoise;
+  return code;
 }
 
 export function VoiceCloneStudio() {
@@ -228,33 +255,42 @@ export function VoiceCloneStudio() {
     const saved = window.localStorage.getItem("anyvoice:locale");
     return saved === "en" || saved === "zh-Hant" ? saved : "zh-Hant";
   });
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === "undefined") return "system";
+    const saved = window.localStorage.getItem("anyvoice:theme");
+    return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
+  });
   const t = copy[locale];
+
   const [status, setStatus] = useState<Status>("idle");
   const [voiceFile, setVoiceFile] = useState<File | null>(null);
-  const [targetText, setTargetText] = useState("");
-  const [style, setStyle] = useState("");
-  const [promptTranscript, setPromptTranscript] = useState("");
+  const [sourceKind, setSourceKind] = useState<SourceKind>("sample");
+  const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
+  const [wavePeaks, setWavePeaks] = useState<number[]>([]);
+  const [playbackProgress, setPlaybackProgress] = useState(0);
+  const [userTargetText, setUserTargetText] = useState<string | null>(null);
   const [consent, setConsent] = useState(false);
   const [audioUrl, setAudioUrl] = useState("");
   const [message, setMessage] = useState("");
   const [recordingSupported, setRecordingSupported] = useState(true);
-  const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
-  const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
-  const [sourceDuration, setSourceDuration] = useState<number | null>(null);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const [inputLevel, setInputLevel] = useState(0);
-  const [transcriptSupport, setTranscriptSupport] = useState<TranscriptSupport>("unknown");
-  const [liveTranscript, setLiveTranscript] = useState("");
-  const [interimTranscript, setInterimTranscript] = useState("");
+
+  const [referenceQuality, setReferenceQuality] = useState<ReferenceQuality | null>(null);
+  const [lastResponse, setLastResponse] = useState<ClonePayload | null>(null);
+
+  const targetText = userTargetText ?? DEFAULT_TARGET_TEXT[locale];
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const sourcePreviewUrlRef = useRef("");
+  const sourceAudioRef = useRef<HTMLAudioElement | null>(null);
   const recordingTimerRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const finalTranscriptRef = useRef("");
+  const recordingDeadlineRef = useRef<number | null>(null);
 
+  /* ---------- Theme & locale ---------- */
   useEffect(() => {
     window.localStorage.setItem("anyvoice:locale", locale);
     document.documentElement.lang = locale;
@@ -262,35 +298,61 @@ export function VoiceCloneStudio() {
   }, [locale]);
 
   useEffect(() => {
+    window.localStorage.setItem("anyvoice:theme", theme);
+    if (theme === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.dataset.theme = theme;
+    }
+  }, [theme]);
+
+  /* ---------- Cleanup ---------- */
+  useEffect(() => {
     return () => {
       if (sourcePreviewUrlRef.current) URL.revokeObjectURL(sourcePreviewUrlRef.current);
       if (recordingTimerRef.current) window.clearInterval(recordingTimerRef.current);
       if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
-      recognitionRef.current?.abort();
       void audioContextRef.current?.close();
     };
   }, []);
 
-  const mode = useMemo(
-    () => (promptTranscript.trim() ? t.modeUltimate : t.modeReference),
-    [promptTranscript, t.modeReference, t.modeUltimate],
-  );
-
-  const sourceLabel = sourceKind === "recorded" ? t.recordedSource : t.uploadedSource;
-  const resultMessage = status === "idle" && voiceFile ? t.sourceReady : status === "idle" ? t.idleOutput : message;
-
-  function selectVoiceFile(file: File, kind: SourceKind) {
+  const adoptVoiceFile = useCallback(async (file: File, kind: SourceKind) => {
     if (sourcePreviewUrlRef.current) URL.revokeObjectURL(sourcePreviewUrlRef.current);
     const previewUrl = URL.createObjectURL(file);
     sourcePreviewUrlRef.current = previewUrl;
     setVoiceFile(file);
     setSourceKind(kind);
     setSourcePreviewUrl(previewUrl);
-    setSourceDuration(null);
+    setPlaybackProgress(0);
     setAudioUrl("");
     setStatus("idle");
     setMessage("");
-  }
+    setWavePeaks([]);
+    setReferenceQuality(null);
+    setLastResponse(null);
+    try {
+      const peaks = await extractWaveformPeaks(file, SONOGRAM_BARS);
+      setWavePeaks(peaks);
+    } catch {
+      /* waveform extraction is best-effort */
+    }
+  }, []);
+
+  /* ---------- Load sample voice on mount ---------- */
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const sample = await fetchSampleVoiceFile();
+        if (active) await adoptVoiceFile(sample, "sample");
+      } catch {
+        /* sample is optional; user can still record/upload */
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [adoptVoiceFile]);
 
   function stopRecordingTimer() {
     if (recordingTimerRef.current) {
@@ -302,10 +364,15 @@ export function VoiceCloneStudio() {
   function startRecordingTimer() {
     stopRecordingTimer();
     const startedAt = Date.now();
+    recordingDeadlineRef.current = startedAt + MAX_RECORDING_SECONDS * 1000;
     setRecordingElapsed(0);
     recordingTimerRef.current = window.setInterval(() => {
-      setRecordingElapsed((Date.now() - startedAt) / 1000);
-    }, 250);
+      const elapsed = (Date.now() - startedAt) / 1000;
+      setRecordingElapsed(elapsed);
+      if (elapsed >= MAX_RECORDING_SECONDS) {
+        stopRecording();
+      }
+    }, 200);
   }
 
   function stopInputMeter() {
@@ -349,81 +416,15 @@ export function VoiceCloneStudio() {
     animationFrameRef.current = window.requestAnimationFrame(tick);
   }
 
-  function stopLiveTranscription() {
-    const recognition = recognitionRef.current;
-    recognitionRef.current = null;
-    if (recognition) {
-      recognition.onend = null;
-      recognition.onerror = null;
-      recognition.onresult = null;
-      recognition.stop();
-    }
-  }
-
-  function startLiveTranscription() {
-    setLiveTranscript("");
-    setInterimTranscript("");
-    finalTranscriptRef.current = "";
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Recognition) {
-      setTranscriptSupport("unsupported");
-      return;
-    }
-
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = locale === "zh-Hant" ? "zh-TW" : "en-US";
-    recognition.onresult = (event) => {
-      let interim = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const transcript = result[0]?.transcript.trim();
-        if (!transcript) continue;
-        if (result.isFinal) {
-          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`.trim();
-        } else {
-          interim = `${interim} ${transcript}`.trim();
-        }
-      }
-      setLiveTranscript(finalTranscriptRef.current);
-      setInterimTranscript(interim);
-    };
-    recognition.onerror = () => {
-      setTranscriptSupport("unsupported");
-      setInterimTranscript("");
-    };
-    recognition.onend = () => {
-      setInterimTranscript("");
-    };
-
-    try {
-      recognition.start();
-      recognitionRef.current = recognition;
-      setTranscriptSupport("supported");
-    } catch {
-      setTranscriptSupport("unsupported");
-    }
-  }
-
   function cleanupRecordingSession() {
     stopRecordingTimer();
     stopInputMeter();
-    stopLiveTranscription();
-  }
-
-  function waveBarHeight(index: number): number {
-    const shape = 0.34 + ((index * 17) % 11) / 18;
-    const active = status === "recording" || status === "requesting_mic";
-    const boost = active ? inputLevel * (34 + ((index * 7) % 18)) : 0;
-    return 16 + shape * 46 + boost;
   }
 
   async function startRecording() {
     cleanupRecordingSession();
     setMessage("");
     setAudioUrl("");
-    setSourceDuration(null);
 
     if (typeof navigator.mediaDevices?.getUserMedia !== "function" || typeof MediaRecorder === "undefined") {
       setRecordingSupported(false);
@@ -433,7 +434,6 @@ export function VoiceCloneStudio() {
     }
 
     setStatus("requesting_mic");
-    setMessage(t.requestingMic);
 
     let stream: MediaStream | null = null;
     try {
@@ -450,26 +450,23 @@ export function VoiceCloneStudio() {
         setStatus("error");
         setMessage(t.recorderStartFailed);
       };
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         stream?.getTracks().forEach((track) => track.stop());
         cleanupRecordingSession();
         mediaRecorderRef.current = null;
         if (chunksRef.current.length === 0) {
-          setVoiceFile(null);
           setStatus("error");
           setMessage(t.recordingEmpty);
           return;
         }
-        const file = createRecordedFile(chunksRef.current, recorder.mimeType);
-        selectVoiceFile(file, "recorded");
+        const file = createRecordedFile(chunksRef.current, recorder.mimeType, Date.now());
+        await adoptVoiceFile(file, "recorded");
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
       startInputMeter(stream);
       startRecordingTimer();
-      startLiveTranscription();
       setStatus("recording");
-      setMessage(t.recording);
     } catch (error) {
       stream?.getTracks().forEach((track) => track.stop());
       cleanupRecordingSession();
@@ -492,11 +489,11 @@ export function VoiceCloneStudio() {
     recorder.stop();
   }
 
-  function onUpload(event: ChangeEvent<HTMLInputElement>) {
+  async function onUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) {
       cleanupRecordingSession();
-      selectVoiceFile(file, "uploaded");
+      await adoptVoiceFile(file, "uploaded");
       event.currentTarget.value = "";
     }
   }
@@ -504,6 +501,8 @@ export function VoiceCloneStudio() {
   async function submit() {
     setMessage("");
     setAudioUrl("");
+    setReferenceQuality(null);
+    setLastResponse(null);
 
     if (!voiceFile) {
       setStatus("error");
@@ -525,262 +524,317 @@ export function VoiceCloneStudio() {
     const form = new FormData();
     form.set("voice", voiceFile);
     form.set("targetText", targetText);
-    form.set("style", style);
-    form.set("promptTranscript", promptTranscript);
+    form.set("style", "");
+    form.set("promptTranscript", "");
     form.set("consent", "yes");
+    form.set("quality", "balanced");
 
-    const response = await fetch("/api/clone", {
-      method: "POST",
-      body: form,
-    });
-    const payload = (await response.json()) as {
-      status: Status;
-      audioUrl?: string;
-      message?: string;
-    };
+    const response = await fetch("/api/clone", { method: "POST", body: form });
+    const payload = (await response.json()) as ClonePayload;
+
+    setLastResponse(payload);
+    if (payload.referenceQuality) setReferenceQuality(payload.referenceQuality);
 
     if (!response.ok || payload.status === "error") {
       setStatus("error");
-      setMessage(payload.message || t.error);
+      setMessage(payload.message || t.errorTitle);
       return;
     }
     if (payload.status === "needs_worker") {
       setStatus("needs_worker");
-      setMessage(payload.message || t.needsWorkerBody);
+      setMessage(payload.message || t.workerMissingBody);
       return;
     }
     setStatus("ready");
     setAudioUrl(payload.audioUrl || "");
-    setMessage(t.ready);
   }
 
+  const showWorkerBanner = status === "needs_worker";
+  const isRecording = status === "recording" || status === "requesting_mic";
+  const showOutput = status === "submitting" || status === "ready" || status === "needs_worker";
+  const showInlineError = status === "error" && message;
+
+  const sourceLabel =
+    sourceKind === "sample"
+      ? t.sourceSample
+      : sourceKind === "recorded"
+        ? t.sourceRecorded
+        : t.sourceUploaded;
+
+  const submitDisabled = status === "submitting" || isRecording;
+  const recordingApproachingLimit = isRecording && recordingElapsed >= MAX_RECORDING_SECONDS - 8;
+  const targetNearLimit = targetText.length >= MAX_TARGET_CHARS * 0.8;
+
+  const warnings = useMemo(() => {
+    if (!referenceQuality || !lastResponse) return [];
+    return referenceQuality.warnings
+      .map((code) => describeWarning(code, lastResponse, t))
+      .filter((line): line is string => Boolean(line));
+  }, [referenceQuality, lastResponse, t]);
+
+  /* ---------- Sonogram bar heights ---------- */
+  const sonogramBars = useMemo(() => {
+    const bars = new Array(SONOGRAM_BARS).fill(0).map((_, index) => {
+      if (isRecording) {
+        const shape = 0.42 + Math.min(1.4, inputLevel * (1.1 + (index % 7) / 9));
+        return { height: 18 + shape * 38, intensity: shape };
+      }
+      const peak = wavePeaks[index];
+      if (peak !== undefined && peak > 0) {
+        const normalized = Math.max(0.06, peak);
+        return { height: 8 + normalized * 80, intensity: normalized };
+      }
+      const fallback = 12 + ((index * 17) % 9) * 4;
+      return { height: fallback, intensity: 0.18 };
+    });
+    return bars;
+  }, [isRecording, inputLevel, wavePeaks]);
+
   return (
-    <main className="studio-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <span />
+    <main className="shell">
+      <header className="app-bar" role="banner">
+        <Link href="/" className="brand brand--mark-only" aria-label={t.brand}>
+          <span className="brand-mark" aria-hidden>
+            <i />
+            <i />
+            <i />
+            <i />
           </span>
-          <span>{t.brand}</span>
-        </div>
-        <nav className="nav-actions" aria-label="AnyVoice">
-          <a href="https://huggingface.co/openbmb/VoxCPM2" target="_blank" rel="noreferrer">
-            {t.navModel}
-          </a>
-          <a href="/prd">{t.navPrd}</a>
+        </Link>
+
+        <div className="app-bar-right">
+          <ThemeToggle theme={theme} onChange={setTheme} labels={t} />
           <button
-            className="icon-button"
+            className="locale-toggle"
             type="button"
             onClick={() => setLocale(locale === "zh-Hant" ? "en" : "zh-Hant")}
             aria-label="Toggle language"
           >
-            <Languages size={17} />
-            <span>{t.locale}</span>
+            {t.locale}
           </button>
-        </nav>
+        </div>
       </header>
 
-      <section className="intro-grid">
-        <div>
-          <h1>{t.title}</h1>
-          <p>{t.subtitle}</p>
-        </div>
-        <div className="runtime-strip" aria-label={t.runtimeTitle}>
+      {showWorkerBanner ? (
+        <div className="notice notice--warn" role="status">
+          <span className="notice-glyph">
+            <TriangleAlert size={13} />
+          </span>
           <div>
-            <span>{t.model}</span>
-            <strong>openbmb/VoxCPM2</strong>
-          </div>
-          <div>
-            <span>{t.worker}</span>
-            <strong>{t.vercelHost} + {t.localWorker}</strong>
-          </div>
-          <div>
-            <span>Mode</span>
-            <strong>{mode}</strong>
+            <strong>{t.workerMissingTitle}</strong>
+            <p>{t.workerMissingBody}</p>
           </div>
         </div>
-      </section>
+      ) : null}
 
-      <section className="workspace-grid" aria-label={t.workflowTitle}>
-        <div className="console-panel">
-          <div className="panel-heading">
-            <div>
-              <h2>{t.workflowTitle}</h2>
-              <p>{t.workflowBody}</p>
+      {showInlineError ? (
+        <div className="notice notice--error" role="alert">
+          <span className="notice-glyph">!</span>
+          <div>
+            <strong>{t.errorTitle}</strong>
+            <p>{message}</p>
+          </div>
+        </div>
+      ) : null}
+
+      <section className="playground" aria-label="AnyVoice studio">
+        {/* 1. Voice source */}
+        <section className="surface surface--dark" aria-labelledby="h-voice">
+          <h2 id="h-voice" className="visually-hidden">{t.sectionVoice}</h2>
+
+          <div className="booth">
+            <div className={`sonogram ${isRecording ? "is-recording" : voiceFile ? "is-captured" : "is-idle"}`} aria-hidden>
+              {sonogramBars.map((bar, index) => (
+                <span
+                  key={index}
+                  style={
+                    {
+                      "--i": index,
+                      "--h": `${bar.height}px`,
+                      opacity: 0.35 + bar.intensity * 0.55,
+                    } as React.CSSProperties
+                  }
+                />
+              ))}
+              {voiceFile && !isRecording ? (
+                <span
+                  className="sonogram-cursor"
+                  aria-hidden
+                  style={{ left: `${playbackProgress * 100}%` }}
+                />
+              ) : null}
             </div>
-            <AudioLines size={28} />
+
+            <div className="booth-actions">
+              {status === "requesting_mic" ? (
+                <button className="btn btn--on-dark btn--lg" type="button" disabled>
+                  <Loader2 className="spin" size={16} /> {t.requestingMic}
+                </button>
+              ) : status === "recording" ? (
+                <button className="btn btn--on-dark btn--lg" type="button" onClick={stopRecording}>
+                  <CircleStop size={16} /> {t.stop}
+                </button>
+              ) : (
+                <button
+                  className="btn btn--primary btn--lg"
+                  type="button"
+                  onClick={startRecording}
+                  disabled={!recordingSupported}
+                >
+                  <Mic size={16} /> {t.record}
+                </button>
+              )}
+              <label className="btn btn--on-dark file-trigger">
+                <Upload size={14} /> {t.upload}
+                <input type="file" accept="audio/*" onChange={onUpload} aria-label={t.upload} />
+              </label>
+            </div>
           </div>
 
-          <div className="voice-source">
-            <div className="section-label">
-              <h3>{t.sourceTitle}</h3>
-              <p>{t.sourceHint}</p>
-            </div>
-            <div className={`wave-card ${status === "recording" ? "is-recording" : ""}`}>
-              <div className="wave-bars" aria-hidden="true">
-                {Array.from({ length: 44 }).map((_, index) => (
-                  <span
-                    key={index}
-                    style={
-                      {
-                        "--i": index,
-                        height: `${waveBarHeight(index)}px`,
-                      } as React.CSSProperties
-                    }
-                  />
-                ))}
+          <div className="source-readout">
+            {sourceKind !== "sample" ? (
+              <strong title={voiceFile?.name}>{sourceLabel}</strong>
+            ) : null}
+            {isRecording ? (
+              <div className={`recording-cap ${recordingApproachingLimit ? "is-warn" : ""}`}>
+                <strong>{formatDuration(recordingElapsed)}</strong>
+                <small>/ {formatDuration(MAX_RECORDING_SECONDS)}</small>
               </div>
-              <div className="source-actions">
-                {status === "recording" ? (
-                  <button className="secondary-action" type="button" onClick={stopRecording}>
-                    <CircleStop size={18} />
-                    {t.stop}
-                  </button>
-                ) : (
-                  <button
-                    className="primary-action"
-                    type="button"
-                    onClick={startRecording}
-                    disabled={!recordingSupported || status === "requesting_mic" || status === "submitting"}
-                  >
-                    {status === "requesting_mic" ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
-                    {status === "requesting_mic" ? t.requestingMic : t.record}
-                  </button>
-                )}
-                <label className="secondary-action file-action">
-                  <Upload size={18} />
-                  {t.uploadCta}
-                  <input accept="audio/*" type="file" onChange={onUpload} />
-                </label>
-              </div>
-            </div>
-            <div className="file-readout">
-              <span>{voiceFile ? t.selectedFile : recordingSupported ? t.recordReady : t.recordingUnavailable}</span>
-              <strong>{voiceFile ? voiceFile.name : t.upload}</strong>
-            </div>
+            ) : voiceFile ? (
+              <audio
+                ref={sourceAudioRef}
+                controls
+                src={sourcePreviewUrl}
+                onTimeUpdate={(event) => {
+                  const target = event.currentTarget;
+                  if (target.duration) setPlaybackProgress(target.currentTime / target.duration);
+                }}
+                onEnded={() => setPlaybackProgress(0)}
+              />
+            ) : null}
           </div>
+        </section>
 
-          <label className="field-block">
-            <span>{t.targetTitle}</span>
+        {/* 2. Target text */}
+        <section className="surface surface--cream" aria-labelledby="h-text">
+          <h2 id="h-text" className="visually-hidden">{t.sectionText}</h2>
+
+          <div className="field">
+            {targetNearLimit ? (
+              <div className="field-label field-label--right">
+                <span className="field-counter">
+                  {targetText.length} / {MAX_TARGET_CHARS}
+                </span>
+              </div>
+            ) : null}
             <textarea
+              className="textarea is-hero"
               value={targetText}
-              onChange={(event) => setTargetText(event.target.value)}
+              onChange={(event) => {
+                setUserTargetText(event.target.value.slice(0, MAX_TARGET_CHARS));
+              }}
               placeholder={t.targetPlaceholder}
               rows={5}
             />
-          </label>
-
-          <div className="split-fields">
-            <label className="field-block">
-              <span>{t.styleTitle}</span>
-              <input
-                value={style}
-                onChange={(event) => setStyle(event.target.value)}
-                placeholder={t.stylePlaceholder}
-              />
-            </label>
-            <label className="field-block">
-              <span>{t.transcriptTitle}</span>
-              <textarea
-                value={promptTranscript}
-                onChange={(event) => setPromptTranscript(event.target.value)}
-                placeholder={t.transcriptPlaceholder}
-                rows={3}
-              />
-            </label>
           </div>
+        </section>
 
-          <label className="consent-row">
-            <input checked={consent} type="checkbox" onChange={(event) => setConsent(event.target.checked)} />
+        {/* 3. Submit panel — inline consent + generate button */}
+        <div className="submit-panel">
+          <label className="consent-inline">
+            <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
             <span>{t.consent}</span>
           </label>
-
-          <button className="submit-action" type="button" onClick={submit} disabled={status === "submitting"}>
-            {status === "submitting" ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
+          <button
+            className="btn btn--primary btn--lg btn--submit"
+            type="button"
+            onClick={submit}
+            disabled={submitDisabled}
+          >
+            {status === "submitting" ? <Loader2 className="spin" size={16} /> : <Wand2 size={16} />}
             {status === "submitting" ? t.submitting : t.submit}
           </button>
         </div>
 
-        <aside className="result-panel">
-          <div className="result-surface">
-            <div className="panel-heading compact">
-              <div>
-                <h2>{t.outputTitle}</h2>
-                <p>{resultMessage}</p>
-              </div>
-              {status === "ready" ? <CheckCircle2 size={25} /> : <Play size={25} />}
+        {/* 4. Output (conditional) */}
+        {showOutput ? (
+          <section className="surface surface--dark surface--output" aria-labelledby="h-output">
+            <h2 id="h-output" className="visually-hidden">{t.outputAside}</h2>
+            <div className="surface-head surface-head--bare">
+              <span
+                className={`output-status ${
+                  status === "submitting"
+                    ? "is-pending"
+                    : status === "needs_worker"
+                      ? "is-warn"
+                      : ""
+                }`}
+              >
+                <span className="dot" />
+                {status === "submitting"
+                  ? t.outputStatusPending
+                  : status === "ready"
+                    ? t.outputStatusReady
+                    : t.outputStatusWarn}
+              </span>
             </div>
 
-            {audioUrl ? (
-              <audio controls src={audioUrl} />
-            ) : status === "recording" || status === "requesting_mic" ? (
-              <div className="live-recorder">
-                <div className="recorder-time">
-                  <span>{t.recordingTimer}</span>
-                  <strong>{formatDuration(recordingElapsed)}</strong>
-                </div>
-                <div className="level-meter" aria-hidden="true">
-                  {Array.from({ length: 18 }).map((_, index) => (
-                    <span
-                      key={index}
-                      style={
-                        {
-                          transform: `scaleY(${0.28 + Math.min(1, inputLevel * (1.2 + index / 28))})`,
-                        } as React.CSSProperties
-                      }
-                    />
+            <div className="output-stack">
+              <div className="output-frame">
+                {status === "submitting" ? (
+                  <div className="level-meter is-loading" aria-hidden>
+                    {Array.from({ length: 20 }).map((_, index) => (
+                      <span key={index} style={{ "--i": index } as React.CSSProperties} />
+                    ))}
+                  </div>
+                ) : audioUrl ? (
+                  <audio controls src={audioUrl} />
+                ) : (
+                  <p className="output-text">{message || t.workerMissingBody}</p>
+                )}
+                {status === "ready" && targetText ? <p className="output-text">{targetText}</p> : null}
+              </div>
+
+              {warnings.length > 0 ? (
+                <ul className="reference-warnings">
+                  {warnings.map((line, index) => (
+                    <li key={index}>
+                      <TriangleAlert size={12} /> {line}
+                    </li>
                   ))}
-                </div>
-                <div className="transcript-box">
-                  <span>{t.liveTranscriptTitle}</span>
-                  <p>
-                    {liveTranscript ||
-                      (transcriptSupport === "unsupported" ? t.liveTranscriptUnsupported : t.liveTranscriptWaiting)}
-                  </p>
-                  {interimTranscript ? <em>{interimTranscript}</em> : null}
-                </div>
-              </div>
-            ) : sourcePreviewUrl && voiceFile ? (
-              <div className="source-preview">
-                <div className="source-preview-heading">
-                  <span>{sourceLabel}</span>
-                  <strong>{voiceFile.name}</strong>
-                </div>
-                <audio controls src={sourcePreviewUrl} onLoadedMetadata={(event) => setSourceDuration(event.currentTarget.duration)} />
-                <dl>
-                  <div>
-                    <dt>{t.fileSize}</dt>
-                    <dd>{formatFileSize(voiceFile.size)}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.fileDuration}</dt>
-                    <dd>{formatDuration(sourceDuration)}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.fileType}</dt>
-                    <dd>{voiceFile.type || "audio"}</dd>
-                  </div>
-                </dl>
-              </div>
-            ) : (
-              <div className={`output-state ${status}`}>
-                {status === "submitting" ? <Loader2 className="spin" size={30} /> : <AudioLines size={34} />}
-              </div>
-            )}
-          </div>
-
-          <div className="safety-panel">
-            <ShieldCheck size={24} />
-            <div>
-              <h3>{status === "needs_worker" ? t.needsWorker : t.safetyTitle}</h3>
-              <p>{status === "needs_worker" ? t.needsWorkerBody : t.safetyBody}</p>
+                </ul>
+              ) : null}
             </div>
-          </div>
-        </aside>
+          </section>
+        ) : null}
       </section>
     </main>
+  );
+}
+
+function ThemeToggle({
+  theme,
+  onChange,
+  labels,
+}: {
+  theme: Theme;
+  onChange: (next: Theme) => void;
+  labels: { themeLight: string; themeDark: string; themeSystem: string };
+}) {
+  const order: Theme[] = ["system", "light", "dark"];
+  const next = order[(order.indexOf(theme) + 1) % order.length];
+  const Icon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
+  const currentLabel =
+    theme === "light" ? labels.themeLight : theme === "dark" ? labels.themeDark : labels.themeSystem;
+  return (
+    <button
+      type="button"
+      className="theme-cycle"
+      onClick={() => onChange(next)}
+      aria-label={`Theme: ${currentLabel}`}
+      title={currentLabel}
+    >
+      <Icon size={14} />
+    </button>
   );
 }
