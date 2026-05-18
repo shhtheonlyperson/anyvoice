@@ -16,6 +16,48 @@ import {
 
 type Locale = "zh-Hant" | "en";
 type Status = "idle" | "requesting_mic" | "recording" | "submitting" | "ready" | "needs_worker" | "error";
+type SourceKind = "uploaded" | "recorded";
+type TranscriptSupport = "unknown" | "supported" | "unsupported";
+
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  length: number;
+  [index: number]: SpeechRecognitionAlternativeLike;
+}
+
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: {
+    length: number;
+    [index: number]: SpeechRecognitionResultLike;
+  };
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  abort: () => void;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitAudioContext?: typeof AudioContext;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
 
 const copy = {
   "zh-Hant": {
@@ -61,8 +103,18 @@ const copy = {
     workflowTitle: "Clone Console",
     workflowBody: "錄音或上傳、輸入文字、確認授權，送到 VoxCPM2。",
     uploadCta: "選擇檔案",
+    uploadedSource: "上傳音檔",
+    recordedSource: "瀏覽器錄音",
+    sourceReady: "聲音來源已就緒，可先預覽或直接送出。",
+    fileSize: "大小",
+    fileDuration: "長度",
+    fileType: "格式",
     recordReady: "瀏覽器錄音可用",
     recording: "錄音中。按停止後會把錄音設為聲音來源。",
+    liveTranscriptTitle: "即時逐字稿",
+    liveTranscriptWaiting: "開始說話後，支援的瀏覽器會在這裡顯示即時文字。",
+    liveTranscriptUnsupported: "這個瀏覽器不支援即時逐字稿；錄音仍會正常保存。",
+    recordingTimer: "錄音時間",
     recordingUnavailable: "這個瀏覽器不支援直接錄音，請改用上傳音檔。",
     micPermissionDenied: "瀏覽器沒有取得麥克風權限。請允許麥克風後再按一次錄音。",
     micMissing: "找不到可用的麥克風。請接上或啟用音訊輸入裝置。",
@@ -116,8 +168,18 @@ const copy = {
     workflowTitle: "Clone Console",
     workflowBody: "Record or upload, enter text, confirm permission, send to VoxCPM2.",
     uploadCta: "Choose file",
+    uploadedSource: "Uploaded audio",
+    recordedSource: "Browser recording",
+    sourceReady: "Voice source is ready. Preview it or submit the request.",
+    fileSize: "Size",
+    fileDuration: "Duration",
+    fileType: "Format",
     recordReady: "Browser recording available",
     recording: "Recording. Press stop to use this clip as the voice source.",
+    liveTranscriptTitle: "Live transcript",
+    liveTranscriptWaiting: "Start speaking; supported browsers will stream text here.",
+    liveTranscriptUnsupported: "This browser does not support live transcription. Recording still works.",
+    recordingTimer: "Recording time",
     recordingUnavailable: "This browser does not support direct recording. Upload an audio file instead.",
     micPermissionDenied: "Microphone permission was not granted. Allow mic access, then press Record again.",
     micMissing: "No available microphone was found. Connect or enable an audio input device.",
@@ -133,6 +195,19 @@ function createRecordedFile(chunks: Blob[], mimeType: string): File {
   const type = mimeType || "audio/webm";
   const extension = type.includes("mp4") ? "m4a" : type.includes("wav") ? "wav" : "webm";
   return new File(chunks, `recording-${Date.now()}.${extension}`, { type });
+}
+
+function formatDuration(seconds: number | null): string {
+  if (!seconds || !Number.isFinite(seconds)) return "--:--";
+  const total = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(total / 60);
+  const remainingSeconds = total % 60;
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function supportedRecorderOptions(): MediaRecorderOptions | undefined {
@@ -163,8 +238,22 @@ export function VoiceCloneStudio() {
   const [audioUrl, setAudioUrl] = useState("");
   const [message, setMessage] = useState("");
   const [recordingSupported, setRecordingSupported] = useState(true);
+  const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
+  const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
+  const [sourceDuration, setSourceDuration] = useState<number | null>(null);
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const [inputLevel, setInputLevel] = useState(0);
+  const [transcriptSupport, setTranscriptSupport] = useState<TranscriptSupport>("unknown");
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [interimTranscript, setInterimTranscript] = useState("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const sourcePreviewUrlRef = useRef("");
+  const recordingTimerRef = useRef<number | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const finalTranscriptRef = useRef("");
 
   useEffect(() => {
     window.localStorage.setItem("anyvoice:locale", locale);
@@ -172,14 +261,169 @@ export function VoiceCloneStudio() {
     document.documentElement.dataset.locale = locale;
   }, [locale]);
 
+  useEffect(() => {
+    return () => {
+      if (sourcePreviewUrlRef.current) URL.revokeObjectURL(sourcePreviewUrlRef.current);
+      if (recordingTimerRef.current) window.clearInterval(recordingTimerRef.current);
+      if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
+      recognitionRef.current?.abort();
+      void audioContextRef.current?.close();
+    };
+  }, []);
+
   const mode = useMemo(
     () => (promptTranscript.trim() ? t.modeUltimate : t.modeReference),
     [promptTranscript, t.modeReference, t.modeUltimate],
   );
 
+  const sourceLabel = sourceKind === "recorded" ? t.recordedSource : t.uploadedSource;
+  const resultMessage = status === "idle" && voiceFile ? t.sourceReady : status === "idle" ? t.idleOutput : message;
+
+  function selectVoiceFile(file: File, kind: SourceKind) {
+    if (sourcePreviewUrlRef.current) URL.revokeObjectURL(sourcePreviewUrlRef.current);
+    const previewUrl = URL.createObjectURL(file);
+    sourcePreviewUrlRef.current = previewUrl;
+    setVoiceFile(file);
+    setSourceKind(kind);
+    setSourcePreviewUrl(previewUrl);
+    setSourceDuration(null);
+    setAudioUrl("");
+    setStatus("idle");
+    setMessage("");
+  }
+
+  function stopRecordingTimer() {
+    if (recordingTimerRef.current) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }
+
+  function startRecordingTimer() {
+    stopRecordingTimer();
+    const startedAt = Date.now();
+    setRecordingElapsed(0);
+    recordingTimerRef.current = window.setInterval(() => {
+      setRecordingElapsed((Date.now() - startedAt) / 1000);
+    }, 250);
+  }
+
+  function stopInputMeter() {
+    if (animationFrameRef.current) {
+      window.cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    const audioContext = audioContextRef.current;
+    audioContextRef.current = null;
+    void audioContext?.close();
+    setInputLevel(0);
+  }
+
+  function startInputMeter(stream: MediaStream) {
+    stopInputMeter();
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) return;
+
+    const audioContext = new AudioContextConstructor();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    audioContext.createMediaStreamSource(stream).connect(analyser);
+    audioContextRef.current = audioContext;
+    const samples = new Uint8Array(analyser.fftSize);
+    let lastPaint = 0;
+
+    const tick = (timestamp: number) => {
+      analyser.getByteTimeDomainData(samples);
+      if (timestamp - lastPaint > 70) {
+        let sum = 0;
+        for (const sample of samples) {
+          const centered = (sample - 128) / 128;
+          sum += centered * centered;
+        }
+        setInputLevel(Math.min(1, Math.sqrt(sum / samples.length) * 3.4));
+        lastPaint = timestamp;
+      }
+      animationFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    animationFrameRef.current = window.requestAnimationFrame(tick);
+  }
+
+  function stopLiveTranscription() {
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+    if (recognition) {
+      recognition.onend = null;
+      recognition.onerror = null;
+      recognition.onresult = null;
+      recognition.stop();
+    }
+  }
+
+  function startLiveTranscription() {
+    setLiveTranscript("");
+    setInterimTranscript("");
+    finalTranscriptRef.current = "";
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) {
+      setTranscriptSupport("unsupported");
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = locale === "zh-Hant" ? "zh-TW" : "en-US";
+    recognition.onresult = (event) => {
+      let interim = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0]?.transcript.trim();
+        if (!transcript) continue;
+        if (result.isFinal) {
+          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`.trim();
+        } else {
+          interim = `${interim} ${transcript}`.trim();
+        }
+      }
+      setLiveTranscript(finalTranscriptRef.current);
+      setInterimTranscript(interim);
+    };
+    recognition.onerror = () => {
+      setTranscriptSupport("unsupported");
+      setInterimTranscript("");
+    };
+    recognition.onend = () => {
+      setInterimTranscript("");
+    };
+
+    try {
+      recognition.start();
+      recognitionRef.current = recognition;
+      setTranscriptSupport("supported");
+    } catch {
+      setTranscriptSupport("unsupported");
+    }
+  }
+
+  function cleanupRecordingSession() {
+    stopRecordingTimer();
+    stopInputMeter();
+    stopLiveTranscription();
+  }
+
+  function waveBarHeight(index: number): number {
+    const shape = 0.34 + ((index * 17) % 11) / 18;
+    const active = status === "recording" || status === "requesting_mic";
+    const boost = active ? inputLevel * (34 + ((index * 7) % 18)) : 0;
+    return 16 + shape * 46 + boost;
+  }
+
   async function startRecording() {
+    cleanupRecordingSession();
     setMessage("");
     setAudioUrl("");
+    setSourceDuration(null);
 
     if (typeof navigator.mediaDevices?.getUserMedia !== "function" || typeof MediaRecorder === "undefined") {
       setRecordingSupported(false);
@@ -201,12 +445,14 @@ export function VoiceCloneStudio() {
       };
       recorder.onerror = () => {
         stream?.getTracks().forEach((track) => track.stop());
+        cleanupRecordingSession();
         mediaRecorderRef.current = null;
         setStatus("error");
         setMessage(t.recorderStartFailed);
       };
       recorder.onstop = () => {
         stream?.getTracks().forEach((track) => track.stop());
+        cleanupRecordingSession();
         mediaRecorderRef.current = null;
         if (chunksRef.current.length === 0) {
           setVoiceFile(null);
@@ -215,16 +461,18 @@ export function VoiceCloneStudio() {
           return;
         }
         const file = createRecordedFile(chunksRef.current, recorder.mimeType);
-        setVoiceFile(file);
-        setStatus("idle");
-        setMessage("");
+        selectVoiceFile(file, "recorded");
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
+      startInputMeter(stream);
+      startRecordingTimer();
+      startLiveTranscription();
       setStatus("recording");
       setMessage(t.recording);
     } catch (error) {
       stream?.getTracks().forEach((track) => track.stop());
+      cleanupRecordingSession();
       mediaRecorderRef.current = null;
       setStatus("error");
       if (error instanceof DOMException && error.name === "NotFoundError") {
@@ -247,10 +495,9 @@ export function VoiceCloneStudio() {
   function onUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) {
-      setVoiceFile(file);
-      setAudioUrl("");
-      setStatus("idle");
-      setMessage("");
+      cleanupRecordingSession();
+      selectVoiceFile(file, "uploaded");
+      event.currentTarget.value = "";
     }
   }
 
@@ -375,7 +622,15 @@ export function VoiceCloneStudio() {
             <div className={`wave-card ${status === "recording" ? "is-recording" : ""}`}>
               <div className="wave-bars" aria-hidden="true">
                 {Array.from({ length: 44 }).map((_, index) => (
-                  <span key={index} style={{ "--i": index } as React.CSSProperties} />
+                  <span
+                    key={index}
+                    style={
+                      {
+                        "--i": index,
+                        height: `${waveBarHeight(index)}px`,
+                      } as React.CSSProperties
+                    }
+                  />
                 ))}
               </div>
               <div className="source-actions">
@@ -454,16 +709,65 @@ export function VoiceCloneStudio() {
             <div className="panel-heading compact">
               <div>
                 <h2>{t.outputTitle}</h2>
-                <p>{status === "idle" ? t.idleOutput : message}</p>
+                <p>{resultMessage}</p>
               </div>
               {status === "ready" ? <CheckCircle2 size={25} /> : <Play size={25} />}
             </div>
 
             {audioUrl ? (
               <audio controls src={audioUrl} />
+            ) : status === "recording" || status === "requesting_mic" ? (
+              <div className="live-recorder">
+                <div className="recorder-time">
+                  <span>{t.recordingTimer}</span>
+                  <strong>{formatDuration(recordingElapsed)}</strong>
+                </div>
+                <div className="level-meter" aria-hidden="true">
+                  {Array.from({ length: 18 }).map((_, index) => (
+                    <span
+                      key={index}
+                      style={
+                        {
+                          transform: `scaleY(${0.28 + Math.min(1, inputLevel * (1.2 + index / 28))})`,
+                        } as React.CSSProperties
+                      }
+                    />
+                  ))}
+                </div>
+                <div className="transcript-box">
+                  <span>{t.liveTranscriptTitle}</span>
+                  <p>
+                    {liveTranscript ||
+                      (transcriptSupport === "unsupported" ? t.liveTranscriptUnsupported : t.liveTranscriptWaiting)}
+                  </p>
+                  {interimTranscript ? <em>{interimTranscript}</em> : null}
+                </div>
+              </div>
+            ) : sourcePreviewUrl && voiceFile ? (
+              <div className="source-preview">
+                <div className="source-preview-heading">
+                  <span>{sourceLabel}</span>
+                  <strong>{voiceFile.name}</strong>
+                </div>
+                <audio controls src={sourcePreviewUrl} onLoadedMetadata={(event) => setSourceDuration(event.currentTarget.duration)} />
+                <dl>
+                  <div>
+                    <dt>{t.fileSize}</dt>
+                    <dd>{formatFileSize(voiceFile.size)}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.fileDuration}</dt>
+                    <dd>{formatDuration(sourceDuration)}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.fileType}</dt>
+                    <dd>{voiceFile.type || "audio"}</dd>
+                  </div>
+                </dl>
+              </div>
             ) : (
               <div className={`output-state ${status}`}>
-              {status === "submitting" ? <Loader2 className="spin" size={30} /> : <AudioLines size={34} />}
+                {status === "submitting" ? <Loader2 className="spin" size={30} /> : <AudioLines size={34} />}
               </div>
             )}
           </div>
