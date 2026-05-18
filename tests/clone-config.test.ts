@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
+import path from "node:path";
+import os from "node:os";
 import {
   isWorkerEnabled,
   maxUploadBytes,
   modelId,
   normalizeStyle,
   normalizeTargetText,
+  runsRoot,
   shouldReturnWorkerMissing,
 } from "@/lib/clone-config";
 
@@ -48,5 +51,32 @@ describe("clone config", () => {
   it("normalizes user-controlled prompt strings", () => {
     expect(normalizeStyle("  calm   and warm  ")).toBe("calm and warm");
     expect(normalizeTargetText("hello\r\nworld")).toBe("hello\nworld");
+  });
+
+  it("returns absolute path when ANYVOICE_RUNS_DIR is absolute", () => {
+    const abs = path.join(os.tmpdir(), "anyvoice-cfg");
+    expect(runsRoot({ ANYVOICE_RUNS_DIR: abs })).toBe(abs);
+  });
+
+  it("joins relative ANYVOICE_RUNS_DIR with cwd when not on vercel", () => {
+    expect(runsRoot({ ANYVOICE_RUNS_DIR: ".out/x" })).toBe(path.join(process.cwd(), ".out/x"));
+  });
+
+  it("joins relative ANYVOICE_RUNS_DIR with tmpdir on vercel", () => {
+    expect(runsRoot({ ANYVOICE_RUNS_DIR: "vercel-runs", VERCEL: "1" })).toBe(
+      path.join(os.tmpdir(), "vercel-runs"),
+    );
+  });
+
+  it("falls back to the default runs dir when unset", () => {
+    expect(runsRoot({})).toBe(path.join(process.cwd(), ".anyvoice/runs"));
+  });
+
+  it("clamps maxUploadBytes to default when env is non-numeric", () => {
+    expect(maxUploadBytes({ ANYVOICE_MAX_UPLOAD_MB: "not-a-number" })).toBe(80 * 1024 * 1024);
+  });
+
+  it("returns the env model when overridden", () => {
+    expect(modelId({ ANYVOICE_MODEL_ID: "x/y" })).toBe("x/y");
   });
 });
