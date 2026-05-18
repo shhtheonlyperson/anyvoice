@@ -10,5 +10,16 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    coverage: {
+      reporter: ["text", "text-summary"],
+      include: ["lib/**", "app/**", "components/**"],
+      exclude: [
+        "**/*.d.ts",
+        "**/.next/**",
+        "**/node_modules/**",
+        "**/tests/**",
+        "**/*.config.*",
+      ],
+    },
   },
 });
