@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 type Locale = "zh-Hant" | "en";
-type Status = "idle" | "recording" | "submitting" | "ready" | "needs_worker" | "error";
+type Status = "idle" | "requesting_mic" | "recording" | "submitting" | "ready" | "needs_worker" | "error";
 
 const copy = {
   "zh-Hant": {
@@ -26,6 +26,7 @@ const copy = {
     title: "把允許使用的聲音，變成可測試的語音分身。",
     subtitle: "錄一段或上傳音檔，輸入要說的文字。接上本機 VoxCPM2 worker 後，就能產生同聲線的新語音。",
     record: "錄音",
+    requestingMic: "要求麥克風",
     stop: "停止",
     upload: "上傳音檔",
     sourceTitle: "聲音來源",
@@ -61,6 +62,12 @@ const copy = {
     workflowBody: "錄音或上傳、輸入文字、確認授權，送到 VoxCPM2。",
     uploadCta: "選擇檔案",
     recordReady: "瀏覽器錄音可用",
+    recording: "錄音中。按停止後會把錄音設為聲音來源。",
+    recordingUnavailable: "這個瀏覽器不支援直接錄音，請改用上傳音檔。",
+    micPermissionDenied: "瀏覽器沒有取得麥克風權限。請允許麥克風後再按一次錄音。",
+    micMissing: "找不到可用的麥克風。請接上或啟用音訊輸入裝置。",
+    recorderStartFailed: "無法啟動瀏覽器錄音。請改用上傳音檔，或換一個瀏覽器再試。",
+    recordingEmpty: "沒有收到錄音資料。請再錄一次，或改用上傳音檔。",
     noAudio: "請先錄音或上傳音檔。",
     noText: "請輸入要合成的文字。",
     noConsent: "請先確認聲音授權。",
@@ -74,6 +81,7 @@ const copy = {
     subtitle:
       "Record or upload audio, enter the line, then connect a local VoxCPM2 worker to synthesize new speech in that voice.",
     record: "Record",
+    requestingMic: "Requesting mic",
     stop: "Stop",
     upload: "Upload audio",
     sourceTitle: "Voice source",
@@ -109,6 +117,12 @@ const copy = {
     workflowBody: "Record or upload, enter text, confirm permission, send to VoxCPM2.",
     uploadCta: "Choose file",
     recordReady: "Browser recording available",
+    recording: "Recording. Press stop to use this clip as the voice source.",
+    recordingUnavailable: "This browser does not support direct recording. Upload an audio file instead.",
+    micPermissionDenied: "Microphone permission was not granted. Allow mic access, then press Record again.",
+    micMissing: "No available microphone was found. Connect or enable an audio input device.",
+    recorderStartFailed: "Browser recording could not start. Upload audio instead, or try another browser.",
+    recordingEmpty: "No recording data was captured. Record again, or upload an audio file instead.",
     noAudio: "Record or upload audio first.",
     noText: "Enter target text first.",
     noConsent: "Confirm voice permission first.",
@@ -119,6 +133,18 @@ function createRecordedFile(chunks: Blob[], mimeType: string): File {
   const type = mimeType || "audio/webm";
   const extension = type.includes("mp4") ? "m4a" : type.includes("wav") ? "wav" : "webm";
   return new File(chunks, `recording-${Date.now()}.${extension}`, { type });
+}
+
+function supportedRecorderOptions(): MediaRecorderOptions | undefined {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return undefined;
+  }
+
+  const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/wav"].find((type) =>
+    MediaRecorder.isTypeSupported(type),
+  );
+
+  return mimeType ? { mimeType } : undefined;
 }
 
 export function VoiceCloneStudio() {
@@ -136,6 +162,7 @@ export function VoiceCloneStudio() {
   const [consent, setConsent] = useState(false);
   const [audioUrl, setAudioUrl] = useState("");
   const [message, setMessage] = useState("");
+  const [recordingSupported, setRecordingSupported] = useState(true);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
@@ -152,25 +179,69 @@ export function VoiceCloneStudio() {
 
   async function startRecording() {
     setMessage("");
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorder(stream);
-    chunksRef.current = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunksRef.current.push(event.data);
-    };
-    recorder.onstop = () => {
-      const file = createRecordedFile(chunksRef.current, recorder.mimeType);
-      setVoiceFile(file);
-      stream.getTracks().forEach((track) => track.stop());
-      setStatus("idle");
-    };
-    recorder.start();
-    mediaRecorderRef.current = recorder;
-    setStatus("recording");
+    setAudioUrl("");
+
+    if (typeof navigator.mediaDevices?.getUserMedia !== "function" || typeof MediaRecorder === "undefined") {
+      setRecordingSupported(false);
+      setStatus("error");
+      setMessage(t.recordingUnavailable);
+      return;
+    }
+
+    setStatus("requesting_mic");
+    setMessage(t.requestingMic);
+
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, supportedRecorderOptions());
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        stream?.getTracks().forEach((track) => track.stop());
+        mediaRecorderRef.current = null;
+        setStatus("error");
+        setMessage(t.recorderStartFailed);
+      };
+      recorder.onstop = () => {
+        stream?.getTracks().forEach((track) => track.stop());
+        mediaRecorderRef.current = null;
+        if (chunksRef.current.length === 0) {
+          setVoiceFile(null);
+          setStatus("error");
+          setMessage(t.recordingEmpty);
+          return;
+        }
+        const file = createRecordedFile(chunksRef.current, recorder.mimeType);
+        setVoiceFile(file);
+        setStatus("idle");
+        setMessage("");
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setStatus("recording");
+      setMessage(t.recording);
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      mediaRecorderRef.current = null;
+      setStatus("error");
+      if (error instanceof DOMException && error.name === "NotFoundError") {
+        setMessage(t.micMissing);
+      } else if (error instanceof DOMException && ["NotAllowedError", "SecurityError"].includes(error.name)) {
+        setMessage(t.micPermissionDenied);
+      } else {
+        setMessage(t.recorderStartFailed);
+      }
+    }
   }
 
   function stopRecording() {
-    mediaRecorderRef.current?.stop();
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    recorder.requestData();
+    recorder.stop();
   }
 
   function onUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -314,9 +385,14 @@ export function VoiceCloneStudio() {
                     {t.stop}
                   </button>
                 ) : (
-                  <button className="primary-action" type="button" onClick={startRecording}>
-                    <Mic size={18} />
-                    {t.record}
+                  <button
+                    className="primary-action"
+                    type="button"
+                    onClick={startRecording}
+                    disabled={!recordingSupported || status === "requesting_mic" || status === "submitting"}
+                  >
+                    {status === "requesting_mic" ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
+                    {status === "requesting_mic" ? t.requestingMic : t.record}
                   </button>
                 )}
                 <label className="secondary-action file-action">
@@ -327,7 +403,7 @@ export function VoiceCloneStudio() {
               </div>
             </div>
             <div className="file-readout">
-              <span>{voiceFile ? t.selectedFile : t.recordReady}</span>
+              <span>{voiceFile ? t.selectedFile : recordingSupported ? t.recordReady : t.recordingUnavailable}</span>
               <strong>{voiceFile ? voiceFile.name : t.upload}</strong>
             </div>
           </div>
