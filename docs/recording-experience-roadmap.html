@@ -1,0 +1,1585 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AnyVoice Recording Experience Roadmap</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #faf9f5;
+        --surface: #f5f0e8;
+        --surface-2: #efe9de;
+        --ink: #141413;
+        --muted: #69645c;
+        --line: #ded6ca;
+        --dark: #181715;
+        --dark-2: #24221f;
+        --coral: #cc785c;
+        --coral-2: #a95f48;
+        --teal: #5db8a6;
+        --amber: #e8a55a;
+        --blue: #627d98;
+        --green: #4f8f68;
+        --danger: #b65449;
+        --shadow: 0 22px 70px rgba(35, 30, 24, 0.12);
+        --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
+        --sans: "Avenir Next", "Gill Sans", "Trebuchet MS", system-ui, sans-serif;
+        --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background:
+          radial-gradient(circle at 18% 12%, rgba(204, 120, 92, 0.16), transparent 30rem),
+          radial-gradient(circle at 82% 4%, rgba(93, 184, 166, 0.15), transparent 26rem),
+          linear-gradient(135deg, rgba(24, 23, 21, 0.04) 0, rgba(24, 23, 21, 0) 33%),
+          var(--canvas);
+        color: var(--ink);
+        font-family: var(--sans);
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        width: min(1180px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 34px 0 56px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px;
+        gap: 28px;
+        align-items: stretch;
+        min-height: 340px;
+        margin-bottom: 22px;
+      }
+
+      .hero-main {
+        position: relative;
+        overflow: hidden;
+        padding: 34px;
+        border: 1px solid rgba(24, 23, 21, 0.08);
+        border-radius: 8px;
+        background:
+          linear-gradient(110deg, rgba(250, 249, 245, 0.88), rgba(245, 240, 232, 0.66)),
+          repeating-linear-gradient(
+            90deg,
+            rgba(24, 23, 21, 0.035) 0,
+            rgba(24, 23, 21, 0.035) 1px,
+            transparent 1px,
+            transparent 44px
+          );
+        box-shadow: var(--shadow);
+      }
+
+      .hero-main::after {
+        content: "";
+        position: absolute;
+        right: 30px;
+        bottom: 24px;
+        width: min(46%, 420px);
+        height: 118px;
+        opacity: 0.28;
+        background:
+          linear-gradient(180deg, transparent 58%, rgba(20, 20, 19, 0.28) 59%, transparent 60%),
+          repeating-linear-gradient(
+            90deg,
+            transparent 0,
+            transparent 8px,
+            rgba(20, 20, 19, 0.78) 8px,
+            rgba(20, 20, 19, 0.78) 11px,
+            transparent 11px,
+            transparent 17px
+          );
+        transform: skewX(-8deg);
+        transform-origin: bottom right;
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 18px;
+        color: var(--coral-2);
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 22px;
+        height: 2px;
+        background: var(--coral);
+      }
+
+      h1 {
+        max-width: 780px;
+        margin: 0;
+        font-family: var(--serif);
+        font-size: clamp(40px, 7vw, 84px);
+        font-weight: 500;
+        line-height: 0.94;
+        letter-spacing: 0;
+      }
+
+      .hero-copy {
+        max-width: 690px;
+        margin: 22px 0 0;
+        color: #3b3833;
+        font-size: 18px;
+        line-height: 1.55;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 28px;
+      }
+
+      .status-panel {
+        display: grid;
+        align-content: start;
+        gap: 14px;
+        padding: 22px;
+        border-radius: 8px;
+        background: var(--dark);
+        color: #f7f0e6;
+        box-shadow: 0 22px 70px rgba(20, 20, 19, 0.2);
+      }
+
+      .status-panel h2 {
+        margin: 0;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+
+      .status-grid {
+        display: grid;
+        gap: 9px;
+      }
+
+      .status-row {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 12px;
+        padding: 10px 0;
+        border-top: 1px solid rgba(250, 249, 245, 0.12);
+      }
+
+      .status-row span:first-child {
+        color: rgba(247, 240, 230, 0.64);
+        font-size: 12px;
+      }
+
+      .status-row strong {
+        color: #fff9ef;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .pill,
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        padding: 0 13px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(250, 249, 245, 0.76);
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 750;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .button {
+        border-color: rgba(20, 20, 19, 0.12);
+        background: var(--dark);
+        color: #fff9ef;
+        transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+      }
+
+      .button:hover {
+        transform: translateY(-1px);
+        background: #25221e;
+      }
+
+      .button.secondary {
+        background: var(--surface);
+        color: var(--ink);
+      }
+
+      .button.coral {
+        border-color: transparent;
+        background: var(--coral);
+      }
+
+      .button.coral:hover {
+        background: var(--coral-2);
+      }
+
+      .tabs {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        gap: 8px;
+        padding: 12px 0 14px;
+        background: linear-gradient(180deg, rgba(250, 249, 245, 0.96), rgba(250, 249, 245, 0.84));
+        backdrop-filter: blur(16px);
+        overflow-x: auto;
+      }
+
+      .tab {
+        white-space: nowrap;
+        border: 1px solid rgba(20, 20, 19, 0.12);
+        background: rgba(255, 255, 255, 0.44);
+        color: var(--muted);
+      }
+
+      .tab[aria-selected="true"] {
+        border-color: rgba(204, 120, 92, 0.7);
+        background: #fff7ef;
+        color: var(--ink);
+      }
+
+      .panel {
+        display: none;
+      }
+
+      .panel.active {
+        display: block;
+      }
+
+      .section {
+        margin-top: 18px;
+        padding: 28px;
+        border: 1px solid rgba(20, 20, 19, 0.08);
+        border-radius: 8px;
+        background: rgba(255, 252, 246, 0.82);
+        box-shadow: 0 18px 50px rgba(35, 30, 24, 0.08);
+      }
+
+      .section.dark {
+        background: var(--dark);
+        color: #fff9ef;
+      }
+
+      .section-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: flex-start;
+        margin-bottom: 20px;
+      }
+
+      .section h2 {
+        margin: 0;
+        font-family: var(--serif);
+        font-size: clamp(28px, 4vw, 44px);
+        font-weight: 500;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .section-lede {
+        max-width: 720px;
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .dark .section-lede {
+        color: rgba(255, 249, 239, 0.7);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 14px;
+      }
+
+      .card {
+        min-width: 0;
+        padding: 18px;
+        border: 1px solid rgba(20, 20, 19, 0.09);
+        border-radius: 8px;
+        background: rgba(250, 249, 245, 0.72);
+      }
+
+      .dark .card {
+        border-color: rgba(255, 249, 239, 0.13);
+        background: var(--dark-2);
+      }
+
+      .span-4 {
+        grid-column: span 4;
+      }
+
+      .span-5 {
+        grid-column: span 5;
+      }
+
+      .span-6 {
+        grid-column: span 6;
+      }
+
+      .span-7 {
+        grid-column: span 7;
+      }
+
+      .span-8 {
+        grid-column: span 8;
+      }
+
+      .span-12 {
+        grid-column: span 12;
+      }
+
+      .card h3 {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin: 0 0 9px;
+        font-size: 15px;
+        line-height: 1.25;
+      }
+
+      .marker {
+        display: inline-grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: var(--ink);
+        color: #fff9ef;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .marker.coral {
+        background: var(--coral);
+      }
+
+      .marker.teal {
+        background: var(--teal);
+        color: #10231f;
+      }
+
+      .marker.amber {
+        background: var(--amber);
+        color: #2c1c07;
+      }
+
+      .card p,
+      .card li {
+        color: #4f4a43;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .dark .card p,
+      .dark .card li {
+        color: rgba(255, 249, 239, 0.72);
+      }
+
+      .card p:last-child,
+      .card ul:last-child,
+      .card ol:last-child {
+        margin-bottom: 0;
+      }
+
+      .card ul,
+      .card ol {
+        padding-left: 18px;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: rgba(20, 20, 19, 0.07);
+        font-family: var(--mono);
+        font-size: 0.91em;
+      }
+
+      .dark code {
+        background: rgba(255, 249, 239, 0.12);
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(150px, 1fr));
+        gap: 10px;
+      }
+
+      .flow-node {
+        position: relative;
+        min-height: 170px;
+        padding: 15px;
+        border: 1px solid rgba(255, 249, 239, 0.14);
+        border-radius: 8px;
+        background: #211f1c;
+      }
+
+      .flow-node::after {
+        content: "->";
+        position: absolute;
+        top: 50%;
+        right: -17px;
+        color: var(--amber);
+        font-family: var(--mono);
+        font-weight: 800;
+        transform: translateY(-50%);
+      }
+
+      .flow-node:last-child::after {
+        content: "";
+      }
+
+      .flow-node button {
+        width: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: #fff9ef;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .flow-node h3 {
+        margin: 0 0 8px;
+        color: #fff9ef;
+      }
+
+      .flow-node p {
+        margin: 0;
+        color: rgba(255, 249, 239, 0.66);
+      }
+
+      .flow-detail {
+        display: none;
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255, 249, 239, 0.14);
+        color: rgba(255, 249, 239, 0.74);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .flow-node.open .flow-detail {
+        display: block;
+      }
+
+      .priority {
+        display: inline-flex;
+        align-items: center;
+        height: 24px;
+        padding: 0 8px;
+        border-radius: 999px;
+        color: #1b1714;
+        font-size: 12px;
+        font-weight: 850;
+      }
+
+      .p0 {
+        background: #f1bf7c;
+      }
+
+      .p1 {
+        background: #d88b68;
+      }
+
+      .p2 {
+        background: #83c9bb;
+      }
+
+      .p3 {
+        background: #8da5bd;
+      }
+
+      .plan-row {
+        display: grid;
+        grid-template-columns: 82px minmax(0, 1fr) 220px;
+        gap: 14px;
+        align-items: start;
+        padding: 16px 0;
+        border-top: 1px solid rgba(20, 20, 19, 0.1);
+      }
+
+      .plan-row:first-child {
+        border-top: 0;
+      }
+
+      .plan-row h3 {
+        margin: 0 0 5px;
+        font-size: 16px;
+      }
+
+      .plan-row p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .owner {
+        color: #5a554d;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .tradeoff {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .tradeoff .side {
+        padding: 14px;
+        border-radius: 8px;
+        background: rgba(20, 20, 19, 0.05);
+      }
+
+      .side strong {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+
+      .log-tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+
+      .log-tools input {
+        min-width: min(420px, 100%);
+        flex: 1;
+        min-height: 38px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fffdf8;
+        color: var(--ink);
+      }
+
+      .checklist {
+        display: grid;
+        gap: 9px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .check {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) 128px;
+        gap: 12px;
+        align-items: start;
+        padding: 13px;
+        border: 1px solid rgba(20, 20, 19, 0.08);
+        border-radius: 8px;
+        background: rgba(255, 253, 248, 0.7);
+      }
+
+      .check input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        margin-top: 2px;
+        accent-color: var(--coral);
+      }
+
+      .check strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .check span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .check select {
+        width: 100%;
+        min-height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fffdf8;
+        color: var(--ink);
+        font-size: 12px;
+      }
+
+      .progress-shell {
+        display: grid;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .progress-bar {
+        height: 10px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(20, 20, 19, 0.08);
+      }
+
+      .progress-fill {
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--coral), var(--teal));
+        transition: width 180ms ease;
+      }
+
+      .note-box {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .note-box textarea {
+        min-height: 90px;
+        resize: vertical;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fffdf8;
+        color: var(--ink);
+        line-height: 1.45;
+      }
+
+      .notes-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .note {
+        padding: 12px;
+        border-radius: 8px;
+        background: rgba(20, 20, 19, 0.05);
+        color: #4f4a43;
+        font-size: 13px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+
+      .note time {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .verify-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .callout {
+        padding: 16px;
+        border-left: 4px solid var(--coral);
+        border-radius: 8px;
+        background: #fff7ef;
+      }
+
+      .callout strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .callout p {
+        margin: 0;
+        color: #4f4a43;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .small {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      @media (max-width: 980px) {
+        .hero,
+        .grid,
+        .flow,
+        .verify-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .span-4,
+        .span-5,
+        .span-6,
+        .span-7,
+        .span-8,
+        .span-12 {
+          grid-column: auto;
+        }
+
+        .hero-main {
+          min-height: 320px;
+        }
+
+        .hero-main::after {
+          width: 70%;
+        }
+
+        .flow-node::after {
+          content: "";
+        }
+      }
+
+      @media (max-width: 680px) {
+        .page {
+          width: min(100% - 20px, 1180px);
+          padding-top: 18px;
+        }
+
+        .hero-main,
+        .section {
+          padding: 20px;
+        }
+
+        .section-header {
+          display: block;
+        }
+
+        .plan-row,
+        .check {
+          grid-template-columns: 1fr;
+        }
+
+        .tradeoff {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.001ms !important;
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div class="hero-main">
+          <p class="eyebrow">Docs-only roadmap - May 19, 2026</p>
+          <h1>Recording experience, synthesis quality, and streaming UX</h1>
+          <p class="hero-copy">
+            A working document for AnyVoice while implementation continues in app/runtime files by another
+            agent. This artifact records rationale, tradeoffs, and verification criteria without changing the
+            product code.
+          </p>
+          <div class="hero-actions" aria-label="Document shortcuts">
+            <a class="button coral" href="#plan">Recommended plan</a>
+            <a class="button secondary" href="#execution">Execution checklist</a>
+            <a class="button secondary" href="#verification">Verification checklist</a>
+          </div>
+        </div>
+
+        <aside class="status-panel" aria-label="Document status">
+          <h2>Current read</h2>
+          <div class="status-grid">
+            <div class="status-row">
+              <span>Scope</span>
+              <strong>Documentation only. Do not infer app changes from this file.</strong>
+            </div>
+            <div class="status-row">
+              <span>Code state</span>
+              <strong>Implementation is active in runtime files owned by another agent.</strong>
+            </div>
+            <div class="status-row">
+              <span>Observed flow</span>
+              <strong>Scripted recording is the recommended path; freeform/upload requires exact transcript.</strong>
+            </div>
+            <div class="status-row">
+              <span>Risk</span>
+              <strong>Perceived latency and reference quality can look like model failure if the UI stays silent.</strong>
+            </div>
+            <div class="status-row">
+              <span>In flight</span>
+              <strong>Stream routes and NDJSON progress appear in the worktree; verify before treating as shipped.</strong>
+            </div>
+          </div>
+        </aside>
+      </header>
+
+      <nav class="tabs" aria-label="Roadmap sections">
+        <button class="pill tab" type="button" data-tab="architecture" aria-selected="true">Architecture</button>
+        <button class="pill tab" type="button" data-tab="weak-points" aria-selected="false">Weak Points</button>
+        <button class="pill tab" type="button" data-tab="plan" aria-selected="false">Plan</button>
+        <button class="pill tab" type="button" data-tab="rationale" aria-selected="false">Rationale</button>
+        <button class="pill tab" type="button" data-tab="execution" aria-selected="false">Execution Log</button>
+        <button class="pill tab" type="button" data-tab="verification" aria-selected="false">Verification</button>
+      </nav>
+
+      <main>
+        <section class="panel active" id="architecture">
+          <section class="section dark">
+            <div class="section-header">
+              <div>
+                <h2>Current Architecture</h2>
+                <p class="section-lede">
+                  AnyVoice is a Vercel-hosted Next app with a local or GPU VoxCPM2 worker boundary. The browser
+                  owns capture and consent; the API owns validation, run files, worker forwarding, and audio serving.
+                  Streaming/progress endpoints are currently in flight in the worktree, so this page treats them as
+                  implementation work that still needs verification.
+                </p>
+              </div>
+              <span class="pill">Click flow nodes</span>
+            </div>
+
+            <div class="flow" aria-label="System flow">
+              <article class="flow-node open">
+                <button type="button" aria-expanded="true">
+                  <h3>1. Browser Studio</h3>
+                  <p><code>VoiceCloneStudio.tsx</code></p>
+                </button>
+                <div class="flow-detail">
+                  Records with <code>MediaRecorder</code>, shows input level and waveform, supports sample voice,
+                  scripted mode, freeform/upload mode, target text, consent, locale, and theme.
+                </div>
+              </article>
+
+              <article class="flow-node">
+                <button type="button" aria-expanded="false">
+                  <h3>2. Clone API</h3>
+                  <p><code>POST /api/clone</code></p>
+                </button>
+                <div class="flow-detail">
+                  Parses multipart form data, rejects missing voice, target text, prompt transcript, consent, or
+                  oversized uploads. Forwards to worker when configured.
+                </div>
+              </article>
+
+              <article class="flow-node">
+                <button type="button" aria-expanded="false">
+                  <h3>3. Run Files</h3>
+                  <p><code>.anyvoice/runs/&lt;jobId&gt;</code></p>
+                </button>
+                <div class="flow-detail">
+                  Stores reference audio, <code>target.txt</code>, <code>prompt-transcript.txt</code>,
+                  worker logs, metadata, errors, and generated <code>output.wav</code>.
+                </div>
+              </article>
+
+              <article class="flow-node">
+                <button type="button" aria-expanded="false">
+                  <h3>4. VoxCPM2 Worker</h3>
+                  <p><code>synthesize_voxcpm_anyvoice.py</code></p>
+                </button>
+                <div class="flow-detail">
+                  Converts reference audio to 16k mono, grades quality, applies quality preset params, then calls
+                  <code>openbmb/VoxCPM2</code> in ultimate mode with verified prompt transcript.
+                </div>
+              </article>
+
+              <article class="flow-node">
+                <button type="button" aria-expanded="false">
+                  <h3>5. Audio Output</h3>
+                  <p><code>/api/runs/:jobId/audio</code></p>
+                </button>
+                <div class="flow-detail">
+                  Serves local generated WAV files or proxies worker audio through Vercel with token-backed worker
+                  auth. The UI plays the returned audio URL after a ready payload.
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="grid">
+              <article class="card span-4">
+                <h3><span class="marker coral">A</span> Recording modes</h3>
+                <p>
+                  The current direction is correct: make scripted capture the default because it gives the model a
+                  known transcript. Freeform/upload stays available, but it must require the exact words in the clip.
+                </p>
+              </article>
+              <article class="card span-4">
+                <h3><span class="marker teal">B</span> Quality contract</h3>
+                <p>
+                  The backend now treats prompt transcript as required. This should remain the visible product truth:
+                  wrong transcript is the dominant avoidable source of bad pronunciation.
+                </p>
+              </article>
+              <article class="card span-4">
+                <h3><span class="marker amber">C</span> Streaming reality</h3>
+                <p>
+                  The stable output model is file-ready playback, while active stream-route work is adding NDJSON
+                  progress. The quality bar is still honest stages first, progressive audio second.
+                </p>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel" id="weak-points">
+          <section class="section">
+            <div class="section-header">
+              <div>
+                <h2>UX Weak Points</h2>
+                <p class="section-lede">
+                  The product goal is simple: "record my voice, type any text, generate." The weak points are where
+                  necessary model constraints leak as confusion, waiting, or silent failure.
+                </p>
+              </div>
+            </div>
+
+            <div class="grid">
+              <article class="card span-6">
+                <h3><span class="marker coral">1</span> Recording confidence arrives too late</h3>
+                <p>
+                  The UI can show level and elapsed time, but the strongest reference-quality signals are returned
+                  after worker processing. Users need earlier feedback on duration, silence, clipping, and loudness.
+                </p>
+              </article>
+              <article class="card span-6">
+                <h3><span class="marker coral">2</span> Transcript friction is justified but fragile</h3>
+                <p>
+                  Freeform/upload requiring an exact transcript is the right contract, but it is easy to perceive as
+                  busywork unless the UI explains that this is pronunciation alignment, not metadata.
+                </p>
+              </article>
+              <article class="card span-6">
+                <h3><span class="marker amber">3</span> Worker-missing can feel like a failed recording</h3>
+                <p>
+                  On Vercel or an unconfigured machine, the clone route may return <code>needs_worker</code>. That is
+                  true, but after a long capture flow it reads as "the app failed" unless readiness is clear up front.
+                </p>
+              </article>
+              <article class="card span-6">
+                <h3><span class="marker amber">4</span> Long synthesis has no stage model</h3>
+                <p>
+                  The non-stream path is effectively "submit and wait." The in-flight stream path must prove concrete
+                  stages: upload accepted, preprocessing, quality analysis, synthesis, finalizing.
+                </p>
+              </article>
+              <article class="card span-6">
+                <h3><span class="marker teal">5</span> Quality knobs should stay mostly backstage</h3>
+                <p>
+                  Speed, balanced, and quality presets exist, but adding them as front-page controls would increase
+                  cognitive load. The better first move is smarter defaults plus transparent effective metadata.
+                </p>
+              </article>
+              <article class="card span-6">
+                <h3><span class="marker teal">6</span> Streaming is a product promise, not a spinner style</h3>
+                <p>
+                  Real streaming means the backend can emit usable audio chunks or segments before the full run is
+                  complete. Until then, the honest UX is job progress and fast playback once the file is ready.
+                </p>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel" id="plan">
+          <section class="section" id="plan-section">
+            <div class="section-header">
+              <div>
+                <h2>Recommended Plan</h2>
+                <p class="section-lede">
+                  Lead with reliability and quality feedback. Only add deeper streaming once the job lifecycle is
+                  explicit enough to verify.
+                </p>
+              </div>
+              <span class="pill">Recommended order</span>
+            </div>
+
+            <div class="plan-list">
+              <div class="plan-row">
+                <span class="priority p0">P0</span>
+                <div>
+                  <h3>Preserve the strict transcript contract</h3>
+                  <p>
+                    Keep scripted capture as the primary route and keep prompt transcript required for freeform/upload.
+                    Do not revive silent auto-transcription unless it is measured against known failures.
+                  </p>
+                </div>
+                <div class="owner">Owner: active implementation agent<br />Doc stance: must not regress</div>
+              </div>
+
+              <div class="plan-row">
+                <span class="priority p1">P1</span>
+                <div>
+                  <h3>Add pre-submit recording quality checks</h3>
+                  <p>
+                    Before submit, show duration window, likely silence, likely clipping, and "too quiet" feedback.
+                    Warn by default; block only when the clip is empty, missing transcript, missing consent, or too large.
+                  </p>
+                </div>
+                <div class="owner">Target files: UI plus shared audio helper<br />Risk: browser API variance</div>
+              </div>
+
+              <div class="plan-row">
+                <span class="priority p1">P1</span>
+                <div>
+                  <h3>Expose worker readiness before submit</h3>
+                  <p>
+                    Show whether this environment can synthesize now. If the worker is missing, let the user still
+                    capture a reference, but make it clear that generation requires local worker setup.
+                  </p>
+                </div>
+                <div class="owner">Target files: API status route, UI banner<br />Risk: leaking internal config</div>
+              </div>
+
+              <div class="plan-row">
+                <span class="priority p2">P2</span>
+                <div>
+                  <h3>Stabilize synthesis quality with fixtures</h3>
+                  <p>
+                    Keep a small regression set: scripted reference, freeform reference with exact transcript, noisy
+                    reference, clipped reference, and cross-lingual target. Compare output against known-good runs.
+                  </p>
+                </div>
+                <div class="owner">Target files: tests, docs, scripts<br />Risk: subjective audio scoring</div>
+              </div>
+
+              <div class="plan-row">
+                <span class="priority p2">P2</span>
+                <div>
+                  <h3>Harden submit as a visible job lifecycle</h3>
+                  <p>
+                    If the stream route remains the chosen path, keep NDJSON progress simple and testable. The UI must
+                    parse stage transitions, surface errors, and still return final audio cleanly.
+                  </p>
+                </div>
+                <div class="owner">Target files: stream routes, run metadata, UI<br />Risk: state surface expansion</div>
+              </div>
+
+              <div class="plan-row">
+                <span class="priority p3">P3</span>
+                <div>
+                  <h3>Evaluate real progressive audio</h3>
+                  <p>
+                    If latency remains painful, test target-text segmentation or a backend that can produce segment
+                    ready events. Accept it only if prosody, continuity, and voice identity survive the split.
+                  </p>
+                </div>
+                <div class="owner">Target files: worker contract, audio player<br />Risk: worse quality for faster first sound</div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel" id="rationale">
+          <section class="section">
+            <div class="section-header">
+              <div>
+                <h2>Rationale And Tradeoffs</h2>
+                <p class="section-lede">
+                  These are the decisions most likely to be reopened during implementation. The recommendation is
+                  opinionated because the model has sharp constraints.
+                </p>
+              </div>
+            </div>
+
+            <div class="grid">
+              <article class="card span-6">
+                <h3>Scripted transcript vs automatic transcript</h3>
+                <div class="tradeoff">
+                  <div class="side">
+                    <strong>Why scripted wins now</strong>
+                    <p>
+                      It makes the prompt transcript exact by construction and avoids turning ASR errors into TTS
+                      pronunciation errors.
+                    </p>
+                  </div>
+                  <div class="side">
+                    <strong>Cost</strong>
+                    <p>
+                      It asks the user to read a line. This is acceptable because it directly buys synthesis quality.
+                    </p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card span-6">
+                <h3>Warn vs block on poor reference audio</h3>
+                <div class="tradeoff">
+                  <div class="side">
+                    <strong>Warn first</strong>
+                    <p>
+                      Users should be allowed to test imperfect clips, especially during debugging and local model work.
+                    </p>
+                  </div>
+                  <div class="side">
+                    <strong>Block only hard invalids</strong>
+                    <p>
+                      Empty recording, missing consent, missing transcript, and oversized uploads are contract failures.
+                    </p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card span-6">
+                <h3>Progress states vs true streaming</h3>
+                <div class="tradeoff">
+                  <div class="side">
+                    <strong>Progress states first</strong>
+                    <p>
+                      They are verifiable and map to real work: upload, preprocess, analyze, synthesize, finalize.
+                    </p>
+                  </div>
+                  <div class="side">
+                    <strong>Streaming later</strong>
+                    <p>
+                      Segment-ready audio is only worth it if quality and continuity survive chunking.
+                    </p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card span-6">
+                <h3>Preset controls vs default quality</h3>
+                <div class="tradeoff">
+                  <div class="side">
+                    <strong>Keep simple UI</strong>
+                    <p>
+                      Balanced should remain default. Users came to clone a voice, not tune diffusion params.
+                    </p>
+                  </div>
+                  <div class="side">
+                    <strong>Keep metadata honest</strong>
+                    <p>
+                      Store effective timesteps, cfg, denoise, quality preset, and reference grade for debugging.
+                    </p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card span-12">
+                <h3>Decision rule</h3>
+                <p>
+                  If a UI element helps the user produce a better reference, understand synthesis progress, or recover
+                  from a failed run, keep it. If it only exposes runtime trivia, move it to metadata or docs.
+                </p>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel" id="execution">
+          <section class="section" id="execution-section">
+            <div class="section-header">
+              <div>
+                <h2>Execution Log And Checklist</h2>
+                <p class="section-lede">
+                  This page is intentionally editable in the browser for local planning. Checkbox and note state is
+                  stored in localStorage only; it does not modify repo files.
+                </p>
+              </div>
+              <button class="button secondary" type="button" id="reset-state">Reset local state</button>
+            </div>
+
+            <div class="callout">
+              <strong>2026-05-19 doc creation</strong>
+              <p>
+                Created as a docs-only companion while another agent works on the product implementation. Runtime files
+                are intentionally out of scope for this artifact.
+              </p>
+            </div>
+
+            <div class="progress-shell" aria-label="Checklist progress">
+              <div class="progress-meta">
+                <span id="progress-label">0 of 0 complete</span>
+                <span>Local browser state</span>
+              </div>
+              <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+            </div>
+
+            <div class="log-tools">
+              <label class="sr-only" for="check-filter">Filter checklist</label>
+              <input id="check-filter" type="search" placeholder="Filter checklist by text, priority, or status..." />
+            </div>
+
+            <ul class="checklist" id="roadmap-checklist">
+              <li class="check" data-tags="p0 contract transcript scripted">
+                <input type="checkbox" data-check="contract-scripted" />
+                <div>
+                  <strong>P0 - Confirm scripted mode remains the recommended default</strong>
+                  <span>Verify new implementation does not make freeform/upload look equally safe without exact transcript.</span>
+                </div>
+                <select data-status="contract-scripted" aria-label="Status for scripted contract">
+                  <option>Not started</option>
+                  <option>In progress</option>
+                  <option>Blocked</option>
+                  <option>Done</option>
+                </select>
+              </li>
+              <li class="check" data-tags="p1 recording quality meter duration clipping silence">
+                <input type="checkbox" data-check="pre-submit-quality" />
+                <div>
+                  <strong>P1 - Add pre-submit quality feedback</strong>
+                  <span>Duration, signal level, likely clipping, likely silence, and a clear re-record recommendation.</span>
+                </div>
+                <select data-status="pre-submit-quality" aria-label="Status for quality feedback">
+                  <option>Not started</option>
+                  <option>In progress</option>
+                  <option>Blocked</option>
+                  <option>Done</option>
+                </select>
+              </li>
+              <li class="check" data-tags="p1 worker readiness vercel local gpu">
+                <input type="checkbox" data-check="worker-readiness" />
+                <div>
+                  <strong>P1 - Show worker readiness before generation</strong>
+                  <span>Differentiate "you captured a usable voice" from "this environment cannot synthesize right now."</span>
+                </div>
+                <select data-status="worker-readiness" aria-label="Status for worker readiness">
+                  <option>Not started</option>
+                  <option>In progress</option>
+                  <option>Blocked</option>
+                  <option>Done</option>
+                </select>
+              </li>
+              <li class="check" data-tags="p2 audio regression fixtures quality voxcpm">
+                <input type="checkbox" data-check="quality-fixtures" />
+                <div>
+                  <strong>P2 - Create a small synthesis regression set</strong>
+                  <span>Include scripted, freeform, noisy, clipped, and cross-lingual cases with saved metadata.</span>
+                </div>
+                <select data-status="quality-fixtures" aria-label="Status for quality fixtures">
+                  <option>Not started</option>
+                  <option>In progress</option>
+                  <option>Blocked</option>
+                  <option>Done</option>
+                </select>
+              </li>
+              <li class="check" data-tags="p2 job lifecycle polling sse status">
+                <input type="checkbox" data-check="job-lifecycle" />
+                <div>
+                  <strong>P2 - Harden generation as a visible job lifecycle</strong>
+                  <span>Use the in-flight progress stream or equivalent path to expose stage transitions and final audio URL.</span>
+                </div>
+                <select data-status="job-lifecycle" aria-label="Status for job lifecycle">
+                  <option>Not started</option>
+                  <option>In progress</option>
+                  <option>Blocked</option>
+                  <option>Done</option>
+                </select>
+              </li>
+              <li class="check" data-tags="p3 streaming segments mpeg audio prosody">
+                <input type="checkbox" data-check="progressive-audio" />
+                <div>
+                  <strong>P3 - Evaluate progressive audio only after stages are real</strong>
+                  <span>Segment output must preserve prosody, continuity, and speaker identity before it ships.</span>
+                </div>
+                <select data-status="progressive-audio" aria-label="Status for progressive audio">
+                  <option>Not started</option>
+                  <option>In progress</option>
+                  <option>Blocked</option>
+                  <option>Done</option>
+                </select>
+              </li>
+            </ul>
+
+            <div class="note-box">
+              <label for="update-note"><strong>Append local update note</strong></label>
+              <textarea id="update-note" placeholder="Add implementation observations or decisions here. These stay in this browser until copied into the repo."></textarea>
+              <div>
+                <button class="button" type="button" id="add-note">Add note</button>
+              </div>
+              <div class="notes-list" id="notes-list" aria-live="polite"></div>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel" id="verification">
+          <section class="section" id="verification-section">
+            <div class="section-header">
+              <div>
+                <h2>Verification Checklist</h2>
+                <p class="section-lede">
+                  Use this as the acceptance bar for the implementation agent's changes. It separates recording,
+                  synthesis quality, streaming UX, and product safety.
+                </p>
+              </div>
+            </div>
+
+            <div class="verify-grid">
+              <article class="card">
+                <h3><span class="marker coral">R</span> Recording</h3>
+                <ul>
+                  <li>Mic permission denied, no microphone, and unsupported recorder states show actionable copy.</li>
+                  <li>Scripted recording creates a usable File and pairs it with the known script transcript.</li>
+                  <li>Freeform/upload requires transcript before submit.</li>
+                  <li>Captured source audio is playable before generation.</li>
+                  <li>Duration, loudness, and likely clipping/silence guidance appear before submit.</li>
+                  <li>60 second cap is visible while recording and stops cleanly.</li>
+                </ul>
+              </article>
+
+              <article class="card">
+                <h3><span class="marker teal">Q</span> Synthesis Quality</h3>
+                <ul>
+                  <li>Backend receives <code>promptTranscript</code> on every valid request.</li>
+                  <li>VoxCPM2 call stays in ultimate mode with verified prompt text.</li>
+                  <li>Generated output does not prepend the prompt audio.</li>
+                  <li>Metadata includes reference quality and effective params.</li>
+                  <li>Known scripted Mandarin fixture remains intelligible and speaker-like.</li>
+                  <li>Bad reference warnings map to user-readable recommendations.</li>
+                </ul>
+              </article>
+
+              <article class="card">
+                <h3><span class="marker amber">S</span> Streaming And Latency</h3>
+                <ul>
+                  <li>Submit immediately confirms request acceptance or validation failure.</li>
+                  <li>Long generation shows real stage transitions, not a decorative spinner alone.</li>
+                  <li>NDJSON progress, if used, handles partial lines, worker proxying, final ready payload, and error payloads.</li>
+                  <li>Worker-missing state appears before the user assumes the recording failed.</li>
+                  <li>Audio playback starts from the returned URL once the file is ready.</li>
+                  <li>Any segment-ready experiment is compared against whole-file quality before shipping.</li>
+                  <li>Retry path does not require re-recording when the reference is still valid.</li>
+                </ul>
+              </article>
+
+              <article class="card">
+                <h3><span class="marker amber">P</span> Product And Safety</h3>
+                <ul>
+                  <li>Consent remains a hard API gate and visible near the generate action.</li>
+                  <li>zh-Hant remains default and English remains available.</li>
+                  <li>Light, dark, and system theme controls still work.</li>
+                  <li>Keyboard navigation reaches recording, upload, transcript, consent, and submit controls.</li>
+                  <li>No runtime metadata overwhelms the primary "record, type, generate" workflow.</li>
+                  <li>Vercel preview, local worker, and protected Mac Studio worker paths are tested separately.</li>
+                </ul>
+              </article>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        var storageKey = "anyvoice-roadmap-state-v1";
+        var notesKey = "anyvoice-roadmap-notes-v1";
+
+        function loadJson(key, fallback) {
+          try {
+            var raw = window.localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : fallback;
+          } catch (error) {
+            return fallback;
+          }
+        }
+
+        function saveJson(key, value) {
+          try {
+            window.localStorage.setItem(key, JSON.stringify(value));
+          } catch (error) {
+            // Local notes are convenience only.
+          }
+        }
+
+        function selectTab(id) {
+          document.querySelectorAll(".tab").forEach(function (tab) {
+            var isActive = tab.getAttribute("data-tab") === id;
+            tab.setAttribute("aria-selected", String(isActive));
+          });
+          document.querySelectorAll(".panel").forEach(function (panel) {
+            panel.classList.toggle("active", panel.id === id);
+          });
+          if (history.replaceState) {
+            history.replaceState(null, "", "#" + id);
+          }
+        }
+
+        document.querySelectorAll(".tab").forEach(function (tab) {
+          tab.addEventListener("click", function () {
+            selectTab(tab.getAttribute("data-tab"));
+          });
+        });
+
+        document.querySelectorAll('.hero-actions a[href^="#"]').forEach(function (link) {
+          link.addEventListener("click", function (event) {
+            var id = link.getAttribute("href").slice(1);
+            if (!document.getElementById(id) || !document.getElementById(id).classList.contains("panel")) {
+              return;
+            }
+            event.preventDefault();
+            selectTab(id);
+            document.querySelector(".tabs").scrollIntoView({ block: "start" });
+          });
+        });
+
+        var initialHash = window.location.hash.replace("#", "");
+        if (initialHash && document.getElementById(initialHash)) {
+          selectTab(initialHash);
+        }
+
+        document.querySelectorAll(".flow-node button").forEach(function (button) {
+          button.addEventListener("click", function () {
+            var node = button.closest(".flow-node");
+            var open = !node.classList.contains("open");
+            node.classList.toggle("open", open);
+            button.setAttribute("aria-expanded", String(open));
+          });
+        });
+
+        var state = loadJson(storageKey, { checks: {}, statuses: {} });
+        var checkboxes = Array.from(document.querySelectorAll("[data-check]"));
+        var selects = Array.from(document.querySelectorAll("[data-status]"));
+        var progressLabel = document.getElementById("progress-label");
+        var progressFill = document.getElementById("progress-fill");
+
+        function updateProgress() {
+          var total = checkboxes.length;
+          var done = checkboxes.filter(function (box) {
+            return box.checked;
+          }).length;
+          progressLabel.textContent = done + " of " + total + " complete";
+          progressFill.style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+        }
+
+        checkboxes.forEach(function (box) {
+          var key = box.getAttribute("data-check");
+          box.checked = Boolean(state.checks[key]);
+          box.addEventListener("change", function () {
+            state.checks[key] = box.checked;
+            saveJson(storageKey, state);
+            updateProgress();
+          });
+        });
+
+        selects.forEach(function (select) {
+          var key = select.getAttribute("data-status");
+          if (state.statuses[key]) {
+            select.value = state.statuses[key];
+          }
+          select.addEventListener("change", function () {
+            state.statuses[key] = select.value;
+            saveJson(storageKey, state);
+          });
+        });
+
+        updateProgress();
+
+        var filter = document.getElementById("check-filter");
+        filter.addEventListener("input", function () {
+          var query = filter.value.trim().toLowerCase();
+          document.querySelectorAll("#roadmap-checklist .check").forEach(function (item) {
+            var text = (item.textContent + " " + item.getAttribute("data-tags")).toLowerCase();
+            item.style.display = !query || text.indexOf(query) !== -1 ? "" : "none";
+          });
+        });
+
+        function renderNotes() {
+          var notes = loadJson(notesKey, []);
+          var list = document.getElementById("notes-list");
+          list.innerHTML = "";
+          notes.forEach(function (entry) {
+            var item = document.createElement("article");
+            item.className = "note";
+            var time = document.createElement("time");
+            time.textContent = entry.time;
+            var body = document.createElement("div");
+            body.textContent = entry.text;
+            item.appendChild(time);
+            item.appendChild(body);
+            list.appendChild(item);
+          });
+        }
+
+        document.getElementById("add-note").addEventListener("click", function () {
+          var field = document.getElementById("update-note");
+          var text = field.value.trim();
+          if (!text) return;
+          var notes = loadJson(notesKey, []);
+          notes.unshift({
+            time: new Date().toLocaleString(),
+            text: text,
+          });
+          saveJson(notesKey, notes.slice(0, 20));
+          field.value = "";
+          renderNotes();
+        });
+
+        document.getElementById("reset-state").addEventListener("click", function () {
+          if (!window.confirm("Reset local checklist and notes for this roadmap?")) return;
+          window.localStorage.removeItem(storageKey);
+          window.localStorage.removeItem(notesKey);
+          state = { checks: {}, statuses: {} };
+          checkboxes.forEach(function (box) {
+            box.checked = false;
+          });
+          selects.forEach(function (select) {
+            select.selectedIndex = 0;
+          });
+          updateProgress();
+          renderNotes();
+        });
+
+        renderNotes();
+      })();
+    </script>
+  </body>
+</html>

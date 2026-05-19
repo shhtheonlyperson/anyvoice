@@ -4,6 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import Link from "next/link";
 import {
   CircleStop,
+  Gauge,
   Loader2,
   Mic,
   Monitor,
@@ -21,11 +22,22 @@ type Status = "idle" | "requesting_mic" | "recording" | "submitting" | "ready" |
 type Mode = "scripted" | "freeform";
 type SourceKind = "sample" | "scripted" | "freeform" | "uploaded";
 type ReferenceGrade = "A" | "B" | "C" | "D";
+type QualityPreset = "speed" | "balanced" | "quality";
+type ProgressPhase =
+  | "queued"
+  | "input_saved"
+  | "reference_preprocessing"
+  | "reference_analyzed"
+  | "model_loading"
+  | "model_ready"
+  | "synthesis_started"
+  | "audio_ready"
+  | "finalizing";
 
 interface ReferenceQuality {
   grade: ReferenceGrade;
   durationSec: number;
-  snrDb: number;
+  snrDb: number | null;
   clippingRatio: number;
   vadActiveRatio: number;
   warnings: string[];
@@ -46,10 +58,21 @@ interface ClonePayload {
   };
 }
 
+interface CloneProgressPayload {
+  status: "progress";
+  jobId: string;
+  modelId: string;
+  phase: ProgressPhase;
+  message?: string;
+  referenceQuality?: ReferenceQuality;
+  effectiveParams?: ClonePayload["effectiveParams"];
+}
+
 const SONOGRAM_BARS = 64;
 const MAX_TARGET_CHARS = 4096;
 const MAX_TRANSCRIPT_CHARS = 1024;
 const MAX_RECORDING_SECONDS = 60;
+const QUALITY_PRESETS: QualityPreset[] = ["quality", "balanced", "speed"];
 
 const SAMPLE_VOICE_URL = "/sample-voice.wav";
 const SAMPLE_VOICE_FILENAME = "sample-voice.wav";
@@ -111,6 +134,35 @@ const copy = {
     consent: "我擁有這段聲音、或已取得明確授權，且不會用於冒充、詐欺或誤導聽眾。",
     submit: "產生聲音",
     submitting: "送出中",
+    qualityTitle: "合成品質",
+    qualityHelp: "高品質會比較慢，但通常保留聲線和發音更穩。",
+    qualitySpeed: "速度",
+    qualitySpeedHint: "最快回應，適合試句子。",
+    qualityBalanced: "平衡",
+    qualityBalancedHint: "速度和穩定性折衷。",
+    qualityQuality: "高品質",
+    qualityQualityHint: "較慢，優先聲音相似度。",
+    guideIdle: "目標 6–20 秒、正常音量、安靜背景。",
+    guideRequesting: "正在等麥克風權限。",
+    guideKeepReading: "繼續讀，至少錄到 6 秒。",
+    guideGoodLevel: "音量剛好，保持這個距離。",
+    guideTooQuiet: "音量偏小，靠近一點或提高輸入音量。",
+    guideTooLoud: "音量偏大，退遠一點避免破音。",
+    guideEnough: "樣本夠長了，可以停止。",
+    guideReady: "參考音已就緒。",
+    guideCapturedShort: "參考音偏短，建議重錄到 6 秒以上。",
+    guideCapturedLong: "參考音偏長，建議剪到 20–30 秒內。",
+    progressStarting: "準備送出",
+    progressQueued: "排隊中",
+    progressInputSaved: "已保存輸入",
+    progressReferencePreprocessing: "整理參考音",
+    progressReferenceAnalyzed: "已檢查參考音",
+    progressModelLoading: "載入 VoxCPM2",
+    progressModelReady: "模型已就緒",
+    progressSynthesisStarted: "正在合成",
+    progressAudioReady: "音檔完成",
+    progressFinalizing: "整理結果",
+    streamFailed: "串流連線失敗，請重試。",
     outputStatusPending: "Processing",
     outputStatusReady: "Ready",
     outputStatusWarn: "Worker missing",
@@ -177,6 +229,35 @@ const copy = {
       "I own this voice recording, or have explicit permission from the speaker to use it, and I will not use it for impersonation, fraud, or to mislead listeners.",
     submit: "Generate voice",
     submitting: "Submitting",
+    qualityTitle: "Synthesis quality",
+    qualityHelp: "Higher quality is slower, but usually keeps voice identity and pronunciation steadier.",
+    qualitySpeed: "Speed",
+    qualitySpeedHint: "Fastest response for draft lines.",
+    qualityBalanced: "Balanced",
+    qualityBalancedHint: "Middle ground for previews.",
+    qualityQuality: "Quality",
+    qualityQualityHint: "Slower, prioritizes similarity.",
+    guideIdle: "Aim for 6-20 seconds, normal volume, quiet background.",
+    guideRequesting: "Waiting for microphone permission.",
+    guideKeepReading: "Keep reading until at least 6 seconds.",
+    guideGoodLevel: "Level looks good. Keep this distance.",
+    guideTooQuiet: "Input is quiet. Move closer or raise gain.",
+    guideTooLoud: "Input is hot. Back off to avoid clipping.",
+    guideEnough: "Sample is long enough. You can stop.",
+    guideReady: "Reference audio is ready.",
+    guideCapturedShort: "Reference is short. Re-record past 6 seconds for better matching.",
+    guideCapturedLong: "Reference is long. Trim toward 20-30 seconds for steadier cloning.",
+    progressStarting: "Preparing request",
+    progressQueued: "Queued",
+    progressInputSaved: "Input saved",
+    progressReferencePreprocessing: "Preparing reference",
+    progressReferenceAnalyzed: "Reference checked",
+    progressModelLoading: "Loading VoxCPM2",
+    progressModelReady: "Model ready",
+    progressSynthesisStarted: "Synthesizing",
+    progressAudioReady: "Audio written",
+    progressFinalizing: "Finalizing",
+    streamFailed: "Streaming connection failed. Try again.",
     outputStatusPending: "Processing",
     outputStatusReady: "Ready",
     outputStatusWarn: "Worker missing",
@@ -297,6 +378,44 @@ function describeWarning(code: string, payload: ClonePayload, t: typeof copy[Loc
   return code;
 }
 
+function progressLabel(phase: ProgressPhase, t: typeof copy[Locale]): string {
+  switch (phase) {
+    case "queued":
+      return t.progressQueued;
+    case "input_saved":
+      return t.progressInputSaved;
+    case "reference_preprocessing":
+      return t.progressReferencePreprocessing;
+    case "reference_analyzed":
+      return t.progressReferenceAnalyzed;
+    case "model_loading":
+      return t.progressModelLoading;
+    case "model_ready":
+      return t.progressModelReady;
+    case "synthesis_started":
+      return t.progressSynthesisStarted;
+    case "audio_ready":
+      return t.progressAudioReady;
+    case "finalizing":
+      return t.progressFinalizing;
+  }
+}
+
+function isProgressPayload(value: unknown): value is CloneProgressPayload {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { status?: unknown }).status === "progress" &&
+      typeof (value as { phase?: unknown }).phase === "string",
+  );
+}
+
+function isTerminalPayload(value: unknown): value is ClonePayload {
+  if (!value || typeof value !== "object") return false;
+  const status = (value as { status?: unknown }).status;
+  return status === "ready" || status === "needs_worker" || status === "error";
+}
+
 export function VoiceCloneStudio() {
   const [locale, setLocale] = useState<Locale>(() => {
     if (typeof window === "undefined") return "zh-Hant";
@@ -319,12 +438,15 @@ export function VoiceCloneStudio() {
   const [playbackProgress, setPlaybackProgress] = useState(0);
   const [userTargetText, setUserTargetText] = useState<string | null>(null);
   const [freeformTranscript, setFreeformTranscript] = useState("");
-  const [consent, setConsent] = useState(false);
+  const [qualityPreset, setQualityPreset] = useState<QualityPreset>("quality");
+  const [consent, setConsent] = useState(true);
   const [audioUrl, setAudioUrl] = useState("");
   const [message, setMessage] = useState("");
   const [recordingSupported, setRecordingSupported] = useState(true);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const [inputLevel, setInputLevel] = useState(0);
+  const [sourceDuration, setSourceDuration] = useState<number | null>(null);
+  const [streamEvents, setStreamEvents] = useState<CloneProgressPayload[]>([]);
 
   const [referenceQuality, setReferenceQuality] = useState<ReferenceQuality | null>(null);
   const [lastResponse, setLastResponse] = useState<ClonePayload | null>(null);
@@ -375,9 +497,11 @@ export function VoiceCloneStudio() {
     setSourceKind(kind);
     setSourcePreviewUrl(previewUrl);
     setPlaybackProgress(0);
+    setSourceDuration(null);
     setAudioUrl("");
     setStatus("idle");
     setMessage("");
+    setStreamEvents([]);
     setWavePeaks([]);
     setReferenceQuality(null);
     setLastResponse(null);
@@ -551,11 +675,75 @@ export function VoiceCloneStudio() {
     return freeformTranscript.trim();
   }
 
+  function handleProgressPayload(payload: CloneProgressPayload) {
+    setStreamEvents((current) => [...current, payload].slice(-8));
+    if (payload.referenceQuality) setReferenceQuality(payload.referenceQuality);
+  }
+
+  function handleTerminalPayload(payload: ClonePayload, responseOk = true) {
+    setLastResponse(payload);
+    if (payload.referenceQuality) setReferenceQuality(payload.referenceQuality);
+
+    if (!responseOk || payload.status === "error") {
+      setStatus("error");
+      setMessage(payload.message || t.errorTitle);
+      return;
+    }
+    if (payload.status === "needs_worker") {
+      setStatus("needs_worker");
+      setMessage(payload.message || t.workerMissingBody);
+      return;
+    }
+    setStatus("ready");
+    setAudioUrl(payload.audioUrl || "");
+  }
+
+  async function readStreamingResponse(response: Response) {
+    if (!response.body) throw new Error("missing response body");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let terminalSeen = false;
+
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (isProgressPayload(parsed)) {
+        handleProgressPayload(parsed);
+        return;
+      }
+      if (isTerminalPayload(parsed)) {
+        terminalSeen = true;
+        handleTerminalPayload(parsed, response.ok);
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        consumeLine(buffer.slice(0, newlineIndex));
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) consumeLine(buffer);
+    if (!terminalSeen && !response.ok) {
+      setStatus("error");
+      setMessage(t.streamFailed);
+    }
+  }
+
   async function submit() {
     setMessage("");
     setAudioUrl("");
     setReferenceQuality(null);
     setLastResponse(null);
+    setStreamEvents([]);
 
     if (!voiceFile || !sourceKind) {
       setStatus("error");
@@ -585,26 +773,21 @@ export function VoiceCloneStudio() {
     form.set("targetText", targetText);
     form.set("promptTranscript", promptTranscript);
     form.set("consent", "yes");
-    form.set("quality", "balanced");
+    form.set("quality", qualityPreset);
 
-    const response = await fetch("/api/clone", { method: "POST", body: form });
-    const payload = (await response.json()) as ClonePayload;
-
-    setLastResponse(payload);
-    if (payload.referenceQuality) setReferenceQuality(payload.referenceQuality);
-
-    if (!response.ok || payload.status === "error") {
+    try {
+      const response = await fetch("/api/clone/stream", { method: "POST", body: form });
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/x-ndjson")) {
+        await readStreamingResponse(response);
+        return;
+      }
+      const payload = (await response.json()) as ClonePayload;
+      handleTerminalPayload(payload, response.ok);
+    } catch {
       setStatus("error");
-      setMessage(payload.message || t.errorTitle);
-      return;
+      setMessage(t.streamFailed);
     }
-    if (payload.status === "needs_worker") {
-      setStatus("needs_worker");
-      setMessage(payload.message || t.workerMissingBody);
-      return;
-    }
-    setStatus("ready");
-    setAudioUrl(payload.audioUrl || "");
   }
 
   const showWorkerBanner = status === "needs_worker";
@@ -626,6 +809,29 @@ export function VoiceCloneStudio() {
   const submitDisabled = status === "submitting" || isRecording;
   const recordingApproachingLimit = isRecording && recordingElapsed >= MAX_RECORDING_SECONDS - 8;
   const targetNearLimit = targetText.length >= MAX_TARGET_CHARS * 0.8;
+
+  const qualityMeta = {
+    speed: { label: t.qualitySpeed, hint: t.qualitySpeedHint },
+    balanced: { label: t.qualityBalanced, hint: t.qualityBalancedHint },
+    quality: { label: t.qualityQuality, hint: t.qualityQualityHint },
+  } satisfies Record<QualityPreset, { label: string; hint: string }>;
+
+  const recordingGuide = useMemo(() => {
+    if (status === "requesting_mic") return { tone: "info", text: t.guideRequesting };
+    if (isRecording) {
+      if (inputLevel > 0.82) return { tone: "warn", text: t.guideTooLoud };
+      if (recordingElapsed > 1.2 && inputLevel < 0.04) return { tone: "warn", text: t.guideTooQuiet };
+      if (recordingElapsed < 6) return { tone: "info", text: t.guideKeepReading };
+      if (recordingElapsed >= 20) return { tone: "ready", text: t.guideEnough };
+      return { tone: "ready", text: t.guideGoodLevel };
+    }
+    if (voiceFile) {
+      if (sourceDuration !== null && sourceDuration < 4) return { tone: "warn", text: t.guideCapturedShort };
+      if (sourceDuration !== null && sourceDuration > 30) return { tone: "warn", text: t.guideCapturedLong };
+      return { tone: "ready", text: t.guideReady };
+    }
+    return { tone: "info", text: t.guideIdle };
+  }, [inputLevel, isRecording, recordingElapsed, sourceDuration, status, t, voiceFile]);
 
   const warnings = useMemo(() => {
     if (!referenceQuality || !lastResponse) return [];
@@ -655,6 +861,21 @@ export function VoiceCloneStudio() {
     voiceFile !== null &&
     ((mode === "scripted" && (sourceKind === "scripted" || sourceKind === "sample")) ||
       (mode === "freeform" && (sourceKind === "freeform" || sourceKind === "uploaded")));
+
+  const progressRows =
+    streamEvents.length > 0
+      ? streamEvents
+      : status === "submitting"
+        ? [
+            {
+              status: "progress" as const,
+              jobId: "pending",
+              modelId: "",
+              phase: "queued" as const,
+              message: t.progressStarting,
+            },
+          ]
+        : [];
 
   return (
     <main className="shell">
@@ -814,6 +1035,11 @@ export function VoiceCloneStudio() {
             </div>
           </div>
 
+          <div className={`recording-guide is-${recordingGuide.tone}`} role="status">
+            <span aria-hidden />
+            <p>{recordingGuide.text}</p>
+          </div>
+
           <div className="source-readout">
             {sourceKind ? <strong title={voiceFile?.name}>{sourceLabel}</strong> : null}
             {isRecording ? (
@@ -829,6 +1055,10 @@ export function VoiceCloneStudio() {
                 onTimeUpdate={(event) => {
                   const target = event.currentTarget;
                   if (target.duration) setPlaybackProgress(target.currentTime / target.duration);
+                }}
+                onLoadedMetadata={(event) => {
+                  const duration = event.currentTarget.duration;
+                  if (Number.isFinite(duration)) setSourceDuration(duration);
                 }}
                 onEnded={() => setPlaybackProgress(0)}
               />
@@ -881,10 +1111,37 @@ export function VoiceCloneStudio() {
 
         {/* 3. Submit panel */}
         <div className="submit-panel">
-          <label className="consent-inline">
-            <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
-            <span>{t.consent}</span>
-          </label>
+          <div className="submit-settings">
+            <div className="quality-control">
+              <div className="quality-copy">
+                <Gauge size={16} aria-hidden />
+                <div>
+                  <strong>{t.qualityTitle}</strong>
+                  <span>{t.qualityHelp}</span>
+                </div>
+              </div>
+              <div className="quality-options" role="radiogroup" aria-label={t.qualityTitle}>
+                {QUALITY_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    className={`quality-option ${qualityPreset === preset ? "is-active" : ""}`}
+                    type="button"
+                    role="radio"
+                    aria-checked={qualityPreset === preset}
+                    onClick={() => setQualityPreset(preset)}
+                  >
+                    <strong>{qualityMeta[preset].label}</strong>
+                    <span>{qualityMeta[preset].hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="consent-inline">
+              <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
+              <span>{t.consent}</span>
+            </label>
+          </div>
           <button
             className="btn btn--primary btn--lg btn--submit"
             type="button"
@@ -934,6 +1191,17 @@ export function VoiceCloneStudio() {
                 )}
                 {status === "ready" && targetText ? <p className="output-text">{targetText}</p> : null}
               </div>
+
+              {progressRows.length > 0 ? (
+                <ol className="progress-list" aria-label="Synthesis progress">
+                  {progressRows.map((event, index) => (
+                    <li key={`${event.phase}-${index}`} className={index === progressRows.length - 1 ? "is-current" : ""}>
+                      <span className="progress-dot" aria-hidden />
+                      <span>{progressLabel(event.phase, t)}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
 
               {warnings.length > 0 ? (
                 <ul className="reference-warnings">

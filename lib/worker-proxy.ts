@@ -15,7 +15,9 @@ export interface WorkerAuthFailure {
   };
 }
 
-const KNOWN_CLONE_ENDPOINTS = ["/api/local-worker/clone", "/api/clone"];
+const KNOWN_SYNC_CLONE_ENDPOINTS = ["/api/local-worker/clone", "/api/clone"];
+const KNOWN_STREAM_CLONE_ENDPOINTS = ["/api/local-worker/clone/stream", "/api/clone/stream"];
+const KNOWN_CLONE_ENDPOINTS = [...KNOWN_STREAM_CLONE_ENDPOINTS, ...KNOWN_SYNC_CLONE_ENDPOINTS];
 
 export function workerToken(env: WorkerEnv = process.env): string {
   return (env.ANYVOICE_WORKER_TOKEN || "").trim();
@@ -74,7 +76,7 @@ export function workerCloneUrl(env: WorkerEnv = process.env): string {
   try {
     const url = new URL(raw);
     const pathname = url.pathname.replace(/\/+$/, "");
-    if (KNOWN_CLONE_ENDPOINTS.some((endpoint) => pathname.endsWith(endpoint))) {
+    if (KNOWN_SYNC_CLONE_ENDPOINTS.some((endpoint) => pathname.endsWith(endpoint))) {
       return url.toString();
     }
   } catch {
@@ -83,6 +85,24 @@ export function workerCloneUrl(env: WorkerEnv = process.env): string {
 
   const base = workerBaseUrl(env);
   return base ? joinWorkerPath(base, "/api/local-worker/clone") : "";
+}
+
+export function workerCloneStreamUrl(env: WorkerEnv = process.env): string {
+  const raw = configuredWorkerUrl(env);
+  if (!raw) return "";
+
+  try {
+    const url = new URL(raw);
+    const pathname = url.pathname.replace(/\/+$/, "");
+    if (KNOWN_STREAM_CLONE_ENDPOINTS.some((endpoint) => pathname.endsWith(endpoint))) {
+      return url.toString();
+    }
+  } catch {
+    return "";
+  }
+
+  const base = workerBaseUrl(env);
+  return base ? joinWorkerPath(base, "/api/local-worker/clone/stream") : "";
 }
 
 export function workerAudioUrl(jobId: string, env: WorkerEnv = process.env): string {

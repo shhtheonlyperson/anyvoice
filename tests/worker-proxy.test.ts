@@ -4,6 +4,7 @@ import {
   isWorkerMode,
   workerAudioUrl,
   workerBaseUrl,
+  workerCloneStreamUrl,
   workerCloneUrl,
   workerToken,
 } from "@/lib/worker-proxy";
@@ -14,6 +15,7 @@ describe("worker proxy", () => {
 
     expect(workerBaseUrl(env)).toBe("https://worker.example");
     expect(workerCloneUrl(env)).toBe("https://worker.example/api/local-worker/clone");
+    expect(workerCloneStreamUrl(env)).toBe("https://worker.example/api/local-worker/clone/stream");
     expect(workerAudioUrl("abc123", env)).toBe("https://worker.example/api/runs/abc123/audio");
   });
 
@@ -22,7 +24,16 @@ describe("worker proxy", () => {
 
     expect(workerBaseUrl(env)).toBe("https://worker.example");
     expect(workerCloneUrl(env)).toBe("https://worker.example/api/local-worker/clone");
+    expect(workerCloneStreamUrl(env)).toBe("https://worker.example/api/local-worker/clone/stream");
     expect(workerAudioUrl("abc123", env)).toBe("https://worker.example/api/runs/abc123/audio");
+  });
+
+  it("accepts a stream endpoint URL directly", () => {
+    const env = { ANYVOICE_WORKER_URL: "https://worker.example/api/local-worker/clone/stream" };
+
+    expect(workerBaseUrl(env)).toBe("https://worker.example");
+    expect(workerCloneUrl(env)).toBe("https://worker.example/api/local-worker/clone");
+    expect(workerCloneStreamUrl(env)).toBe("https://worker.example/api/local-worker/clone/stream");
   });
 
   it("preserves path-prefixed worker URLs for shared tunnels", () => {
@@ -30,6 +41,7 @@ describe("worker proxy", () => {
 
     expect(workerBaseUrl(env)).toBe("https://worker.example/anyvoice");
     expect(workerCloneUrl(env)).toBe("https://worker.example/anyvoice/api/local-worker/clone");
+    expect(workerCloneStreamUrl(env)).toBe("https://worker.example/anyvoice/api/local-worker/clone/stream");
     expect(workerAudioUrl("abc123", env)).toBe("https://worker.example/anyvoice/api/runs/abc123/audio");
   });
 

@@ -236,6 +236,16 @@ def _flag_was_passed(argv: list[str], *names: str) -> bool:
     return False
 
 
+def emit_progress(enabled: bool, phase: str, message: str | None = None, **fields: Any) -> None:
+    if not enabled:
+        return
+    payload: dict[str, Any] = {"type": "progress", "phase": phase}
+    if message:
+        payload["message"] = message
+    payload.update(fields)
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -275,6 +285,11 @@ def main() -> None:
         help="Quality preset; sets timesteps/cfg/denoise unless overridden by explicit flags.",
     )
     parser.add_argument("--metadata-output")
+    parser.add_argument(
+        "--progress-jsonl",
+        action="store_true",
+        help="Emit newline-delimited JSON progress events to stdout.",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
@@ -305,8 +320,15 @@ def main() -> None:
     if not reference_input.exists():
         raise FileNotFoundError(f"reference audio not found: {reference_input}")
 
+    emit_progress(args.progress_jsonl, "reference_preprocessing", "Preparing reference audio")
     reference_wav = convert_reference_audio(reference_input, run_dir)
     reference_quality = analyze_reference_quality(reference_wav)
+    emit_progress(
+        args.progress_jsonl,
+        "reference_analyzed",
+        "Reference audio analyzed",
+        referenceQuality=reference_quality,
+    )
 
     preset = QUALITY_PRESETS[args.quality]
     effective_timesteps = (
@@ -331,6 +353,7 @@ def main() -> None:
     if optimize_requested and not optimize_enabled:
         print(f"VoxCPM optimize disabled: {optimize_reason}", file=sys.stderr)
 
+    emit_progress(args.progress_jsonl, "model_loading", "Loading VoxCPM2")
     model = VoxCPM.from_pretrained(
         args.model_id,
         load_denoiser=args.load_denoiser,
@@ -338,12 +361,31 @@ def main() -> None:
         local_files_only=args.local_files_only,
         optimize=optimize_enabled,
     )
+    emit_progress(args.progress_jsonl, "model_ready", "VoxCPM2 ready")
 
+    # IMPORTANT: pass only prompt_wav_path + prompt_text (continuation/ultimate
+    # mode). When prompt_wav_path and reference_wav_path were both set to the
+    # same file VoxCPM2 emitted prompt audio + target audio (the user heard the
+    # script read aloud before their actual text). Brenda's pipeline avoids this
+    # by using a separate prompt clip; we only have one reference clip per run,
+    # so omit reference_wav_path entirely.
+    effective_params = {
+        "timesteps": effective_timesteps,
+        "cfgValue": effective_cfg,
+        "denoise": effective_denoise,
+        "qualityPreset": args.quality,
+    }
+
+    emit_progress(
+        args.progress_jsonl,
+        "synthesis_started",
+        "Synthesizing voice",
+        effectiveParams=effective_params,
+    )
     wav = model.generate(
         text=text,
         prompt_wav_path=str(reference_wav),
         prompt_text=prompt_text,
-        reference_wav_path=str(reference_wav),
         cfg_value=effective_cfg,
         inference_timesteps=effective_timesteps,
         min_len=args.min_len,
@@ -354,6 +396,7 @@ def main() -> None:
 
     output_path = ensure_parent(args.output)
     sf.write(str(output_path), wav, model.tts_model.sample_rate)
+    emit_progress(args.progress_jsonl, "audio_ready", "Audio written")
 
     metadata: dict[str, Any] = {
         "model_id": args.model_id,
@@ -370,12 +413,7 @@ def main() -> None:
         "optimize_reason": optimize_reason,
         "output": str(output_path),
         "referenceQuality": reference_quality,
-        "effectiveParams": {
-            "timesteps": effective_timesteps,
-            "cfgValue": effective_cfg,
-            "denoise": effective_denoise,
-            "qualityPreset": args.quality,
-        },
+        "effectiveParams": effective_params,
     }
 
     if args.metadata_output:
@@ -384,7 +422,10 @@ def main() -> None:
             encoding="utf-8",
         )
 
-    print(json.dumps(metadata, ensure_ascii=False))
+    if args.progress_jsonl:
+        print(json.dumps({"type": "metadata", "metadata": metadata}, ensure_ascii=False), flush=True)
+    else:
+        print(json.dumps(metadata, ensure_ascii=False))
 
 
 if __name__ == "__main__":

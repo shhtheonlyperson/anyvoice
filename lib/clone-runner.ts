@@ -14,6 +14,9 @@ interface CommandResult {
   stderr: string;
 }
 
+type JsonLineCallback = (line: Record<string, unknown>) => void;
+export type CloneProgressCallback = (payload: CloneProgressPayload) => void;
+
 export type ReferenceQualityGrade = "A" | "B" | "C" | "D";
 
 export interface ReferenceQuality {
@@ -30,6 +33,27 @@ export interface EffectiveParams {
   cfgValue: number;
   denoise: boolean;
   qualityPreset: QualityPreset;
+}
+
+export type CloneProgressPhase =
+  | "queued"
+  | "input_saved"
+  | "reference_preprocessing"
+  | "reference_analyzed"
+  | "model_loading"
+  | "model_ready"
+  | "synthesis_started"
+  | "audio_ready"
+  | "finalizing";
+
+export interface CloneProgressPayload {
+  status: "progress";
+  jobId: string;
+  modelId: string;
+  phase: CloneProgressPhase;
+  message?: string;
+  referenceQuality?: ReferenceQuality;
+  effectiveParams?: EffectiveParams;
 }
 
 export interface CloneReadyPayload {
@@ -59,7 +83,23 @@ export function fileExtension(name: string, type: string): string {
   return ".audio";
 }
 
-function runCommand(command: string, args: string[], cwd: string): Promise<CommandResult> {
+function parseJsonLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  onJsonLine?: JsonLineCallback,
+): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
@@ -68,15 +108,35 @@ function runCommand(command: string, args: string[], cwd: string): Promise<Comma
     });
     let stdout = "";
     let stderr = "";
+    let pendingStdoutLine = "";
+
+    const consumeStdout = (text: string) => {
+      if (!onJsonLine) return;
+      pendingStdoutLine += text;
+      let newlineIndex = pendingStdoutLine.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = pendingStdoutLine.slice(0, newlineIndex);
+        pendingStdoutLine = pendingStdoutLine.slice(newlineIndex + 1);
+        const parsed = parseJsonLine(line);
+        if (parsed) onJsonLine(parsed);
+        newlineIndex = pendingStdoutLine.indexOf("\n");
+      }
+    };
 
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf-8");
+      const text = chunk.toString("utf-8");
+      stdout += text;
+      consumeStdout(text);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf-8");
     });
     child.on("error", reject);
     child.on("close", (code) => {
+      if (pendingStdoutLine) {
+        const parsed = parseJsonLine(pendingStdoutLine);
+        if (parsed) onJsonLine?.(parsed);
+      }
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -185,6 +245,36 @@ export function parseEffectiveParams(raw: unknown, fallbackQuality: QualityPrese
   };
 }
 
+function workerProgressPayload(
+  jobId: string,
+  currentModelId: string,
+  raw: Record<string, unknown>,
+  fallbackQuality: QualityPreset,
+): CloneProgressPayload | null {
+  if (raw.type !== "progress") return null;
+  const phase = typeof raw.phase === "string" ? raw.phase : "";
+  const validPhase: ReadonlySet<string> = new Set([
+    "reference_preprocessing",
+    "reference_analyzed",
+    "model_loading",
+    "model_ready",
+    "synthesis_started",
+    "audio_ready",
+  ]);
+  if (!validPhase.has(phase)) return null;
+
+  const payload: CloneProgressPayload = {
+    status: "progress",
+    jobId,
+    modelId: currentModelId,
+    phase: phase as CloneProgressPhase,
+  };
+  if (typeof raw.message === "string") payload.message = raw.message;
+  if (raw.referenceQuality) payload.referenceQuality = parseReferenceQuality(raw.referenceQuality);
+  if (raw.effectiveParams) payload.effectiveParams = parseEffectiveParams(raw.effectiveParams, fallbackQuality);
+  return payload;
+}
+
 export async function readMetadata(metadataPath: string): Promise<Record<string, unknown> | null> {
   try {
     const text = await readFile(metadataPath, "utf-8");
@@ -198,8 +288,25 @@ export async function readMetadata(metadataPath: string): Promise<Record<string,
   }
 }
 
-export async function runLocalClone(jobId: string, input: CloneInput): Promise<CloneReadyPayload> {
+export async function runLocalCloneWithProgress(
+  jobId: string,
+  input: CloneInput,
+  onProgress?: CloneProgressCallback,
+): Promise<CloneReadyPayload> {
+  const currentModelId = modelId();
+  onProgress?.({
+    status: "progress",
+    jobId,
+    modelId: currentModelId,
+    phase: "queued",
+  });
   const { runDir, referencePath } = await writeInputFiles(jobId, input);
+  onProgress?.({
+    status: "progress",
+    jobId,
+    modelId: currentModelId,
+    phase: "input_saved",
+  });
   const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
   const script = path.join(process.cwd(), "scripts", "synthesize_voxcpm_anyvoice.py");
   const outputPath = path.join(runDir, "output.wav");
@@ -211,7 +318,7 @@ export async function runLocalClone(jobId: string, input: CloneInput): Promise<C
     "--reference-audio",
     referencePath,
     "--model-id",
-    modelId(),
+    currentModelId,
     "--metadata-output",
     metadataPath,
     "--output",
@@ -221,9 +328,19 @@ export async function runLocalClone(jobId: string, input: CloneInput): Promise<C
     "--prompt-text-file",
     path.join(runDir, "prompt-transcript.txt"),
   ];
+  if (onProgress) args.push("--progress-jsonl");
 
-  const result = await runCommand(python, args, process.cwd());
+  const result = await runCommand(python, args, process.cwd(), (line) => {
+    const payload = workerProgressPayload(jobId, currentModelId, line, input.quality);
+    if (payload) onProgress?.(payload);
+  });
   await writeFile(path.join(runDir, "worker.log"), result.stderr, "utf-8");
+  onProgress?.({
+    status: "progress",
+    jobId,
+    modelId: currentModelId,
+    phase: "finalizing",
+  });
 
   const metadata = await readMetadata(metadataPath);
   const referenceQuality = parseReferenceQuality(metadata?.referenceQuality);
@@ -233,12 +350,16 @@ export async function runLocalClone(jobId: string, input: CloneInput): Promise<C
   return {
     status: "ready",
     jobId,
-    modelId: modelId(),
+    modelId: currentModelId,
     audioUrl: `/api/runs/${jobId}/audio`,
     referenceQuality,
     targetLanguage,
     effectiveParams,
   };
+}
+
+export async function runLocalClone(jobId: string, input: CloneInput): Promise<CloneReadyPayload> {
+  return runLocalCloneWithProgress(jobId, input);
 }
 
 export async function recordCloneError(jobId: string, message: string) {
