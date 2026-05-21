@@ -215,6 +215,16 @@ body {
   background: var(--primary);
   color: var(--on-primary);
 }
+/* cream variant: history rows sit on a light surface */
+.player-menu--cream .speed-group {
+  background: var(--surface-soft);
+}
+.player-menu--cream .speedbtn {
+  color: var(--muted);
+}
+.player-menu--cream .speedbtn--on {
+  color: var(--on-primary);
+}
 
 /* recent-runs history */
 .history {

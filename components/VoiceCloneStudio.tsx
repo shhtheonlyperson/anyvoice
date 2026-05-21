@@ -397,6 +397,55 @@ function Spike() {
   );
 }
 
+// Flattened, centered controls below a player: speed options + download (+ optional
+// regenerate). Replaces the native <audio> ⋮ overflow menu (which we suppress via
+// controlsList) so every option is visible and consistent across result + history.
+function PlayerMenu({
+  speed,
+  setSpeed,
+  downloadUrl,
+  onRegenerate,
+  variant,
+  speedLabel,
+  downloadLabel,
+  regenerateLabel,
+}: {
+  speed: number;
+  setSpeed: (s: number) => void;
+  downloadUrl: string;
+  onRegenerate?: () => void;
+  variant: "dark" | "cream";
+  speedLabel: string;
+  downloadLabel: string;
+  regenerateLabel?: string;
+}) {
+  const btnClass = variant === "cream" ? "btn btn--secondary" : "btn btn--on-dark";
+  return (
+    <div className={"player-menu" + (variant === "cream" ? " player-menu--cream" : "")}>
+      <div className="speed-group" role="group" aria-label={speedLabel}>
+        {SPEEDS.map((s) => (
+          <button
+            key={s}
+            className={"speedbtn" + (speed === s ? " speedbtn--on" : "")}
+            aria-pressed={speed === s}
+            onClick={() => setSpeed(s)}
+          >
+            {s}×
+          </button>
+        ))}
+      </div>
+      <a className={btnClass} href={downloadUrl} download>
+        {downloadLabel}
+      </a>
+      {onRegenerate && regenerateLabel && (
+        <button className={btnClass} onClick={onRegenerate}>
+          {regenerateLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ----------------------------------------------------------- component */
 
 export function VoiceCloneStudio() {
@@ -932,6 +981,7 @@ export function VoiceCloneStudio() {
                   controls
                   autoPlay
                   preload="auto"
+                  controlsList="nodownload noplaybackrate"
                   src={audioUrl}
                   onPlay={(e) => {
                     e.currentTarget.playbackRate = speed;
@@ -941,30 +991,16 @@ export function VoiceCloneStudio() {
                   <track kind="captions" />
                 </audio>
               )}
-              <div className="player-menu">
-                <div className="speed-group" role="group" aria-label={t.speedLabel}>
-                  {SPEEDS.map((s) => (
-                    <button
-                      key={s}
-                      className={"speedbtn" + (speed === s ? " speedbtn--on" : "")}
-                      aria-pressed={speed === s}
-                      onClick={() => setSpeed(s)}
-                    >
-                      {s}×
-                    </button>
-                  ))}
-                </div>
-                <a
-                  className="btn btn--on-dark"
-                  href={audioUrl ? `${audioUrl}?format=wav` : "#"}
-                  download
-                >
-                  {t.download}
-                </a>
-                <button className="btn btn--on-dark" onClick={doGenerate}>
-                  {t.regenerate}
-                </button>
-              </div>
+              <PlayerMenu
+                variant="dark"
+                speed={speed}
+                setSpeed={setSpeed}
+                downloadUrl={audioUrl ? `${audioUrl}?format=wav` : "#"}
+                onRegenerate={doGenerate}
+                speedLabel={t.speedLabel}
+                downloadLabel={t.download}
+                regenerateLabel={t.regenerate}
+              />
             </div>
           )}
 
@@ -976,16 +1012,27 @@ export function VoiceCloneStudio() {
                   <div className="history-row" key={h.id}>
                     <p className="history-text">{h.targetText}</p>
                     {h.audioUrl && (
-                      <audio
-                        controls
-                        preload="none"
-                        src={h.audioUrl}
-                        onPlay={(e) => {
-                          e.currentTarget.playbackRate = speed;
-                        }}
-                      >
-                        <track kind="captions" />
-                      </audio>
+                      <>
+                        <audio
+                          controls
+                          preload="none"
+                          controlsList="nodownload noplaybackrate"
+                          src={h.audioUrl}
+                          onPlay={(e) => {
+                            e.currentTarget.playbackRate = speed;
+                          }}
+                        >
+                          <track kind="captions" />
+                        </audio>
+                        <PlayerMenu
+                          variant="cream"
+                          speed={speed}
+                          setSpeed={setSpeed}
+                          downloadUrl={`${h.audioUrl}?format=wav`}
+                          speedLabel={t.speedLabel}
+                          downloadLabel={t.download}
+                        />
+                      </>
                     )}
                   </div>
                 ))}
