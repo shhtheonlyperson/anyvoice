@@ -8,6 +8,7 @@ import {
   markSegment,
   nextPendingIndex,
   segmentAudioPath,
+  setBookStatus,
 } from "@/lib/book-job";
 
 // Books currently being synthesized in-process, so a re-trigger doesn't start a
@@ -55,6 +56,9 @@ export async function runBookSynthesis(id: string): Promise<void> {
         await markSegment(id, index, "error");
       }
     }
+  } catch {
+    // e.g. profile not ready / no reference clip — surface as a failed book.
+    await setBookStatus(id, "error").catch(() => {});
   } finally {
     running.delete(id);
   }
