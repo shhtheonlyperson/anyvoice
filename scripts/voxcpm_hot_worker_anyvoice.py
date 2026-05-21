@@ -27,6 +27,7 @@ from synthesize_voxcpm_anyvoice import (
     read_json_file,
     read_text_arg,
     should_enable_optimize,
+    trim_leading_artifact,
 )
 
 
@@ -260,6 +261,7 @@ class HotVoxCPMWorker:
             if clone_mode == "hifi":
                 generate_kwargs["reference_wav_path"] = str(reference_wav)
             wav = model.generate(**generate_kwargs)
+            wav = trim_leading_artifact(wav, model.tts_model.sample_rate)
             generate_seconds = round(time.perf_counter() - started_at, 3)
 
         sf.write(str(output_path), wav, model.tts_model.sample_rate)

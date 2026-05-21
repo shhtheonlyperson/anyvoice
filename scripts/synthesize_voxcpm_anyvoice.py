@@ -114,6 +114,47 @@ def convert_reference_audio(input_path: Path, run_dir: Path) -> Path:
     raise RuntimeError("ffmpeg is required to preprocess non-wav reference audio.")
 
 
+def trim_leading_artifact(wav: np.ndarray, sr: int) -> np.ndarray:
+    """Drop VoxCPM2's start-of-generation artifact.
+
+    The model often emits a short phantom syllable (e.g. a stray "奏") in the
+    first ~200ms, followed by a clear silence gap, before the real speech. We
+    detect that "short leading burst + gap" pattern and cut to the real onset.
+    Conservative thresholds avoid trimming a genuine short leading word: the
+    burst must start almost immediately, be brief, and be followed by a
+    substantial silence gap with real audio after it.
+    """
+    x = np.asarray(wav)
+    mono = x.mean(axis=1) if x.ndim > 1 else x
+    if mono.size < sr // 2:
+        return wav
+    win = max(1, int(sr * 0.02))
+    n = mono.size // win
+    if n < 8:
+        return wav
+    rms = np.sqrt(np.mean(mono[: n * win].astype(np.float64).reshape(n, win) ** 2, axis=1) + 1e-12)
+    thr = max(0.02, float(rms.max()) * 0.18)
+    active = rms >= thr
+    if not active.any():
+        return wav
+    start = int(np.argmax(active))
+    if start * win / sr > 0.12:  # no immediate leading burst — leave as is
+        return wav
+    end = start
+    while end < n and active[end]:
+        end += 1
+    burst_len = (end - start) * win / sr
+    gap = end
+    while gap < n and not active[gap]:
+        gap += 1
+    gap_len = (gap - end) * win / sr
+    # short burst (<0.35s) + meaningful gap (>0.15s) + speech remaining after
+    if burst_len < 0.35 and gap_len > 0.15 and gap < n:
+        cut = gap * win
+        return wav[cut:] if x.ndim == 1 else wav[cut:, :]
+    return wav
+
+
 def _frame_rms(samples: np.ndarray, sr: int, window_ms: float = 20.0) -> np.ndarray:
     win = max(1, int(sr * window_ms / 1000.0))
     if samples.size < win:
@@ -577,6 +618,7 @@ def main() -> None:
         generate_kwargs["reference_wav_path"] = str(reference_wav)
 
     wav = model.generate(**generate_kwargs)
+    wav = trim_leading_artifact(wav, model.tts_model.sample_rate)
 
     output_path = ensure_parent(args.output)
     sf.write(str(output_path), wav, model.tts_model.sample_rate)
