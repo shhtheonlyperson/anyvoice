@@ -171,15 +171,17 @@ function runCommand(
 // Produce a small AAC/m4a alongside output.wav for fast streaming playback.
 // Best-effort: if ffmpeg is missing or fails, the audio route falls back to WAV.
 // `+faststart` puts the moov atom first so playback starts before full download.
+export async function transcodeWavToM4a(wavPath: string, m4aPath: string): Promise<void> {
+  await runCommand(
+    process.env.ANYVOICE_FFMPEG || "ffmpeg",
+    ["-y", "-hide_banner", "-loglevel", "error", "-i", wavPath, "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", m4aPath],
+    path.dirname(m4aPath),
+  );
+}
+
 async function transcodeToCompressed(runDir: string): Promise<void> {
-  const wav = path.join(runDir, "output.wav");
-  const m4a = path.join(runDir, "output.m4a");
   try {
-    await runCommand(
-      process.env.ANYVOICE_FFMPEG || "ffmpeg",
-      ["-y", "-hide_banner", "-loglevel", "error", "-i", wav, "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", m4a],
-      runDir,
-    );
+    await transcodeWavToM4a(path.join(runDir, "output.wav"), path.join(runDir, "output.m4a"));
   } catch {
     /* keep WAV-only playback */
   }
@@ -637,4 +639,88 @@ export async function recordCloneError(jobId: string, message: string) {
   const runDir = safeRunDir(jobId);
   await mkdir(runDir, { recursive: true });
   await writeFile(path.join(runDir, "error.txt"), message, "utf-8");
+}
+
+// Synthesize a single book segment directly (no run-history), reusing the same
+// VoxCPM2 worker contract as the clone pipeline. Writes a compressed .m4a at
+// outputM4aPath. Files are written into workDir (reused across a book's segments).
+export interface SegmentSynthInput {
+  targetText: string;
+  referenceAudioPath: string;
+  promptTranscript: string;
+  workDir: string;
+  outputM4aPath: string;
+  quality?: QualityPreset;
+}
+
+export async function synthesizeSegment(input: SegmentSynthInput): Promise<void> {
+  const { workDir, outputM4aPath } = input;
+  const quality: QualityPreset = input.quality ?? "balanced";
+  await mkdir(workDir, { recursive: true });
+
+  const targetPrep = prepareVoiceText(input.targetText, { autoApplyPresetPronunciations: true });
+  const promptPrep = prepareVoiceText(input.promptTranscript);
+  const targetTextPath = path.join(workDir, "target.txt");
+  const promptTextPath = path.join(workDir, "prompt.txt");
+  const textPrepPath = path.join(workDir, "text-prep.json");
+  const metadataPath = path.join(workDir, "metadata.json");
+  const wavPath = path.join(workDir, "seg.wav");
+
+  await writeFile(targetTextPath, targetPrep.model, "utf-8");
+  await writeFile(promptTextPath, promptPrep.model, "utf-8");
+  await writeFile(
+    textPrepPath,
+    JSON.stringify({ targetText: targetPrep, promptTranscript: promptPrep }),
+    "utf-8",
+  );
+
+  const currentModelId = modelId();
+  const seed = stabilitySeed();
+  const loraPath = voxcpmLoraPath();
+  const base = hotWorkerUrl();
+
+  if (base) {
+    const endpoint = hotWorkerCloneUrl(base);
+    if (!endpoint) throw new Error("ANYVOICE_HOT_WORKER_URL is invalid");
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        textFile: targetTextPath,
+        referenceAudio: input.referenceAudioPath,
+        promptTextFile: promptTextPath,
+        output: wavPath,
+        metadataOutput: metadataPath,
+        textPrepFile: textPrepPath,
+        quality,
+        stabilitySeed: seed,
+        modelId: currentModelId,
+        cloneMode: voxcpmCloneMode(),
+        ...(loraPath ? { loraPath } : {}),
+      }),
+    });
+    if (!response.ok) throw new Error(`hot worker returned ${response.status}`);
+    await response.text(); // drain ndjson; worker writes the wav before closing
+  } else {
+    const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
+    const script = path.join(process.cwd(), "scripts", "synthesize_voxcpm_anyvoice.py");
+    const args = [
+      script,
+      "--text-file", targetTextPath,
+      "--reference-audio", input.referenceAudioPath,
+      "--model-id", currentModelId,
+      "--metadata-output", metadataPath,
+      "--text-prep-file", textPrepPath,
+      "--output", wavPath,
+      "--quality", quality,
+      "--clone-mode", voxcpmCloneMode(),
+      "--prompt-text-file", promptTextPath,
+    ];
+    if (seed !== null) args.push("--seed", String(seed));
+    if (loraPath) args.push("--lora-path", loraPath);
+    await runCommand(python, args, process.cwd());
+  }
+
+  await transcodeWavToM4a(wavPath, outputM4aPath);
 }
