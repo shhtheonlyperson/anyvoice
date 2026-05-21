@@ -60,10 +60,6 @@ interface VoiceProfileEnrollmentPayload {
 
 /* ------------------------------------------------------- preserved data */
 
-const SAMPLE_VOICE_URL = "/sample-voice.wav";
-const SAMPLE_VOICE_FILENAME = "sample-voice.wav";
-const SAMPLE_VOICE_TRANSCRIPT =
-  "當你看著夜空時，因為我住在其中一顆星星上，因為我會在其中一顆星星上笑，那麼對你來說，就好像所有的星星都在笑。";
 
 const DEFAULT_QUALITY = "balanced";
 
@@ -124,13 +120,6 @@ function supportedRecorderOptions(): MediaRecorderOptions | undefined {
   return mimeType ? { mimeType } : undefined;
 }
 
-async function fetchSampleVoiceFile(): Promise<File> {
-  const response = await fetch(SAMPLE_VOICE_URL, { cache: "force-cache" });
-  if (!response.ok) throw new Error(`sample voice fetch failed: ${response.status}`);
-  const buffer = await response.arrayBuffer();
-  return new File([buffer], SAMPLE_VOICE_FILENAME, { type: "audio/wav" });
-}
-
 // Block Simplified / mixed / unproven Chinese (real product safety contract).
 // Pure non-Chinese (English) target text is allowed.
 function isUnstableChineseScript(text: string): boolean {
@@ -169,6 +158,12 @@ type Copy = {
   voiceSample: string;
   voiceMine: string;
   voiceMineHint: string;
+  voiceUpload: string;
+  uploadHint: string;
+  uploadPick: string;
+  uploadPicked: (name: string) => string;
+  uploadTranscriptLabel: string;
+  uploadTranscriptPlaceholder: string;
   textLabel: string;
   placeholder: string;
   generate: string;
@@ -235,6 +230,12 @@ const COPY: Record<Locale, Copy> = {
     voiceSample: "範例聲音",
     voiceMine: "我的聲音",
     voiceMineHint: "先建立你的聲音檔案才能使用",
+    voiceUpload: "我的錄音",
+    uploadHint: "上傳一段你自己的乾淨錄音（6 秒以上最佳），並打上這段錄音實際說的內容，即可立即複製你的聲音。",
+    uploadPick: "選擇音檔",
+    uploadPicked: (name) => `已選：${name}`,
+    uploadTranscriptLabel: "這段錄音說了什麼（逐字）",
+    uploadTranscriptPlaceholder: "把錄音裡實際說的話一字不差打進來…",
     textLabel: "想說的內容",
     placeholder: "輸入你想讓這個聲音說出的內容…",
     generate: "產生聲音",
@@ -299,6 +300,12 @@ const COPY: Record<Locale, Copy> = {
     voiceSample: "Sample voice",
     voiceMine: "My voice",
     voiceMineHint: "Build your voice profile to use this",
+    voiceUpload: "My recording",
+    uploadHint: "Upload a clean recording of yourself (6s+ is best) and type exactly what it says — clones your voice instantly.",
+    uploadPick: "Choose audio file",
+    uploadPicked: (name) => `Selected: ${name}`,
+    uploadTranscriptLabel: "What the recording says (verbatim)",
+    uploadTranscriptPlaceholder: "Type exactly what's spoken in the recording…",
     textLabel: "What to say",
     placeholder: "Write the line you want this voice to say…",
     generate: "Generate voice",
@@ -378,10 +385,12 @@ export function VoiceCloneStudio() {
   const t = COPY[locale];
   const scripts = SCRIPT_PACK[locale];
 
-  // persisted locale + theme
+  // persisted locale + theme — read after mount (localStorage is unavailable
+  // during SSR; a lazy initializer would cause a hydration mismatch).
   useEffect(() => {
     try {
       const storedLocale = window.localStorage.getItem("anyvoice:locale");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- post-mount hydration
       if (storedLocale === "en" || storedLocale === "zh-Hant") setLocale(storedLocale);
       const storedTheme = window.localStorage.getItem("anyvoice:theme");
       if (storedTheme === "light" || storedTheme === "dark") setTheme(storedTheme);
@@ -409,8 +418,7 @@ export function VoiceCloneStudio() {
     if (typeof document !== "undefined") document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  // ---- generate state
-  const [voice, setVoice] = useState<"sample" | "mine">("sample");
+  // ---- generate state (one voice: yours, from your profile)
   const [text, setText] = useState("");
   const [pronText, setPronText] = useState("");
   const [gen, setGen] = useState<GenState>("idle");
@@ -450,6 +458,7 @@ export function VoiceCloneStudio() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async profile load after mount
     void loadVoiceProfile();
   }, [loadVoiceProfile]);
 
@@ -478,10 +487,8 @@ export function VoiceCloneStudio() {
     });
   }
 
-  const usingProfile = voice === "mine" && profileReady;
-  const targetScriptBlocked = usingProfile && isUnstableChineseScript(text);
-  const generateDisabled =
-    !text.trim() || gen === "busy" || (voice === "mine" && !profileReady) || targetScriptBlocked;
+  const targetScriptBlocked = profileReady && isUnstableChineseScript(text);
+  const generateDisabled = !text.trim() || gen === "busy" || !profileReady || targetScriptBlocked;
 
   /* ----------------------------- streaming parse (reused contract) */
 
@@ -563,14 +570,9 @@ export function VoiceCloneStudio() {
     if (pronText.trim()) form.set("pronunciationOverrides", pronText);
 
     try {
-      if (usingProfile) {
-        form.set("useVoiceProfile", "yes");
-      } else {
-        const sample = await fetchSampleVoiceFile();
-        form.set("voice", sample);
-        form.set("promptTranscript", SAMPLE_VOICE_TRANSCRIPT);
-        form.set("sourceKind", "sample");
-      }
+      // One voice: yours. The server resolves the best enrolled clip and clones
+      // it zero-shot — no upload, no transcript typing, no sample.
+      form.set("useVoiceProfile", "yes");
       void modelText; // model preview computed for parity; server re-derives
 
       const response = await fetch("/api/clone/stream", { method: "POST", body: form });
@@ -772,30 +774,16 @@ export function VoiceCloneStudio() {
           </div>
 
           <div className="card card--cream" style={{ display: "grid", gap: 28 }}>
-            <div>
-              <span className="label">{t.voiceLabel}</span>
-              <div className="seg" role="group" aria-label={t.voiceLabel}>
-                <button aria-pressed={voice === "sample"} onClick={() => setVoice("sample")}>
-                  {t.voiceSample}
-                </button>
-                <button
-                  aria-pressed={voice === "mine"}
-                  disabled={!profileReady}
-                  onClick={() => profileReady && setVoice("mine")}
-                >
-                  {t.voiceMine}
-                  <span className={"dot " + (profileReady ? "dot--ok" : "dot--warn")} />
+            {!profileReady && (
+              <div className="row between" style={{ gap: 16 }}>
+                <span className="muted small" style={{ margin: 0 }}>
+                  {t.voiceMineHint}
+                </span>
+                <button className="btn btn--secondary" onClick={() => setScreen("build")}>
+                  {t.navBuild} →
                 </button>
               </div>
-              {!profileReady && (
-                <p className="muted small" style={{ marginTop: 10 }}>
-                  {t.voiceMineHint} ·{" "}
-                  <button className="link" onClick={() => setScreen("build")}>
-                    {t.navBuild} →
-                  </button>
-                </p>
-              )}
-            </div>
+            )}
 
             <div>
               <div className="row between">

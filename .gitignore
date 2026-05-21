@@ -13,3 +13,4 @@ generated/
 .vercel
 __pycache__/
 *.pyc
+my-voice-*.wav

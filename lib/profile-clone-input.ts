@@ -69,19 +69,22 @@ export async function parseCloneFormWithProfile(form: FormData): Promise<ParsedC
     );
   }
 
+  // Everyday generation uses the ready profile's best clip zero-shot. The full
+  // ASR transcript-validation hard gate is reserved for the 10x / LoRA proof
+  // path (verify route, quality gate), not for routine "speak in my voice".
   let profile = summary;
   try {
     const verification = await verifyVoiceProfileReadiness({
       profileId: summary.voiceProfileId,
-      requireTranscriptValidation: true,
+      requireTranscriptValidation: false,
     });
     if (verification.status !== "ready") {
-      return error(409, `voice profile hard gate is blocked: ${firstFailedCheck(verification)}`);
+      return error(409, `voice profile is not ready yet: ${firstFailedCheck(verification)}`);
     }
     profile = await loadVoiceProfileManifest(verification.profile);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "strict voice-profile check failed";
-    return error(409, `voice profile needs a passing strict check before generation: ${message}`);
+    const message = err instanceof Error ? err.message : "voice-profile check failed";
+    return error(409, `voice profile needs a passing readiness check before generation: ${message}`);
   }
 
   const selection = selectVoiceProfileClipForTarget(profile, targetText);

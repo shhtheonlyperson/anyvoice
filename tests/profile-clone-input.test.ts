@@ -248,22 +248,25 @@ describe("parseCloneFormWithProfile", () => {
     expect(input.body.message).toMatch(/unproven Chinese/);
   });
 
-  it("rejects a ready summary until the strict profile check passes", async () => {
+  it("resolves a ready profile for everyday generation without a transcript-validation report", async () => {
     for (let index = 1; index <= 5; index += 1) {
       await writeRun(`run-${index}`, {
         transcript: profileTranscriptFixtures[index - 1],
         durationSec: 12 - index,
       });
     }
+    await writeStrictReadyProfile();
+    // The full ASR transcript-validation proof is reserved for the 10x / LoRA
+    // path; routine "speak in my voice" must not require it.
+    await rm(path.join(transcriptValidationRoot, "local-default.json"), { force: true });
 
     const input = await parseCloneFormWithProfile(profileForm());
-    expect(isCloneInputError(input)).toBe(true);
-    if (!isCloneInputError(input)) throw new Error("expected error");
-    expect(input.statusCode).toBe(409);
-    expect(input.body.message).toMatch(/strict check/);
+    expect(isCloneInputError(input)).toBe(false);
+    if (isCloneInputError(input)) throw new Error("expected clone input");
+    expect(input.sourceKind).toBe("profile");
   });
 
-  it("rejects profile generation when transcript validation fails", async () => {
+  it("still resolves everyday generation even if transcript validation previously failed", async () => {
     for (let index = 1; index <= 5; index += 1) {
       await writeRun(`run-${index}`, {
         transcript: profileTranscriptFixtures[index - 1],
@@ -273,10 +276,9 @@ describe("parseCloneFormWithProfile", () => {
     await writeStrictReadyProfile({ validationStatus: "blocked" });
 
     const input = await parseCloneFormWithProfile(profileForm());
-    expect(isCloneInputError(input)).toBe(true);
-    if (!isCloneInputError(input)) throw new Error("expected error");
-    expect(input.statusCode).toBe(409);
-    expect(input.body.message).toMatch(/transcript validation|ASR/i);
+    expect(isCloneInputError(input)).toBe(false);
+    if (isCloneInputError(input)) throw new Error("expected clone input");
+    expect(input.sourceKind).toBe("profile");
   });
 
   it("rejects profile use until enough eligible clips exist", async () => {

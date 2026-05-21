@@ -126,26 +126,31 @@ describe("VoiceCloneStudio (behavior)", () => {
     container.remove();
   });
 
-  it("disables 我的聲音 and shows the build CTA when profile needs enrollment", async () => {
+  it("disables generation and shows the build CTA when the profile needs enrollment", async () => {
     stubFetch("needs_enrollment");
     const { container, root } = await mount();
-    const mineBtn = Array.from(container.querySelectorAll(".seg button")).find((b) =>
-      (b.textContent || "").includes("我的聲音"),
-    ) as HTMLButtonElement | undefined;
-    expect(mineBtn?.disabled).toBe(true);
-    // build CTA visible
+    // no voice picker: a single voice (yours). Not ready -> generate disabled + build CTA.
+    expect(container.querySelector(".seg")).toBeNull();
+    const genBtn = container.querySelector("button.btn--primary.btn--lg") as HTMLButtonElement;
+    expect(genBtn.disabled).toBe(true);
     expect(container.textContent).toContain("先建立你的聲音檔案");
+    expect(container.textContent).not.toContain("範例聲音");
     await act(async () => root.unmount());
     container.remove();
   });
 
-  it("enables 我的聲音 when the profile is ready", async () => {
+  it("enables generation once the profile is ready", async () => {
     stubFetch("ready");
     const { container, root } = await mount();
-    const mineBtn = Array.from(container.querySelectorAll(".seg button")).find((b) =>
-      (b.textContent || "").includes("我的聲音"),
-    ) as HTMLButtonElement | undefined;
-    expect(mineBtn?.disabled).toBe(false);
+    const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(textarea, "用我的聲音說這句話。");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    const genBtn = container.querySelector("button.btn--primary.btn--lg") as HTMLButtonElement;
+    expect(genBtn.disabled).toBe(false);
     await act(async () => root.unmount());
     container.remove();
   });
@@ -153,12 +158,7 @@ describe("VoiceCloneStudio (behavior)", () => {
   it("blocks profile generation when target text is Simplified/mixed Chinese", async () => {
     const fetchMock = stubFetch("ready");
     const { container, root } = await mount();
-    // select My voice
-    const mineBtn = Array.from(container.querySelectorAll(".seg button")).find((b) =>
-      (b.textContent || "").includes("我的聲音"),
-    ) as HTMLButtonElement;
-    click(mineBtn);
-    // type Simplified text
+    // type Simplified text (profile is ready -> single voice path)
     const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
     act(() => {
