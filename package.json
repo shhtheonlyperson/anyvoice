@@ -12,11 +12,14 @@
     "coverage": "vitest run --coverage --coverage.all --coverage.include=lib/** --coverage.include=app/** --coverage.include=components/**"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "lucide-react": "^0.555.0",
     "nanoid": "^5.1.11",
     "next": "16.2.6",
+    "node-html-parser": "^7.1.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
