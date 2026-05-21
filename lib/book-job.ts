@@ -35,9 +35,11 @@ export interface BookProgress {
 type BooksEnv = Record<string, string | undefined>;
 
 export function booksRoot(env: BooksEnv = process.env): string {
-  if (env.ANYVOICE_BOOKS_ROOT) return env.ANYVOICE_BOOKS_ROOT;
+  // Absolute paths: the hot worker is a separate process and resolves output
+  // paths against its own cwd, so relative paths would write seg.wav elsewhere.
+  if (env.ANYVOICE_BOOKS_ROOT) return path.resolve(env.ANYVOICE_BOOKS_ROOT);
   const base = env.ANYVOICE_RUNS_DIR || path.join(process.cwd(), ".anyvoice");
-  return path.join(base, "books");
+  return path.resolve(base, "books");
 }
 
 export function bookDir(id: string, env: BooksEnv = process.env): string {
@@ -150,6 +152,17 @@ export async function markSegment(
   if (progress.done + progress.errors >= progress.statuses.length && progress.status === "synthesizing") {
     progress.status = progress.errors > 0 ? "error" : "done";
   }
+  await saveProgress(id, progress);
+  return progress;
+}
+
+/** Reset errored segments to pending so resume retries them. */
+export async function retryErroredSegments(id: string): Promise<BookProgress | null> {
+  const progress = await loadProgress(id);
+  if (!progress) return null;
+  progress.statuses = progress.statuses.map((s) => (s === "error" ? "pending" : s));
+  progress.errors = 0;
+  progress.status = "synthesizing";
   await saveProgress(id, progress);
   return progress;
 }

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { loadBookMeta, loadProgress, setBookStatus } from "@/lib/book-job";
+import { loadBookMeta, loadProgress, retryErroredSegments, setBookStatus } from "@/lib/book-job";
 import { startBookSynthesis } from "@/lib/book-synthesizer";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 
@@ -22,7 +22,8 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     return reply({ progress });
   }
   if (body.action === "resume") {
-    const progress = await setBookStatus(id, "synthesizing");
+    // Resume also retries any failed segments (e.g. a transient worker hiccup).
+    const progress = await retryErroredSegments(id);
     startBookSynthesis(id);
     return reply({ progress });
   }

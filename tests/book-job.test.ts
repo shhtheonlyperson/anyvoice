@@ -12,6 +12,7 @@ import {
   nextPendingIndex,
   setBookStatus,
   deleteBook,
+  retryErroredSegments,
 } from "@/lib/book-job";
 import { segmentBook } from "@/lib/book-segment";
 
@@ -79,6 +80,17 @@ describe("book job model", () => {
     const list = await listBooks("av_me");
     expect(list).toHaveLength(1);
     expect(list[0].id).toBe(mine.id);
+  });
+
+  it("retries errored segments on resume", async () => {
+    const meta = await makeBook();
+    await markSegment(meta.id, 0, "error");
+    for (let i = 1; i < meta.segmentCount; i += 1) await markSegment(meta.id, i, "done");
+    expect((await loadProgress(meta.id))?.status).toBe("error");
+    const progress = await retryErroredSegments(meta.id);
+    expect(progress?.errors).toBe(0);
+    expect(progress?.status).toBe("synthesizing");
+    expect(nextPendingIndex(progress!)).toBe(0); // the previously-errored segment
   });
 
   it("deletes only the owner's book", async () => {

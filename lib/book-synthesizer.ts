@@ -52,7 +52,8 @@ export async function runBookSynthesis(id: string): Promise<void> {
           outputM4aPath: segmentAudioPath(id, index),
         });
         await markSegment(id, index, "done");
-      } catch {
+      } catch (err) {
+        console.error(`[book ${id}] segment ${index} failed:`, err);
         await markSegment(id, index, "error");
       }
     }

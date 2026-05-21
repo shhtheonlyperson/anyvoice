@@ -251,6 +251,71 @@ body {
   height: 36px;
 }
 
+/* audiobook shelf + reader */
+.book-shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+.book-card {
+  background: var(--surface-card);
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
+  display: grid;
+  gap: 8px;
+}
+.book-open {
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.book-title {
+  font-size: 18px;
+  color: var(--ink);
+}
+.book-bar {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--hairline);
+  overflow: hidden;
+}
+.book-bar i {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+.chapter-list {
+  display: grid;
+  gap: 2px;
+}
+.chapter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: var(--r-md);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.chapter-row:hover {
+  background: var(--surface-soft);
+}
+.chapter-row--on {
+  background: var(--surface-cream-strong);
+}
+.chapter-title {
+  font-size: 14px;
+  color: var(--body-strong);
+}
+
 /* layout */
 .wrap {
   max-width: 1100px;

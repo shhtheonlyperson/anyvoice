@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { deleteBook, loadBookMeta, loadProgress } from "@/lib/book-job";
+import { deleteBook, loadBookMeta, loadProgress, loadSegments } from "@/lib/book-job";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 
 export const runtime = "nodejs";
@@ -12,7 +12,9 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
     return withAnyVoiceUserCookie(Response.json({ status: "error", message: "book not found" }, { status: 404 }), session);
   }
   const progress = await loadProgress(id);
-  return withAnyVoiceUserCookie(Response.json({ book: meta, progress }), session);
+  // Segment texts are sent once on open (not on every poll) for follow-along display.
+  const segments = await loadSegments(id);
+  return withAnyVoiceUserCookie(Response.json({ book: meta, progress, segments }), session);
 }
 
 export async function DELETE(req: NextRequest, context: { params: Promise<{ id: string }> }) {

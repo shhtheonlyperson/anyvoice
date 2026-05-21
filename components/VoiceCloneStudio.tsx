@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BookReader } from "@/components/BookReader";
 import {
   parsePronunciationOverrides,
   prepareVoiceText,
@@ -14,7 +15,7 @@ import {
 
 type Locale = "zh-Hant" | "en";
 type Theme = "light" | "dark";
-type Screen = "generate" | "build";
+type Screen = "generate" | "build" | "book";
 type GenState = "idle" | "busy" | "done" | "needs_worker" | "error";
 type ClipState = "idle" | "ok" | "bad";
 type SourceKind = "scripted";
@@ -162,6 +163,7 @@ type Copy = {
   switchLang: string;
   navGenerate: string;
   navBuild: string;
+  navBook: string;
   themeLabel: string;
   eyebrow: string;
   h1: string;
@@ -237,6 +239,7 @@ const COPY: Record<Locale, Copy> = {
     switchLang: "EN",
     navGenerate: "產生聲音",
     navBuild: "建立我的聲音",
+    navBook: "有聲書",
     themeLabel: "切換深淺色",
     eyebrow: "數位聲音複製",
     h1: "讓你的聲音說任何話",
@@ -310,6 +313,7 @@ const COPY: Record<Locale, Copy> = {
     switchLang: "繁體中文",
     navGenerate: "Generate",
     navBuild: "Build my voice",
+    navBook: "Audiobook",
     themeLabel: "Toggle theme",
     eyebrow: "Digital voice clone",
     h1: "Make your voice say anything",
@@ -882,6 +886,15 @@ export function VoiceCloneStudio() {
             {t.navGenerate}
           </button>
           <button
+            className="pillbtn"
+            aria-pressed={screen === "book"}
+            disabled={!profileReady}
+            title={!profileReady ? t.voiceMineHint : undefined}
+            onClick={() => profileReady && setScreen("book")}
+          >
+            {t.navBook}
+          </button>
+          <button
             className="btn btn--ghost"
             onClick={() => setLocale(locale === "en" ? "zh-Hant" : "en")}
           >
@@ -897,7 +910,9 @@ export function VoiceCloneStudio() {
         </div>
       </nav>
 
-      {screen === "generate" ? (
+      {screen === "book" ? (
+        <BookReader locale={locale} profileReady={Boolean(profileReady)} />
+      ) : screen === "generate" ? (
         <div className="wrap">
           <div className="hero">
             <div className="eyebrow">{t.eyebrow}</div>
