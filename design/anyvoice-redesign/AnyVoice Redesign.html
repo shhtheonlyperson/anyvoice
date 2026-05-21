@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="zh-Hant" data-locale="zh-Hant" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AnyVoice · Redesign Mockup</title>
+<!--
+  Hi-fi mockup honoring ~/DESIGN.md (the Claude warm-editorial system).
+  Substitutes per DESIGN.md "Known Gaps": Cormorant Garamond -> Copernicus serif, Inter -> StyreneB.
+  Two screens: ① Generate (home)  ② Build your voice (guided recording).
+  Drastic simplification: all proof/audit/LoRA/backend tooling moved behind a collapsed Advanced disclosure.
+  zh-Hant default + EN toggle, light/dark. Placeholders are honest; no real audio engine wired.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* DESIGN.md tokens */
+    --primary:#cc785c; --primary-active:#a9583e; --primary-disabled:#e6dfd8;
+    --ink:#141413; --body:#3d3d3a; --body-strong:#252523; --muted:#6c6a64; --muted-soft:#8e8b82;
+    --hairline:#e6dfd8; --hairline-soft:#ebe6df;
+    --canvas:#faf9f5; --surface-soft:#f5f0e8; --surface-card:#efe9de; --surface-cream-strong:#e8e0d2;
+    --surface-dark:#181715; --surface-dark-elevated:#252320; --surface-dark-soft:#1f1e1b;
+    --on-primary:#fff; --on-dark:#faf9f5; --on-dark-soft:#a09d96;
+    --accent-teal:#5db8a6; --success:#5db872; --warning:#d4a017; --error:#c64545;
+    --serif:"Cormorant Garamond","Tiempos Headline",Garamond,serif;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,monospace;
+    --r-sm:6px; --r-md:8px; --r-lg:12px; --r-xl:16px; --r-pill:9999px;
+  }
+  [data-theme="dark"] {
+    --canvas:#181715; --surface-soft:#1f1e1b; --surface-card:#1f1e1b; --surface-cream-strong:#252320;
+    --ink:#faf9f5; --body:#d6d3cc; --body-strong:#ece9e2; --muted:#a09d96; --muted-soft:#85827b;
+    --hairline:#2d2b27; --hairline-soft:#252320;
+    --surface-dark:#0f0e0d; --surface-dark-elevated:#252320; --surface-dark-soft:#1a1917;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--canvas); color:var(--ink); font-family:var(--sans);
+         font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased;
+         transition:background .3s ease, color .3s ease; }
+  .serif { font-family:var(--serif); font-weight:500; letter-spacing:-0.01em; }
+  .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+
+  /* nav */
+  .nav { height:64px; display:flex; align-items:center; justify-content:space-between;
+         padding:0 32px; max-width:1100px; margin:0 auto; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:500; font-size:17px; letter-spacing:-0.01em; }
+  .spike { width:18px; height:18px; flex:none; }
+  .nav-right { display:flex; align-items:center; gap:8px; }
+
+  /* buttons */
+  .btn { font-family:var(--sans); font-weight:500; font-size:14px; line-height:1;
+         border-radius:var(--r-md); padding:0 20px; height:40px; border:1px solid transparent;
+         cursor:pointer; display:inline-flex; align-items:center; gap:8px; transition:background .15s; }
+  .btn--primary { background:var(--primary); color:var(--on-primary); }
+  .btn--primary:active { background:var(--primary-active); }
+  .btn--primary:disabled { background:var(--primary-disabled); color:var(--muted); cursor:default; }
+  .btn--secondary { background:var(--canvas); color:var(--ink); border-color:var(--hairline); }
+  .btn--on-dark { background:var(--surface-dark-elevated); color:var(--on-dark); }
+  .btn--ghost { background:transparent; color:var(--ink); padding:0 10px; }
+  .btn--lg { height:48px; padding:0 28px; font-size:15px; }
+  .pillbtn { font:500 13px/1 var(--sans); border-radius:var(--r-pill); padding:7px 14px;
+             border:1px solid var(--hairline); background:transparent; color:var(--muted); cursor:pointer; }
+  .pillbtn[aria-pressed="true"] { background:var(--surface-cream-strong); color:var(--ink); border-color:transparent; }
+
+  /* layout */
+  .wrap { max-width:1100px; margin:0 auto; padding:0 32px 96px; }
+  .hero { padding:48px 0 32px; }
+  .eyebrow { font:500 12px/1.4 var(--sans); letter-spacing:1.5px; text-transform:uppercase; color:var(--primary); }
+  h1.display { font-family:var(--serif); font-weight:500; font-size:52px; line-height:1.05; letter-spacing:-0.02em; margin:14px 0 12px; }
+  .lede { font-size:17px; color:var(--muted); max-width:46ch; }
+
+  .card { border-radius:var(--r-lg); padding:32px; }
+  .card--cream { background:var(--surface-card); }
+  .card--canvas { background:var(--canvas); border:1px solid var(--hairline); }
+  .card--dark { background:var(--surface-dark); color:var(--on-dark); }
+
+  .label { font:500 13px/1.4 var(--sans); color:var(--muted); margin-bottom:10px; display:block; }
+  .seg { display:inline-flex; gap:6px; background:var(--surface-soft); padding:5px; border-radius:var(--r-pill); }
+  .seg button { font:500 14px/1 var(--sans); border:none; background:transparent; color:var(--muted);
+                padding:9px 18px; border-radius:var(--r-pill); cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .seg button[aria-pressed="true"] { background:var(--canvas); color:var(--ink); box-shadow:0 1px 3px rgba(20,20,19,.08); }
+  .dot { width:7px; height:7px; border-radius:50%; flex:none; }
+  .dot--ok { background:var(--success); } .dot--warn { background:var(--warning); } .dot--idle{ background:var(--muted-soft);}
+
+  textarea.target { width:100%; min-height:150px; resize:vertical; background:var(--canvas);
+    border:1px solid var(--hairline); border-radius:var(--r-md); padding:16px 18px; font:400 18px/1.55 var(--sans);
+    color:var(--ink); margin-top:8px; }
+  textarea.target:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(204,120,92,.15); }
+  .row { display:flex; align-items:center; gap:12px; }
+  .between { justify-content:space-between; }
+  .muted { color:var(--muted); } .small { font-size:13px; }
+
+  /* output player */
+  .wave { display:flex; align-items:center; gap:3px; height:48px; flex:1; }
+  .wave i { flex:1; background:var(--on-dark-soft); border-radius:2px; opacity:.55; }
+  .play { width:52px; height:52px; border-radius:50%; background:var(--primary); border:none; color:#fff;
+          display:grid; place-items:center; cursor:pointer; flex:none; }
+
+  /* progress */
+  .ticks { display:flex; gap:6px; }
+  .ticks i { flex:1; height:6px; border-radius:var(--r-pill); background:var(--hairline); }
+  .ticks i.done { background:var(--primary); } .ticks i.cur { background:var(--primary); opacity:.45; }
+
+  .record { width:96px; height:96px; border-radius:50%; background:var(--primary); border:6px solid rgba(204,120,92,.2);
+            color:#fff; display:grid; place-items:center; cursor:pointer; }
+  .record--live { background:var(--error); border-color:rgba(198,69,69,.25); animation:pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(198,69,69,.4)} 50%{box-shadow:0 0 0 14px rgba(198,69,69,0)} }
+
+  .chip { font:500 12px/1 var(--sans); background:var(--surface-dark-elevated); color:var(--on-dark);
+          border-radius:var(--r-pill); padding:6px 11px; }
+  .chip--cream { background:var(--surface-cream-strong); color:var(--ink); }
+
+  .checklist { display:grid; gap:2px; }
+  .clip { display:flex; align-items:center; gap:12px; padding:11px 14px; border-radius:var(--r-md); }
+  .clip:hover { background:var(--surface-soft); }
+  .clip .idx { font:500 13px/1 var(--mono); color:var(--muted-soft); width:22px; }
+  .clip .txt { flex:1; font-size:14px; color:var(--body); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .clip .st { font:500 12px/1 var(--sans); }
+  .st--ok{color:var(--success)} .st--bad{color:var(--error)} .st--idle{color:var(--muted-soft)}
+
+  details.adv { margin-top:40px; border-top:1px solid var(--hairline); padding-top:20px; }
+  details.adv summary { cursor:pointer; font:500 13px/1.4 var(--sans); color:var(--muted); list-style:none; display:flex; align-items:center; gap:8px;}
+  details.adv summary::-webkit-details-marker{display:none}
+  details.adv[open] summary { color:var(--ink); }
+  .advgrid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
+  .advcard { background:var(--surface-soft); border-radius:var(--r-md); padding:14px 16px; }
+  .advcard code { font:400 12px/1.5 var(--mono); color:var(--muted); display:block; margin-top:6px; word-break:break-all; }
+
+  .done-band { background:var(--primary); color:#fff; border-radius:var(--r-lg); padding:40px; text-align:center; }
+
+  @media (max-width:760px){ h1.display{font-size:38px} .wrap{padding:0 18px 64px} .nav{padding:0 18px} .advgrid{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+/* ---------- i18n ---------- */
+const COPY = {
+  "zh-Hant": {
+    languageName:"繁體中文", switchLang:"EN",
+    navGenerate:"產生聲音", navBuild:"建立我的聲音",
+    eyebrow:"數位聲音複製", h1:"讓你的聲音說任何話",
+    lede:"用一段你錄好的聲音，輸入文字就能生成自然的語音。先建立你的聲音檔案，之後每次只要打字。",
+    voiceLabel:"選擇聲音", voiceSample:"範例聲音", voiceMine:"我的聲音",
+    voiceReady:"已就緒", voiceNeed:"需要錄音", voiceMineHint:"先建立你的聲音檔案才能使用",
+    textLabel:"想說的內容", placeholder:"輸入你想讓這個聲音說出的內容…",
+    generate:"產生聲音", generating:"生成中…", chars:"字",
+    outLabel:"生成結果", download:"下載 WAV", regenerate:"重新生成",
+    outEmpty:"產生後會在這裡播放。",
+    buildEyebrow:"聲音檔案", buildH1:"建立你的數位聲音", buildLede:"錄製 10 段引導語句，大約 5 分鐘。安靜環境、照稿自然唸即可。",
+    progress:(d,t)=>`已完成 ${d} / ${t} 段`,
+    promptOf:(n)=>`第 ${n} 段 · 共 10 段`,
+    cueLabel:"發音提示", recordHint:"按住或點擊開始 · 至少 6 秒",
+    recording:"錄音中…", stop:"停止並儲存", rerecord:"重錄這一段",
+    listTitle:"全部語句", stOk:"已通過", stBad:"需重錄", stIdle:"待錄",
+    doneH1:"你的聲音已就緒", doneLede:"10 段都通過了，現在可以用你的聲音生成任何文字。", doneCta:"開始產生聲音",
+    advTitle:"進階 · 開發者選項", advHint:"品質驗證、proof、LoRA 訓練等在指令列執行。",
+    adv1:"嚴格 profile 驗證", adv2:"prompt vs hi-fi 品質閘門", adv3:"匯出 LoRA 訓練資料", adv4:"後端 shootout (IndexTTS2/F5)",
+  },
+  en: {
+    languageName:"EN", switchLang:"繁體中文",
+    navGenerate:"Generate", navBuild:"Build my voice",
+    eyebrow:"Digital voice clone", h1:"Make your voice say anything",
+    lede:"Record your voice once, then type text to generate natural speech. Build your voice profile first — after that, just type.",
+    voiceLabel:"Choose a voice", voiceSample:"Sample voice", voiceMine:"My voice",
+    voiceReady:"Ready", voiceNeed:"Needs recording", voiceMineHint:"Build your voice profile to use this",
+    textLabel:"What to say", placeholder:"Write the line you want this voice to say…",
+    generate:"Generate voice", generating:"Generating…", chars:"chars",
+    outLabel:"Result", download:"Download WAV", regenerate:"Regenerate",
+    outEmpty:"Your generated audio will play here.",
+    buildEyebrow:"Voice profile", buildH1:"Build your digital voice", buildLede:"Record 10 guided lines — about 5 minutes. Quiet room, read naturally.",
+    progress:(d,t)=>`${d} of ${t} done`,
+    promptOf:(n)=>`Line ${n} of 10`,
+    cueLabel:"Pronunciation", recordHint:"Tap to start · at least 6 seconds",
+    recording:"Recording…", stop:"Stop & save", rerecord:"Re-record this line",
+    listTitle:"All lines", stOk:"Passed", stBad:"Re-record", stIdle:"Pending",
+    doneH1:"Your voice is ready", doneLede:"All 10 lines passed. You can now generate any text in your voice.", doneCta:"Start generating",
+    advTitle:"Advanced · Developer", advHint:"Quality gate, proof, LoRA training run in the CLI.",
+    adv1:"Strict profile verify", adv2:"prompt vs hi-fi quality gate", adv3:"Export LoRA dataset", adv4:"Backend shootout (IndexTTS2/F5)",
+  }
+};
+function useLocale(){
+  const [locale,setL] = useState(()=> (localStorage.getItem("anyvoice:locale")==="en"?"en":"zh-Hant"));
+  useEffect(()=>{ document.documentElement.lang=locale; document.documentElement.dataset.locale=locale; localStorage.setItem("anyvoice:locale",locale);},[locale]);
+  const t = useCallback((k,...a)=>{ const v=COPY[locale][k]; return typeof v==="function"?v(...a):(v??k);},[locale]);
+  return {locale,setLocale:setL,t};
+}
+function useTheme(){
+  const [theme,setT]=useState(()=> localStorage.getItem("anyvoice:theme") || (matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light"));
+  useEffect(()=>{ document.documentElement.dataset.theme=theme; localStorage.setItem("anyvoice:theme",theme);},[theme]);
+  return {theme,toggle:()=>setT(t=>t==="dark"?"light":"dark")};
+}
+
+const Spike = () => (
+  <svg className="spike" viewBox="0 0 24 24" aria-hidden="true">
+    {[0,45,90,135].map(a=>(<rect key={a} x="11" y="2" width="2" height="20" rx="1" fill="var(--primary)" transform={`rotate(${a} 12 12)`}/>))}
+  </svg>
+);
+
+/* Demo prompts — first lines from the real eval set */
+const PROMPTS = [
+  "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，遠方傳來陣陣鳥鳴，世界顯得格外安靜。",
+  "今天是個重要的日子，會議將在下午三點十五分準時開始，地點在第二會議室。",
+  "我最近在用 AnyVoice 和 VoxCPM2 做語音合成的實驗，效果比想像中自然許多。",
+  "從重慶到銀行的路上，我一邊聽音樂一邊想著長樂的那段往事。",
+  "請把這份文件交給行長，並提醒他下週五要繳交季度報告。",
+  "她輕聲說：「別擔心，一切都會好起來的。」然後轉身走進雨裡。",
+  "二零二六年五月二十一日，氣溫攝氏二十八度，濕度百分之六十五。",
+  "Brenda 說她週末想去爬山，順便拍一些風景照片放到部落格上。",
+  "這道菜需要三大匙醬油、兩小匙糖，還有一點點薑末提味。",
+  "謝謝你聽我把這些句子讀完，這就是我數位聲音的最後一段了。",
+];
+const CUES = {3:["AnyVoice","VoxCPM2"],4:["重慶","銀行","音樂","長樂"],5:["行長"]};
+
+function App(){
+  const {locale,setLocale,t} = useLocale();
+  const {theme,toggle} = useTheme();
+  const [screen,setScreen] = useState("generate");
+
+  // generate state
+  const [voice,setVoice] = useState("sample");
+  const [text,setText] = useState("");
+  const [gen,setGen] = useState(null); // null | 'busy' | 'done'
+
+  // build state — demo: 2 done, current 3
+  const [clips,setClips] = useState(()=> PROMPTS.map((_,i)=> i<2?"ok":"idle"));
+  const [cur,setCur] = useState(2);
+  const [live,setLive] = useState(false);
+  const done = clips.filter(c=>c==="ok").length;
+  const allDone = done===10;
+
+  const profileReady = false; // demo: "my voice" not ready
+
+  function doGenerate(){ setGen("busy"); setTimeout(()=>setGen("done"),1100); }
+  function saveClip(){
+    setLive(false);
+    setClips(cs=>{ const n=[...cs]; n[cur]="ok"; return n; });
+    setCur(c=> Math.min(c+1,9));
+  }
+
+  return (<div>
+    {/* NAV */}
+    <nav className="nav">
+      <div className="brand"><Spike/> AnyVoice</div>
+      <div className="nav-right">
+        <button className="pillbtn" aria-pressed={screen==="generate"} onClick={()=>setScreen("generate")}>{t("navGenerate")}</button>
+        <button className="pillbtn" aria-pressed={screen==="build"} onClick={()=>setScreen("build")}>{t("navBuild")}</button>
+        <button className="btn btn--ghost" onClick={()=>setLocale(locale==="en"?"zh-Hant":"en")}>{t("switchLang")}</button>
+        <button className="btn btn--ghost" onClick={toggle} aria-label="theme">{theme==="dark"?"☀":"☾"}</button>
+      </div>
+    </nav>
+
+    {screen==="generate" ? (
+    <div className="wrap">
+      <div className="hero">
+        <div className="eyebrow">{t("eyebrow")}</div>
+        <h1 className="display">{t("h1")}</h1>
+        <p className="lede">{t("lede")}</p>
+      </div>
+
+      <div className="card card--cream" style={{display:"grid",gap:28}}>
+        {/* voice */}
+        <div>
+          <span className="label">{t("voiceLabel")}</span>
+          <div className="seg">
+            <button aria-pressed={voice==="sample"} onClick={()=>setVoice("sample")}>{t("voiceSample")}</button>
+            <button aria-pressed={voice==="mine"} onClick={()=>setVoice("mine")}>
+              {t("voiceMine")}
+              <span className={"dot "+(profileReady?"dot--ok":"dot--warn")}/>
+            </button>
+          </div>
+          {voice==="mine" && !profileReady &&
+            <p className="muted small" style={{marginTop:10}}>
+              {t("voiceMineHint")} · <a style={{color:"var(--primary)",cursor:"pointer"}} onClick={()=>setScreen("build")}>{t("navBuild")} →</a>
+            </p>}
+        </div>
+        {/* text */}
+        <div>
+          <div className="row between"><span className="label" style={{margin:0}}>{t("textLabel")}</span>
+            <span className="muted small">{text.length} {t("chars")}</span></div>
+          <textarea className="target" placeholder={t("placeholder")} value={text} onChange={e=>setText(e.target.value)}/>
+        </div>
+        <div className="row">
+          <button className="btn btn--primary btn--lg" disabled={!text || gen==="busy" || (voice==="mine"&&!profileReady)} onClick={doGenerate}>
+            {gen==="busy"? t("generating") : t("generate")}
+          </button>
+        </div>
+      </div>
+
+      {/* output */}
+      {gen==="done" && (
+      <div className="card card--dark" style={{marginTop:16}}>
+        <span className="label" style={{color:"var(--on-dark-soft)"}}>{t("outLabel")}</span>
+        <div className="row" style={{gap:18,marginTop:8}}>
+          <button className="play" aria-label="play">▶</button>
+          <div className="wave">{Array.from({length:54}).map((_,i)=>(<i key={i} style={{height:`${20+Math.abs(Math.sin(i*0.7))*70}%`}}/>))}</div>
+        </div>
+        <div className="row" style={{gap:10,marginTop:20}}>
+          <button className="btn btn--on-dark">{t("download")}</button>
+          <button className="btn btn--on-dark" onClick={doGenerate}>{t("regenerate")}</button>
+        </div>
+      </div>)}
+    </div>
+    ) : (
+    /* ---------- BUILD ---------- */
+    <div className="wrap">
+      <div className="hero">
+        <div className="eyebrow">{t("buildEyebrow")}</div>
+        <h1 className="display">{t("buildH1")}</h1>
+        <p className="lede">{t("buildLede")}</p>
+      </div>
+
+      {allDone ? (
+        <div className="done-band">
+          <h2 className="serif" style={{fontSize:34,marginBottom:10}}>{t("doneH1")}</h2>
+          <p style={{opacity:.9,maxWidth:"40ch",margin:"0 auto 22px"}}>{t("doneLede")}</p>
+          <button className="btn btn--lg" style={{background:"var(--canvas)",color:"var(--ink)"}} onClick={()=>setScreen("generate")}>{t("doneCta")}</button>
+        </div>
+      ) : (<>
+        {/* progress */}
+        <div className="row between" style={{marginBottom:10}}>
+          <span className="label" style={{margin:0}}>{t("progress",done,10)}</span>
+        </div>
+        <div className="ticks" style={{marginBottom:24}}>
+          {clips.map((c,i)=>(<i key={i} className={c==="ok"?"done":(i===cur?"cur":"")}/>))}
+        </div>
+
+        {/* focal record card */}
+        <div className="card card--dark" style={{textAlign:"center"}}>
+          <div className="small" style={{color:"var(--on-dark-soft)",marginBottom:14}}>{t("promptOf",cur+1)}</div>
+          <p className="serif" style={{fontSize:26,lineHeight:1.45,maxWidth:"30ch",margin:"0 auto 18px"}}>{PROMPTS[cur]}</p>
+          {CUES[cur] && <div className="row" style={{justifyContent:"center",gap:8,marginBottom:24}}>
+            <span className="small" style={{color:"var(--on-dark-soft)"}}>{t("cueLabel")}:</span>
+            {CUES[cur].map(c=>(<span key={c} className="chip">{c}</span>))}
+          </div>}
+          <div className="row" style={{justifyContent:"center",marginBottom:14}}>
+            <button className={"record"+(live?" record--live":"")} onClick={()=> live? saveClip() : setLive(true)}>
+              {live? "■" : "●"}
+            </button>
+          </div>
+          <div className="small" style={{color:"var(--on-dark-soft)"}}>{live? t("recording") : t("recordHint")}</div>
+        </div>
+
+        {/* checklist */}
+        <div style={{marginTop:28}}>
+          <span className="label">{t("listTitle")}</span>
+          <div className="checklist">
+            {PROMPTS.map((p,i)=>(
+              <div className="clip" key={i}>
+                <span className="idx">{String(i+1).padStart(2,"0")}</span>
+                <span className="txt">{p}</span>
+                <span className={"st "+(clips[i]==="ok"?"st--ok":clips[i]==="bad"?"st--bad":"st--idle")}>
+                  {clips[i]==="ok"?t("stOk"):clips[i]==="bad"?t("stBad"):t("stIdle")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </>)}
+
+      {/* advanced disclosure — the old complexity, tucked away */}
+      <details className="adv">
+        <summary>▸ {t("advTitle")}</summary>
+        <p className="muted small" style={{marginTop:12}}>{t("advHint")}</p>
+        <div className="advgrid">
+          {[["adv1","verify_voice_profile_ready.py"],["adv2","run_voice_quality_gate.py --clone-mode both"],
+            ["adv3","prepare_voice_lora_dataset.py"],["adv4","prepare_voice_backend_shootout.py"]].map(([k,cmd])=>(
+            <div className="advcard" key={k}><strong className="small">{t(k)}</strong><code>{cmd}</code></div>
+          ))}
+        </div>
+      </details>
+    </div>
+    )}
+  </div>);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

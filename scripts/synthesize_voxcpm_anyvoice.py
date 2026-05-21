@@ -64,15 +64,19 @@ def find_ffmpeg() -> str | None:
 # Filter chain explained:
 # - highpass 80 Hz: kill rumble/HVAC
 # - lowpass 8000 Hz: trim hiss above speech band (we resample to 16 kHz anyway)
-# - silenceremove: strip leading + trailing silence, threshold -40 dB, 0.1 s pad
+# - silenceremove (areverse trick): strip leading + trailing silence ONLY.
+#   A single silenceremove with stop_periods=1 truncates at the first internal
+#   pause (a breath between phrases), collapsing a 14 s read into ~0.4 s. Trimming
+#   the start, reversing, trimming the start again, and reversing back removes both
+#   ends while preserving every pause inside the speech.
 # - loudnorm: EBU R128 normalize to I=-23 LUFS, LRA=11, TP=-1.5 dBTP
+_TRIM_LEADING_SILENCE = (
+    "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB:detection=peak"
+)
 FFMPEG_FILTER_CHAIN = (
     "highpass=f=80,"
     "lowpass=f=8000,"
-    "silenceremove="
-    "start_periods=1:start_duration=0.1:start_threshold=-40dB:"
-    "stop_periods=1:stop_duration=0.1:stop_threshold=-40dB:"
-    "detection=peak,"
+    f"{_TRIM_LEADING_SILENCE},areverse,{_TRIM_LEADING_SILENCE},areverse,"
     "loudnorm=I=-23:LRA=11:TP=-1.5"
 )
 

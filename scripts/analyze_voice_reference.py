@@ -36,13 +36,17 @@ def find_ffmpeg() -> str | None:
     return None
 
 
+# silenceremove with stop_periods=1 truncates at the first internal pause (a breath
+# between phrases), collapsing a 14 s read into ~0.4 s and producing false "too short"
+# rejections on clean audio. The areverse trick trims leading + trailing silence only,
+# preserving every pause inside the speech.
+_TRIM_LEADING_SILENCE = (
+    "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-40dB:detection=peak"
+)
 FFMPEG_FILTER_CHAIN = (
     "highpass=f=80,"
     "lowpass=f=8000,"
-    "silenceremove="
-    "start_periods=1:start_duration=0.1:start_threshold=-40dB:"
-    "stop_periods=1:stop_duration=0.1:stop_threshold=-40dB:"
-    "detection=peak,"
+    f"{_TRIM_LEADING_SILENCE},areverse,{_TRIM_LEADING_SILENCE},areverse,"
     "loudnorm=I=-23:LRA=11:TP=-1.5"
 )
 
