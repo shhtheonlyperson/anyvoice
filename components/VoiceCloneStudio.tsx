@@ -930,6 +930,8 @@ export function VoiceCloneStudio() {
               {audioUrl && (
                 <audio
                   controls
+                  autoPlay
+                  preload="auto"
                   src={audioUrl}
                   onPlay={(e) => {
                     e.currentTarget.playbackRate = speed;

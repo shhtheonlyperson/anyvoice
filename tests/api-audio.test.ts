@@ -57,6 +57,49 @@ describe("GET /api/runs/[jobId]/audio", () => {
     expect(res.headers.get("content-length")).toBe("5");
   });
 
+  it("advertises Accept-Ranges so playback can start before full load", async () => {
+    const runDir = path.join(tmpRoot, "rjob");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]));
+    const res = await GET(makeReq(), makeContext("rjob"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+  });
+
+  it("serves a 206 partial range for progressive playback / seeking", async () => {
+    const runDir = path.join(tmpRoot, "rjob2");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from([10, 20, 30, 40, 50, 60, 70, 80]));
+    const res = await GET(makeReq({ range: "bytes=2-5" }), makeContext("rjob2"));
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe("bytes 2-5/8");
+    expect(res.headers.get("content-length")).toBe("4");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    const body = new Uint8Array(await res.arrayBuffer());
+    expect(Array.from(body)).toEqual([30, 40, 50, 60]);
+  });
+
+  it("supports an open-ended range (bytes=N-) and a suffix range", async () => {
+    const runDir = path.join(tmpRoot, "rjob3");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from([1, 2, 3, 4, 5]));
+    const open = await GET(makeReq({ range: "bytes=3-" }), makeContext("rjob3"));
+    expect(open.status).toBe(206);
+    expect(open.headers.get("content-range")).toBe("bytes 3-4/5");
+    const suffix = await GET(makeReq({ range: "bytes=-2" }), makeContext("rjob3"));
+    expect(suffix.status).toBe(206);
+    expect(suffix.headers.get("content-range")).toBe("bytes 3-4/5");
+  });
+
+  it("returns 416 for an unsatisfiable range", async () => {
+    const runDir = path.join(tmpRoot, "rjob4");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from([1, 2, 3]));
+    const res = await GET(makeReq({ range: "bytes=99-200" }), makeContext("rjob4"));
+    expect(res.status).toBe(416);
+    expect(res.headers.get("content-range")).toBe("bytes */3");
+  });
+
   it("returns 404 when the file is missing", async () => {
     const res = await GET(makeReq(), makeContext("nope"));
     expect(res.status).toBe(404);
