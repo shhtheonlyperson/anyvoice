@@ -59,10 +59,21 @@ interface VoiceProfileEnrollmentPayload {
   referenceQuality?: ReferenceQuality;
 }
 
+interface RunHistoryItem {
+  id: string;
+  status: string;
+  targetText: string;
+  audioUrl?: string;
+  createdAt: string;
+}
+
 /* ------------------------------------------------------- preserved data */
 
 
 const DEFAULT_QUALITY = "balanced";
+
+// Playback speeds offered on generated audio.
+const SPEEDS = [1, 1.25, 1.5, 2] as const;
 
 // Profile enrollment duration gate (analyzer requires 6–20s; grade A wants this band).
 const REC_MIN_SEC = 6;
@@ -176,6 +187,9 @@ type Copy = {
   download: string;
   regenerate: string;
   play: string;
+  speedLabel: string;
+  historyTitle: string;
+  historyEmpty: string;
   workerMissing: string;
   genError: string;
   scriptBlocked: string;
@@ -248,6 +262,9 @@ const COPY: Record<Locale, Copy> = {
     download: "下載 WAV",
     regenerate: "重新生成",
     play: "播放",
+    speedLabel: "播放速度",
+    historyTitle: "最近生成",
+    historyEmpty: "生成的聲音會保留在這裡。",
     workerMissing: "後端 worker 尚未就緒，請稍後再試。",
     genError: "生成失敗，請再試一次。",
     scriptBlocked: "目標文字含簡體或混用字，使用我的聲音時請改為繁體中文。",
@@ -318,6 +335,9 @@ const COPY: Record<Locale, Copy> = {
     download: "Download WAV",
     regenerate: "Regenerate",
     play: "Play",
+    speedLabel: "Speed",
+    historyTitle: "Recent",
+    historyEmpty: "Your generated audio is kept here.",
     workerMissing: "The backend worker isn't ready yet. Try again shortly.",
     genError: "Generation failed. Please try again.",
     scriptBlocked: "Target text is Simplified or mixed Chinese. Use Traditional Chinese with My voice.",
@@ -426,6 +446,8 @@ export function VoiceCloneStudio() {
   const [gen, setGen] = useState<GenState>("idle");
   const [audioUrl, setAudioUrl] = useState("");
   const [genMessage, setGenMessage] = useState("");
+  const [speed, setSpeed] = useState(1);
+  const [history, setHistory] = useState<RunHistoryItem[]>([]);
 
   // ---- profile state
   const [profile, setProfile] = useState<VoiceProfilePayload | null>(null);
@@ -449,6 +471,17 @@ export function VoiceCloneStudio() {
   // A ready profile means the voice is built, even if more clips were enrolled
   // (via the extended kit) than the 5 fixed prompts shown in this checklist.
   const allDone = profileReady || done === SCRIPT_COUNT;
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const response = await fetch("/api/runs?limit=12", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = (await response.json()) as { items?: RunHistoryItem[] };
+      setHistory((payload.items ?? []).filter((it) => it.status === "ready" && it.audioUrl));
+    } catch {
+      /* offline / SSR */
+    }
+  }, []);
 
   const loadVoiceProfile = useCallback(async () => {
     try {
@@ -479,7 +512,31 @@ export function VoiceCloneStudio() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async profile load after mount
     void loadVoiceProfile();
-  }, [loadVoiceProfile]);
+    void loadHistory();
+  }, [loadVoiceProfile, loadHistory]);
+
+  // Restore persisted playback speed after mount (localStorage is SSR-unsafe).
+  useEffect(() => {
+    try {
+      const stored = Number(window.localStorage.getItem("anyvoice:speed"));
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- post-mount hydration
+      if (SPEEDS.includes(stored as (typeof SPEEDS)[number])) setSpeed(stored);
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+
+  // Persist speed and apply it to every audio element (result + history rows).
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("anyvoice:speed", String(speed));
+    } catch {
+      /* storage unavailable */
+    }
+    document.querySelectorAll("audio").forEach((a) => {
+      (a as HTMLAudioElement).playbackRate = speed;
+    });
+  }, [speed, audioUrl, history]);
 
   // Clear any live recording timers if the component unmounts mid-take.
   useEffect(() => {
@@ -526,6 +583,7 @@ export function VoiceCloneStudio() {
     setGen("done");
     setAudioUrl(payload.audioUrl || "");
     setGenMessage("");
+    void loadHistory();
   }
 
   async function readStreamingResponse(response: Response) {
@@ -869,21 +927,33 @@ export function VoiceCloneStudio() {
               <span className="label" style={{ color: "var(--on-dark-soft)" }}>
                 {t.outLabel}
               </span>
-              <div className="row" style={{ gap: 18, marginTop: 8 }}>
-                <button className="play" aria-label={t.play}>
-                  ▶
-                </button>
-                <div className="wave" aria-hidden="true">
-                  {Array.from({ length: 54 }).map((_, i) => (
-                    <i key={i} style={{ height: `${20 + Math.abs(Math.sin(i * 0.7)) * 70}%` }} />
-                  ))}
-                </div>
-              </div>
               {audioUrl && (
-                <audio controls src={audioUrl} style={{ width: "100%", marginTop: 16 }}>
+                <audio
+                  controls
+                  src={audioUrl}
+                  onPlay={(e) => {
+                    e.currentTarget.playbackRate = speed;
+                  }}
+                  style={{ width: "100%", marginTop: 12 }}
+                >
                   <track kind="captions" />
                 </audio>
               )}
+              <div className="row" style={{ gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="small" style={{ color: "var(--on-dark-soft)" }}>
+                  {t.speedLabel}
+                </span>
+                {SPEEDS.map((s) => (
+                  <button
+                    key={s}
+                    className={"speedbtn" + (speed === s ? " speedbtn--on" : "")}
+                    aria-pressed={speed === s}
+                    onClick={() => setSpeed(s)}
+                  >
+                    {s}×
+                  </button>
+                ))}
+              </div>
               <div className="row" style={{ gap: 10, marginTop: 20 }}>
                 <a className="btn btn--on-dark" href={audioUrl || "#"} download>
                   {t.download}
@@ -891,6 +961,31 @@ export function VoiceCloneStudio() {
                 <button className="btn btn--on-dark" onClick={doGenerate}>
                   {t.regenerate}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {history.length > 0 && (
+            <div style={{ marginTop: 32 }}>
+              <span className="label">{t.historyTitle}</span>
+              <div className="history">
+                {history.map((h) => (
+                  <div className="history-row" key={h.id}>
+                    <p className="history-text">{h.targetText}</p>
+                    {h.audioUrl && (
+                      <audio
+                        controls
+                        preload="none"
+                        src={h.audioUrl}
+                        onPlay={(e) => {
+                          e.currentTarget.playbackRate = speed;
+                        }}
+                      >
+                        <track kind="captions" />
+                      </audio>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}

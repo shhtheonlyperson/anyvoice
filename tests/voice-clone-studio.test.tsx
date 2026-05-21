@@ -40,9 +40,12 @@ function profilePayload(status: ProfileStatus) {
   };
 }
 
-function stubFetch(status: ProfileStatus = "needs_enrollment") {
+type RunLike = { id: string; status: string; targetText: string; audioUrl?: string; createdAt: string };
+
+function stubFetch(status: ProfileStatus = "needs_enrollment", runs: RunLike[] = []) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.includes("/api/runs")) return Response.json({ items: runs });
     if (url.includes("/api/voice-profile")) return Response.json(profilePayload(status));
     return Response.json({ status: "ready", audioUrl: "/result.wav" });
   });
@@ -207,6 +210,35 @@ describe("VoiceCloneStudio (behavior)", () => {
     const chip = container.querySelector(".pron-chip");
     expect(chip).not.toBeNull();
     expect(chip?.textContent).toContain("→");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("offers 1×/1.25×/1.5×/2× playback speed and keeps a recent-runs history", async () => {
+    stubFetch("ready", [
+      { id: "r1", status: "ready", targetText: "歷史紀錄的第一段語音。", audioUrl: "/api/runs/r1/audio", createdAt: "2026-05-21T00:00:00Z" },
+    ]);
+    const { container, root } = await mount();
+    gotoGenerate(container);
+    await flush();
+    const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(textarea, "測試播放速度。");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    click(container.querySelector("button.btn--primary.btn--lg"));
+    await flush();
+    // speed control
+    const speeds = Array.from(container.querySelectorAll(".speedbtn")).map((b) => b.textContent);
+    expect(speeds).toEqual(["1×", "1.25×", "1.5×", "2×"]);
+    click(Array.from(container.querySelectorAll(".speedbtn")).find((b) => b.textContent === "2×")!);
+    await flush();
+    expect(container.querySelector(".speedbtn--on")?.textContent).toBe("2×");
+    // history section with the prior run
+    expect(container.textContent).toContain("最近生成");
+    expect(container.querySelector(".history-row")).not.toBeNull();
     await act(async () => root.unmount());
     container.remove();
   });
