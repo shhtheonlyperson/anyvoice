@@ -43,6 +43,7 @@ interface VoiceProfilePayload {
     passingGrades?: string[];
   };
   referenceClipIds?: string[];
+  clips?: { transcriptRaw?: string }[];
 }
 
 interface ReferenceQuality {
@@ -444,14 +445,31 @@ export function VoiceCloneStudio() {
   const autoStopRef = useRef<number | null>(null);
 
   const done = clips.filter((c) => c === "ok").length;
-  const allDone = done === SCRIPT_COUNT;
+  // A ready profile means the voice is built, even if more clips were enrolled
+  // (via the extended kit) than the 5 fixed prompts shown in this checklist.
+  const allDone = profileReady || done === SCRIPT_COUNT;
 
   const loadVoiceProfile = useCallback(async () => {
     try {
       const response = await fetch("/api/voice-profile", { cache: "no-store" });
       if (!response.ok) return;
       const payload = (await response.json()) as { profile?: VoiceProfilePayload };
-      if (payload.profile) setProfile(payload.profile);
+      if (!payload.profile) return;
+      setProfile(payload.profile);
+      // Reflect already-enrolled clips in the build checklist so a returning user
+      // sees their recordings instead of an empty "待錄" list.
+      const enrolled = new Set(
+        (payload.profile.clips ?? [])
+          .map((c) => (c.transcriptRaw ?? "").trim())
+          .filter(Boolean),
+      );
+      if (enrolled.size > 0) {
+        setClips((cs) =>
+          SCRIPT_PACK["zh-Hant"].map((prompt, i) =>
+            enrolled.has(prompt.trim()) ? "ok" : cs[i],
+          ),
+        );
+      }
     } catch {
       /* offline / SSR */
     }

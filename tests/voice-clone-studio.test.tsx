@@ -206,6 +206,18 @@ describe("VoiceCloneStudio (behavior)", () => {
     container.remove();
   });
 
+  it("build screen reflects a ready profile as done instead of an empty checklist", async () => {
+    stubFetch("ready");
+    const { container, root } = await mount();
+    click(findByText(container, "建立我的聲音"));
+    await flush();
+    // A returning user with a ready profile must see their voice is built,
+    // not a fresh "待錄" list (regression: checklist ignored enrolled clips).
+    expect(container.textContent).toContain("你的聲音已就緒");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   it("exposes the advanced developer disclosure on the build screen", async () => {
     stubFetch("needs_enrollment");
     const { container, root } = await mount();
