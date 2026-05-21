@@ -185,19 +185,34 @@ body {
   cursor: not-allowed;
 }
 
-/* playback speed toggle (on dark output card) */
+/* centered control bar below the player: speed options + actions */
+.player-menu {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+/* segmented speed control (1× 1.25× 1.5× 2×) */
+.speed-group {
+  display: inline-flex;
+  background: var(--surface-dark-soft);
+  border-radius: var(--r-pill);
+  padding: 4px;
+  gap: 2px;
+}
 .speedbtn {
   font: 500 13px/1 var(--sans);
   border-radius: var(--r-pill);
-  padding: 6px 12px;
-  border: 1px solid var(--surface-dark-elevated);
+  padding: 7px 13px;
+  border: none;
   background: transparent;
   color: var(--on-dark-soft);
   cursor: pointer;
 }
 .speedbtn--on {
   background: var(--primary);
-  border-color: transparent;
   color: var(--on-primary);
 }
 

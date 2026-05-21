@@ -230,10 +230,14 @@ describe("VoiceCloneStudio (behavior)", () => {
     await flush();
     click(container.querySelector("button.btn--primary.btn--lg"));
     await flush();
-    // speed control
-    const speeds = Array.from(container.querySelectorAll(".speedbtn")).map((b) => b.textContent);
+    // speed control lives in the centered player menu, alongside the actions
+    const menu = container.querySelector(".player-menu") as HTMLElement;
+    expect(menu).not.toBeNull();
+    const speeds = Array.from(menu.querySelectorAll(".speedbtn")).map((b) => b.textContent);
     expect(speeds).toEqual(["1×", "1.25×", "1.5×", "2×"]);
-    click(Array.from(container.querySelectorAll(".speedbtn")).find((b) => b.textContent === "2×")!);
+    expect(menu.textContent).toContain("下載 WAV");
+    expect(menu.textContent).toContain("重新生成");
+    click(Array.from(menu.querySelectorAll(".speedbtn")).find((b) => b.textContent === "2×")!);
     await flush();
     expect(container.querySelector(".speedbtn--on")?.textContent).toBe("2×");
     // history section with the prior run

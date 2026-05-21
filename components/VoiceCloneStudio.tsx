@@ -941,22 +941,19 @@ export function VoiceCloneStudio() {
                   <track kind="captions" />
                 </audio>
               )}
-              <div className="row" style={{ gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
-                <span className="small" style={{ color: "var(--on-dark-soft)" }}>
-                  {t.speedLabel}
-                </span>
-                {SPEEDS.map((s) => (
-                  <button
-                    key={s}
-                    className={"speedbtn" + (speed === s ? " speedbtn--on" : "")}
-                    aria-pressed={speed === s}
-                    onClick={() => setSpeed(s)}
-                  >
-                    {s}×
-                  </button>
-                ))}
-              </div>
-              <div className="row" style={{ gap: 10, marginTop: 20 }}>
+              <div className="player-menu">
+                <div className="speed-group" role="group" aria-label={t.speedLabel}>
+                  {SPEEDS.map((s) => (
+                    <button
+                      key={s}
+                      className={"speedbtn" + (speed === s ? " speedbtn--on" : "")}
+                      aria-pressed={speed === s}
+                      onClick={() => setSpeed(s)}
+                    >
+                      {s}×
+                    </button>
+                  ))}
+                </div>
                 <a className="btn btn--on-dark" href={audioUrl || "#"} download>
                   {t.download}
                 </a>
