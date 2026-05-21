@@ -180,6 +180,10 @@ body {
   color: var(--ink);
   border-color: transparent;
 }
+.pillbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 /* layout */
 .wrap {

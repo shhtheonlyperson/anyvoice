@@ -80,6 +80,14 @@ function findByText(container: HTMLElement, text: string): Element | null {
   ) ?? null;
 }
 
+// Build is the default screen; navigate to Generate via the (ready-gated) nav pill.
+function gotoGenerate(container: HTMLElement) {
+  const pill = Array.from(container.querySelectorAll("nav .pillbtn")).find((b) =>
+    (b.textContent || "").includes("產生聲音"),
+  ) as HTMLButtonElement | undefined;
+  click(pill ?? null);
+}
+
 beforeEach(() => {
   window.localStorage.clear();
 });
@@ -120,20 +128,24 @@ describe("VoiceCloneStudio (behavior)", () => {
     window.localStorage.setItem("anyvoice:locale", "en");
     stubFetch();
     const { container, root } = await mount();
-    expect(container.textContent).toContain("Generate voice");
-    expect(container.textContent).not.toContain("產生聲音");
+    // EN nav labels (screen-agnostic; Build is the default screen).
+    expect(container.textContent).toContain("Build my voice");
+    expect(container.textContent).not.toContain("建立我的聲音");
     await act(async () => root.unmount());
     container.remove();
   });
 
-  it("disables generation and shows the build CTA when the profile needs enrollment", async () => {
+  it("makes Build the first step and gates Generate until the profile is ready", async () => {
     stubFetch("needs_enrollment");
     const { container, root } = await mount();
-    // no voice picker: a single voice (yours). Not ready -> generate disabled + build CTA.
+    // Default screen is Build (step 1); the Generate nav pill is disabled.
+    expect(container.textContent).toContain("建立你的數位聲音");
+    const genPill = Array.from(container.querySelectorAll("nav .pillbtn")).find((b) =>
+      (b.textContent || "").includes("產生聲音"),
+    ) as HTMLButtonElement;
+    expect(genPill.disabled).toBe(true);
+    // no voice picker survives
     expect(container.querySelector(".seg")).toBeNull();
-    const genBtn = container.querySelector("button.btn--primary.btn--lg") as HTMLButtonElement;
-    expect(genBtn.disabled).toBe(true);
-    expect(container.textContent).toContain("先建立你的聲音檔案");
     expect(container.textContent).not.toContain("範例聲音");
     await act(async () => root.unmount());
     container.remove();
@@ -142,6 +154,8 @@ describe("VoiceCloneStudio (behavior)", () => {
   it("enables generation once the profile is ready", async () => {
     stubFetch("ready");
     const { container, root } = await mount();
+    gotoGenerate(container);
+    await flush();
     const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
     act(() => {
@@ -158,6 +172,8 @@ describe("VoiceCloneStudio (behavior)", () => {
   it("blocks profile generation when target text is Simplified/mixed Chinese", async () => {
     const fetchMock = stubFetch("ready");
     const { container, root } = await mount();
+    gotoGenerate(container);
+    await flush();
     // type Simplified text (profile is ready -> single voice path)
     const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -177,8 +193,10 @@ describe("VoiceCloneStudio (behavior)", () => {
   });
 
   it("offers a one-click pronunciation replacement for risky terms", async () => {
-    stubFetch();
+    stubFetch("ready");
     const { container, root } = await mount();
+    gotoGenerate(container);
+    await flush();
     const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
     act(() => {

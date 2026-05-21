@@ -382,7 +382,8 @@ function Spike() {
 export function VoiceCloneStudio() {
   const [locale, setLocale] = useState<Locale>("zh-Hant");
   const [theme, setTheme] = useState<Theme>("light");
-  const [screen, setScreen] = useState<Screen>("generate");
+  // Build your voice is step 1; generation is unlocked only once it's ready.
+  const [screen, setScreen] = useState<Screen>("build");
   const t = COPY[locale];
   const scripts = SCRIPT_PACK[locale];
 
@@ -761,11 +762,17 @@ export function VoiceCloneStudio() {
           <Spike /> AnyVoice
         </div>
         <div className="nav-right">
-          <button className="pillbtn" aria-pressed={screen === "generate"} onClick={() => setScreen("generate")}>
-            {t.navGenerate}
-          </button>
           <button className="pillbtn" aria-pressed={screen === "build"} onClick={() => setScreen("build")}>
             {t.navBuild}
+          </button>
+          <button
+            className="pillbtn"
+            aria-pressed={screen === "generate"}
+            disabled={!profileReady}
+            title={!profileReady ? t.voiceMineHint : undefined}
+            onClick={() => profileReady && setScreen("generate")}
+          >
+            {t.navGenerate}
           </button>
           <button
             className="btn btn--ghost"
