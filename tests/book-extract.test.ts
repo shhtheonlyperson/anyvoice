@@ -29,6 +29,39 @@ function makeEpub(): Uint8Array {
   });
 }
 
+function makeEpubWithNcx(): Uint8Array {
+  const container = `<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`;
+  const opf = `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>有聲書測試</dc:title></metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="fw" href="Text/Foreword.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c1" href="Text/Chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx"><itemref idref="fw"/><itemref idref="c1"/></spine></package>`;
+  const ncx = `<?xml version="1.0"?><ncx><navMap>
+    <navPoint><navLabel><text>推薦序</text></navLabel><content src="Text/Foreword.xhtml"/></navPoint>
+    <navPoint><navLabel><text>第一章 開始</text></navLabel><content src="Text/Chapter1.xhtml"/></navPoint>
+  </navMap></ncx>`;
+  return zipSync({
+    "META-INF/container.xml": strToU8(container),
+    "OEBPS/content.opf": strToU8(opf),
+    "OEBPS/toc.ncx": strToU8(ncx),
+    "OEBPS/Text/Foreword.xhtml": strToU8(`<html><body><p>這是一篇推薦序的內容，夠長以通過篩選。</p></body></html>`),
+    "OEBPS/Text/Chapter1.xhtml": strToU8(`<html><body><p>第一章的正文內容，故事從這裡開始。</p></body></html>`),
+  });
+}
+
+describe("extractBook TOC", () => {
+  it("uses NCX titles and classifies main chapters vs on-demand extras", async () => {
+    const book = await extractBook("b.epub", makeEpubWithNcx());
+    expect(book.title).toBe("有聲書測試");
+    expect(book.chapters.map((c) => [c.title, c.kind])).toEqual([
+      ["推薦序", "extra"],
+      ["第一章 開始", "chapter"],
+    ]);
+  });
+});
+
 describe("detectBookFormat", () => {
   it("detects epub and pdf by extension and mime", () => {
     expect(detectBookFormat("book.epub")).toBe("epub");

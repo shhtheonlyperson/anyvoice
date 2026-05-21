@@ -65,31 +65,112 @@ function extractEpub(buffer: Uint8Array): ExtractedBook {
   if (!opf) throw new Error("invalid EPUB: OPF not found");
   const opfDir = dirname(opfPath);
 
-  // 2. parse OPF manifest (id→href) + spine order
+  // 2. parse OPF manifest (id→href, id→media-type, properties)
   const opfRoot = parse(opf);
-  const manifest = new Map<string, string>();
+  const manifest = new Map<string, { href: string; mediaType: string; properties: string }>();
   for (const item of opfRoot.querySelectorAll("item")) {
     const id = item.getAttribute("id");
     const href = item.getAttribute("href");
-    if (id && href) manifest.set(id, href);
+    if (id && href) {
+      manifest.set(id, {
+        href,
+        mediaType: item.getAttribute("media-type") || "",
+        properties: item.getAttribute("properties") || "",
+      });
+    }
   }
-  // dc:title via regex (CSS selectors don't handle the namespaced tag reliably).
   const bookTitle = opf.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i)?.[1]?.trim();
 
-  // 3. walk the spine, extract each document as a chapter
+  // 3. Prefer the Table of Contents (NCX / EPUB3 nav) for chapter structure +
+  //    real titles; fall back to spine order if no usable TOC.
+  // readToc returns fully-resolved zip paths; the spine fallback resolves here.
+  const tocEntries = readToc(opfRoot, manifest, opfPath, get);
+  const sourceHrefs: { title: string; href: string }[] =
+    tocEntries.length > 0
+      ? tocEntries
+      : [...opfRoot.querySelectorAll("itemref")]
+          .map((ref) => manifest.get(ref.getAttribute("idref") || "")?.href)
+          .filter((h): h is string => Boolean(h))
+          .map((href) => ({ title: "", href: resolveHref(opfDir, href) }));
+
   const chapters: BookChapterInput[] = [];
-  for (const ref of opfRoot.querySelectorAll("itemref")) {
-    const idref = ref.getAttribute("idref");
-    const href = idref ? manifest.get(idref) : undefined;
-    if (!href) continue;
-    const doc = get(resolveHref(opfDir, href));
+  const seen = new Set<string>();
+  for (const entry of sourceHrefs) {
+    const file = entry.href.split("#")[0];
+    if (seen.has(file)) continue; // collapse multiple TOC anchors in one file
+    seen.add(file);
+    const doc = get(file);
     if (!doc) continue;
     const { title, text } = xhtmlToText(doc);
-    if (text) chapters.push({ title, text });
+    if (text.length < 8) continue; // skip cover / image-only / near-empty pages
+    chapters.push({ title: entry.title || title, text, kind: classifyChapter(entry.title || title) });
   }
   if (chapters.length === 0) throw new Error("EPUB contained no readable text");
 
   return { title: bookTitle || "Untitled", chapters };
+}
+
+// Read ordered TOC entries (label + href) from NCX or EPUB3 nav, if present.
+function readToc(
+  opfRoot: ReturnType<typeof parse>,
+  manifest: Map<string, { href: string; mediaType: string; properties: string }>,
+  opfPath: string,
+  get: (p: string) => string | null,
+): { title: string; href: string }[] {
+  const opfDir = dirname(opfPath);
+  // NCX (EPUB2): spine toc="<id>" or a manifest item with the dtbncx media-type.
+  const spine = opfRoot.querySelector("spine");
+  const ncxId = spine?.getAttribute("toc");
+  let ncxHref = ncxId ? manifest.get(ncxId)?.href : undefined;
+  if (!ncxHref) {
+    for (const [, item] of manifest) {
+      if (item.mediaType === "application/x-dtbncx+xml") {
+        ncxHref = item.href;
+        break;
+      }
+    }
+  }
+  if (ncxHref) {
+    const ncx = get(resolveHref(opfDir, ncxHref));
+    if (ncx) {
+      const ncxDir = dirname(resolveHref(opfDir, ncxHref));
+      const entries: { title: string; href: string }[] = [];
+      const re = /<navPoint[^>]*>[\s\S]*?<text>([\s\S]*?)<\/text>[\s\S]*?<content[^>]*src="([^"]+)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(ncx))) {
+        const title = m[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+        entries.push({ title, href: resolveHref(ncxDir, m[2]) });
+      }
+      if (entries.length > 0) return entries;
+    }
+  }
+  // EPUB3 nav (properties="nav").
+  for (const [, item] of manifest) {
+    if (!item.properties.includes("nav")) continue;
+    const nav = get(resolveHref(opfDir, item.href));
+    if (!nav) break;
+    const navDir = dirname(resolveHref(opfDir, item.href));
+    const root = parse(nav);
+    const tocNav = root.querySelector('nav[*|type="toc"], nav#toc, nav');
+    const entries: { title: string; href: string }[] = [];
+    for (const a of (tocNav ?? root).querySelectorAll("a")) {
+      const href = a.getAttribute("href");
+      const title = a.text.replace(/\s+/g, " ").trim();
+      if (href && title) entries.push({ title, href: resolveHref(navDir, href) });
+    }
+    if (entries.length > 0) return entries;
+  }
+  return [];
+}
+
+// Main chapters auto-synthesize in order; everything else (foreword, reviews,
+// afterword, cover) is an "extra" synthesized on demand.
+function classifyChapter(title: string): "chapter" | "extra" {
+  const t = title.trim();
+  if (/第\s*[0-9〇零一二三四五六七八九十百千两兩]+\s*[章回卷篇折部]/.test(t)) return "chapter";
+  if (/\bchapter\s+\d+/i.test(t) || /\bpart\s+\d+/i.test(t)) return "chapter";
+  if (/^\s*\d+\s*[.、:：]/.test(t)) return "chapter";
+  return "extra";
 }
 
 async function extractPdf(buffer: Uint8Array): Promise<ExtractedBook> {

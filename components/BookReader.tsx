@@ -7,6 +7,7 @@ type Locale = "zh-Hant" | "en";
 interface Chapter {
   index: number;
   title: string;
+  kind: "chapter" | "extra";
   firstSegment: number;
   segmentCount: number;
 }
@@ -22,6 +23,7 @@ interface Progress {
   statuses: SegStatus[];
   done: number;
   errors: number;
+  focusChapter: number | null;
 }
 interface BookListItem extends BookMeta {
   progress: Progress | null;
@@ -51,6 +53,10 @@ const COPY: Record<Locale, Record<string, string>> = {
     speed: "速度",
     needProfile: "請先建立你的聲音，才能朗讀書籍。",
     deleteBook: "刪除",
+    synthingNow: "合成中",
+    onDemand: "點擊合成",
+    extraBadge: "附錄",
+    etaPrefix: "預估剩餘約",
   },
   en: {
     h1: "Turn a book into an audiobook",
@@ -73,8 +79,21 @@ const COPY: Record<Locale, Record<string, string>> = {
     speed: "Speed",
     needProfile: "Build your voice first to read books aloud.",
     deleteBook: "Delete",
+    synthingNow: "Synthesizing",
+    onDemand: "Tap to synthesize",
+    extraBadge: "Extra",
+    etaPrefix: "~",
   },
 };
+
+function formatEta(sec: number, locale: Locale): string {
+  if (sec < 60) return locale === "en" ? `${sec}s left` : `${sec} 秒`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return locale === "en" ? `~${min} min left` : `${min} 分鐘`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return locale === "en" ? `~${h}h ${m}m left` : `${h} 小時 ${m} 分`;
+}
 
 export function BookReader({ locale, profileReady }: { locale: Locale; profileReady: boolean }) {
   const t = (k: string) => COPY[locale][k] ?? k;
@@ -83,6 +102,7 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
   const [meta, setMeta] = useState<BookMeta | null>(null);
   const [segments, setSegments] = useState<{ index: number; text: string }[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [eta, setEta] = useState<number | null>(null);
   const [playIndex, setPlayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -119,9 +139,28 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
     setMeta(data.book);
     setSegments(data.segments ?? []);
     setProgress(data.progress);
-    setPlayIndex(0);
+    setEta(data.eta ?? null);
+    // Start at the first main chapter (skip front-matter extras).
+    const firstMain = (data.book.chapters as Chapter[]).find((c) => c.kind === "chapter");
+    setPlayIndex(firstMain ? firstMain.firstSegment : 0);
     setPlaying(false);
     setView("reader");
+  }
+
+  async function focusChapter(c: Chapter) {
+    if (!meta) return;
+    setPlayIndex(c.firstSegment);
+    setPlaying(true);
+    const res = await fetch(`/api/books/${meta.id}/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "focus", chapter: c.index }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setProgress(data.progress);
+      setEta(data.eta ?? null);
+    }
   }
 
   // Poll progress while the reader is open and work is ongoing.
@@ -131,7 +170,11 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
     const tick = async () => {
       try {
         const res = await fetch(`/api/books/${id}/control`, { cache: "no-store" });
-        if (res.ok) setProgress((await res.json()).progress);
+        if (res.ok) {
+          const data = await res.json();
+          setProgress(data.progress);
+          setEta(data.eta ?? null);
+        }
       } catch {
         /* ignore */
       }
@@ -287,6 +330,9 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
         <h1 className="display">{meta?.title}</h1>
         <p className="lede">
           {statusLabel} · {done} / {meta?.segmentCount} ({pct}%)
+          {progress?.status === "synthesizing" && eta != null && eta > 0 && (
+            <> · {t("etaPrefix")} {formatEta(eta, locale)}</>
+          )}
         </p>
       </div>
 
@@ -350,17 +396,44 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
           <span className="label">{t("chapters")}</span>
           <div className="chapter-list">
             {meta.chapters.map((c) => {
-              const cDone = progress
-                ? progress.statuses.slice(c.firstSegment, c.firstSegment + c.segmentCount).filter((s) => s === "done").length
-                : 0;
+              const slice = progress?.statuses.slice(c.firstSegment, c.firstSegment + c.segmentCount) ?? [];
+              const cDone = slice.filter((s) => s === "done").length;
+              const cPending = slice.filter((s) => s === "pending").length;
+              // "synthesizing" if this chapter is the active queue head.
+              const isSynthing =
+                progress?.status === "synthesizing" &&
+                cPending > 0 &&
+                (progress.focusChapter === c.index ||
+                  (progress.focusChapter == null && c.kind === "chapter") ||
+                  (progress.focusChapter != null &&
+                    meta.chapters[progress.focusChapter] &&
+                    progress.statuses
+                      .slice(
+                        meta.chapters[progress.focusChapter].firstSegment,
+                        meta.chapters[progress.focusChapter].firstSegment + meta.chapters[progress.focusChapter].segmentCount,
+                      )
+                      .every((s) => s !== "pending") &&
+                    c.kind === "chapter"));
+              const untouchedExtra = c.kind === "extra" && cDone === 0 && cPending === c.segmentCount;
               return (
                 <button
                   key={c.index}
                   className={"chapter-row" + (currentChapter?.index === c.index ? " chapter-row--on" : "")}
-                  onClick={() => { setPlayIndex(c.firstSegment); setPlaying(true); }}
+                  onClick={() => focusChapter(c)}
                 >
-                  <span className="chapter-title">{c.title}</span>
-                  <span className="muted small">{cDone} / {c.segmentCount}</span>
+                  <span className="chapter-title">
+                    {c.kind === "extra" && <span className="chip chip--cream" style={{ marginRight: 8 }}>{t("extraBadge")}</span>}
+                    {c.title}
+                  </span>
+                  <span className="muted small">
+                    {isSynthing ? (
+                      <span style={{ color: "var(--primary)" }}>● {t("synthingNow")} {cDone}/{c.segmentCount}</span>
+                    ) : untouchedExtra ? (
+                      t("onDemand")
+                    ) : (
+                      `${cDone} / ${c.segmentCount}`
+                    )}
+                  </span>
                 </button>
               );
             })}

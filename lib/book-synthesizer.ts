@@ -3,10 +3,11 @@ import { synthesizeSegment } from "@/lib/clone-runner";
 import { buildVoiceProfileSummary } from "@/lib/voice-profile";
 import {
   bookDir,
+  loadBookMeta,
   loadProgress,
   loadSegments,
   markSegment,
-  nextPendingIndex,
+  nextSegmentToSynthesize,
   segmentAudioPath,
   setBookStatus,
 } from "@/lib/book-job";
@@ -32,6 +33,8 @@ export async function runBookSynthesis(id: string): Promise<void> {
   if (running.has(id)) return;
   running.add(id);
   try {
+    const meta = await loadBookMeta(id);
+    if (!meta) return;
     const reference = await resolveReference();
     const segments = await loadSegments(id);
     const workDir = path.join(bookDir(id), "tmp");
@@ -39,10 +42,16 @@ export async function runBookSynthesis(id: string): Promise<void> {
     for (;;) {
       const progress = await loadProgress(id);
       if (!progress || progress.status !== "synthesizing") break; // paused / cancelled / done / deleted
-      const index = nextPendingIndex(progress);
-      if (index === null) break;
+      // Re-read each iteration so a user clicking another chapter re-prioritizes.
+      const index = nextSegmentToSynthesize(progress, meta.chapters);
+      if (index === null) {
+        // Caught up on all main + focused work; extras stay on-demand.
+        await setBookStatus(id, progress.errors > 0 ? "error" : "done");
+        break;
+      }
 
       const segment = segments[index];
+      const startedAt = Date.now();
       try {
         await synthesizeSegment({
           targetText: segment.text,
@@ -51,7 +60,7 @@ export async function runBookSynthesis(id: string): Promise<void> {
           workDir,
           outputM4aPath: segmentAudioPath(id, index),
         });
-        await markSegment(id, index, "done");
+        await markSegment(id, index, "done", Date.now() - startedAt);
       } catch (err) {
         console.error(`[book ${id}] segment ${index} failed:`, err);
         await markSegment(id, index, "error");

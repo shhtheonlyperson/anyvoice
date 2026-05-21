@@ -93,6 +93,44 @@ describe("book job model", () => {
     expect(nextPendingIndex(progress!)).toBe(0); // the previously-errored segment
   });
 
+  it("prioritizes the focused chapter and keeps extras on-demand; estimates ETA", async () => {
+    const { createBook } = await import("@/lib/book-job");
+    const { nextSegmentToSynthesize, setFocusChapter, etaSeconds, loadBookMeta } = await import("@/lib/book-job");
+    const segmented = segmentBook(
+      [
+        { title: "第一章", text: "一。二。", kind: "chapter" },
+        { title: "序", text: "甲。乙。", kind: "extra" },
+      ],
+      { minChars: 1, maxChars: 3 },
+    );
+    const meta = await createBook({ userId: "u", title: "T", format: "epub", voiceProfileId: "local-default", segmented });
+    const chapters = (await loadBookMeta(meta.id))!.chapters;
+    const ch1 = chapters[0];
+    const extra = chapters[1];
+
+    let progress = (await loadProgress(meta.id))!;
+    expect(progress.focusChapter).toBe(0); // first main chapter
+    // first pick is inside the focused main chapter
+    expect(nextSegmentToSynthesize(progress, chapters)).toBe(ch1.firstSegment);
+
+    // complete the main chapter -> extra is NOT auto-synthesized
+    for (let i = ch1.firstSegment; i < ch1.firstSegment + ch1.segmentCount; i += 1) {
+      await markSegment(meta.id, i, "done", 500);
+    }
+    progress = (await loadProgress(meta.id))!;
+    expect(nextSegmentToSynthesize(progress, chapters)).toBeNull();
+
+    // focusing the extra synthesizes it on demand
+    await setFocusChapter(meta.id, extra.index);
+    progress = (await loadProgress(meta.id))!;
+    expect(nextSegmentToSynthesize(progress, chapters)).toBe(extra.firstSegment);
+
+    // ETA derives from recorded timing (500ms/segment)
+    const eta = etaSeconds(progress, chapters);
+    expect(eta).not.toBeNull();
+    expect(eta!).toBeGreaterThan(0);
+  });
+
   it("deletes only the owner's book", async () => {
     const meta = await makeBook("av_owner");
     expect(await deleteBook(meta.id, "av_intruder")).toBe(false);

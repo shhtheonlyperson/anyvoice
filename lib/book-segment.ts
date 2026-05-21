@@ -6,14 +6,20 @@
 // for 50–100K-word books. We never split mid-sentence except for pathologically
 // long sentences (fallback split on commas), to preserve intonation.
 
+// "chapter" = main content (auto-synthesized in order); "extra" = front/back
+// matter like a foreword, reviews, afterword (synthesized on demand when opened).
+export type ChapterKind = "chapter" | "extra";
+
 export interface BookChapterInput {
   title: string;
   text: string;
+  kind?: ChapterKind;
 }
 
 export interface BookChapter {
   index: number;
   title: string;
+  kind: ChapterKind;
   /** index of the first segment belonging to this chapter */
   firstSegment: number;
   segmentCount: number;
@@ -122,6 +128,7 @@ export function segmentBook(
     outChapters.push({
       index: chapterIndex,
       title: chapter.title.trim() || `Chapter ${chapterIndex + 1}`,
+      kind: chapter.kind ?? "chapter",
       firstSegment,
       segmentCount: segments.length - firstSegment,
     });

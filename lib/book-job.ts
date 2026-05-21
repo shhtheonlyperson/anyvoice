@@ -29,6 +29,11 @@ export interface BookProgress {
   statuses: SegmentStatus[];
   done: number;
   errors: number;
+  /** Chapter the user is reading; its pending segments synthesize first. */
+  focusChapter: number | null;
+  /** Rolling synthesis timing for ETA. */
+  synthMsTotal: number;
+  synthCount: number;
   updatedAt: string;
 }
 
@@ -78,11 +83,16 @@ export async function createBook(input: CreateBookInput): Promise<BookMeta> {
     chapters: input.segmented.chapters,
   };
   const jsonl = input.segmented.segments.map((s) => JSON.stringify(s)).join("\n");
+  // Default focus: the first main chapter (extras stay on-demand).
+  const firstMain = input.segmented.chapters.find((c) => c.kind === "chapter");
   const progress: BookProgress = {
     status: "synthesizing",
     statuses: input.segmented.segments.map(() => "pending"),
     done: 0,
     errors: 0,
+    focusChapter: firstMain ? firstMain.index : null,
+    synthMsTotal: 0,
+    synthCount: 0,
     updatedAt: meta.createdAt,
   };
 
@@ -137,6 +147,7 @@ export async function markSegment(
   id: string,
   index: number,
   status: SegmentStatus,
+  elapsedMs?: number,
 ): Promise<BookProgress | null> {
   const progress = await loadProgress(id);
   if (!progress || index < 0 || index >= progress.statuses.length) return null;
@@ -147,6 +158,10 @@ export async function markSegment(
     progress.statuses[index] = status;
     if (status === "done") progress.done += 1;
     if (status === "error") progress.errors += 1;
+  }
+  if (status === "done" && elapsedMs && elapsedMs > 0) {
+    progress.synthMsTotal += elapsedMs;
+    progress.synthCount += 1;
   }
   // Auto-complete when every segment is resolved.
   if (progress.done + progress.errors >= progress.statuses.length && progress.status === "synthesizing") {
@@ -171,6 +186,55 @@ export async function retryErroredSegments(id: string): Promise<BookProgress | n
 export function nextPendingIndex(progress: BookProgress): number | null {
   const i = progress.statuses.indexOf("pending");
   return i >= 0 ? i : null;
+}
+
+function firstPendingInRange(progress: BookProgress, start: number, count: number): number | null {
+  for (let i = start; i < start + count && i < progress.statuses.length; i += 1) {
+    if (progress.statuses[i] === "pending") return i;
+  }
+  return null;
+}
+
+/**
+ * Priority-aware next segment:
+ * 1. the focused chapter's pending segments (so clicking a chapter jumps the queue),
+ * 2. otherwise main chapters in TOC order.
+ * Extras (foreword/reviews/afterword) only synthesize when focused — on demand.
+ */
+export function nextSegmentToSynthesize(progress: BookProgress, chapters: BookChapter[]): number | null {
+  const focus = progress.focusChapter;
+  if (focus != null && chapters[focus]) {
+    const hit = firstPendingInRange(progress, chapters[focus].firstSegment, chapters[focus].segmentCount);
+    if (hit != null) return hit;
+  }
+  for (const ch of chapters) {
+    if (ch.kind !== "chapter") continue;
+    const hit = firstPendingInRange(progress, ch.firstSegment, ch.segmentCount);
+    if (hit != null) return hit;
+  }
+  return null;
+}
+
+export async function setFocusChapter(id: string, chapter: number | null): Promise<BookProgress | null> {
+  const progress = await loadProgress(id);
+  if (!progress) return null;
+  progress.focusChapter = chapter;
+  if (progress.status === "done" || progress.status === "error") progress.status = "synthesizing";
+  await saveProgress(id, progress);
+  return progress;
+}
+
+/** Rough ETA (seconds) for the segments that will auto-synthesize. */
+export function etaSeconds(progress: BookProgress, chapters: BookChapter[]): number | null {
+  if (progress.synthCount === 0) return null;
+  const avgMs = progress.synthMsTotal / progress.synthCount;
+  let pending = 0;
+  for (const ch of chapters) {
+    const isFocus = progress.focusChapter === ch.index;
+    if (ch.kind !== "chapter" && !isFocus) continue; // extras only count when focused
+    pending += progress.statuses.slice(ch.firstSegment, ch.firstSegment + ch.segmentCount).filter((s) => s === "pending").length;
+  }
+  return Math.round((avgMs * pending) / 1000);
 }
 
 export async function listBooks(userId: string): Promise<(BookMeta & { progress: BookProgress | null })[]> {
