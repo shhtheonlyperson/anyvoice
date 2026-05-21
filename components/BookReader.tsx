@@ -24,6 +24,7 @@ interface Progress {
   done: number;
   errors: number;
   focusChapter: number | null;
+  autoResume: boolean;
 }
 interface BookListItem extends BookMeta {
   progress: Progress | null;
@@ -57,6 +58,8 @@ const COPY: Record<Locale, Record<string, string>> = {
     onDemand: "點擊合成",
     extraBadge: "附錄",
     etaPrefix: "預估剩餘約",
+    autoOn: "自動繼續：開",
+    autoOff: "自動繼續：關",
   },
   en: {
     h1: "Turn a book into an audiobook",
@@ -83,6 +86,8 @@ const COPY: Record<Locale, Record<string, string>> = {
     onDemand: "Tap to synthesize",
     extraBadge: "Extra",
     etaPrefix: "~",
+    autoOn: "Auto-resume: on",
+    autoOff: "Auto-resume: off",
   },
 };
 
@@ -230,15 +235,18 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
     }
   }
 
-  async function toggleSynth() {
-    if (!meta || !progress) return;
-    const action = progress.status === "paused" ? "resume" : "pause";
+  async function control(body: { action: string; enabled?: boolean }) {
+    if (!meta) return;
     const res = await fetch(`/api/books/${meta.id}/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(body),
     });
-    if (res.ok) setProgress((await res.json()).progress);
+    if (res.ok) {
+      const data = await res.json();
+      setProgress(data.progress);
+      setEta(data.eta ?? null);
+    }
   }
 
   async function removeBook(id: string) {
@@ -380,9 +388,26 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
               </button>
             ))}
           </div>
+          {progress && progress.status !== "done" && (() => {
+            // Offer manual resume when paused, or when auto-resume is off (the
+            // loop may not be running after a restart). Otherwise offer pause.
+            const showResume = progress.status === "paused" || !progress.autoResume;
+            return (
+              <button
+                className="btn btn--on-dark"
+                onClick={() => control({ action: showResume ? "resume" : "pause" })}
+              >
+                {showResume ? t("resumeSynth") : t("pauseSynth")}
+              </button>
+            );
+          })()}
           {progress && progress.status !== "done" && (
-            <button className="btn btn--on-dark" onClick={toggleSynth}>
-              {progress.status === "paused" ? t("resumeSynth") : t("pauseSynth")}
+            <button
+              className="btn btn--on-dark"
+              aria-pressed={progress.autoResume}
+              onClick={() => control({ action: "autoResume", enabled: !progress.autoResume })}
+            >
+              {progress.autoResume ? t("autoOn") : t("autoOff")}
             </button>
           )}
         </div>

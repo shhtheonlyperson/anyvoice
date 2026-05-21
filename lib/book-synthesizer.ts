@@ -79,3 +79,9 @@ export function startBookSynthesis(id: string): void {
   // Fire-and-forget: keeps running on the always-on local server across requests.
   void runBookSynthesis(id);
 }
+
+/** Resume every book that was mid-synthesis (e.g. after a server restart). */
+export async function resumeInProgressBooks(): Promise<void> {
+  const { listInProgressBookIds } = await import("@/lib/book-job");
+  for (const id of await listInProgressBookIds()) startBookSynthesis(id);
+}

@@ -31,6 +31,8 @@ export interface BookProgress {
   errors: number;
   /** Chapter the user is reading; its pending segments synthesize first. */
   focusChapter: number | null;
+  /** When true, the server auto-resumes synthesis on restart / page revisit. */
+  autoResume: boolean;
   /** Rolling synthesis timing for ETA. */
   synthMsTotal: number;
   synthCount: number;
@@ -91,6 +93,7 @@ export async function createBook(input: CreateBookInput): Promise<BookMeta> {
     done: 0,
     errors: 0,
     focusChapter: firstMain ? firstMain.index : null,
+    autoResume: true,
     synthMsTotal: 0,
     synthCount: 0,
     updatedAt: meta.createdAt,
@@ -251,6 +254,31 @@ export async function listBooks(userId: string): Promise<(BookMeta & { progress:
     books.push({ ...meta, progress: await loadProgress(id) });
   }
   return books.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** All book ids (any user) whose synthesis was mid-flight — used to auto-resume. */
+export async function listInProgressBookIds(): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(booksRoot());
+  } catch {
+    return [];
+  }
+  const ids: string[] = [];
+  for (const id of entries) {
+    const progress = await loadProgress(id);
+    // Only auto-resume books that opted in (autoResume defaults to true).
+    if (progress?.status === "synthesizing" && progress.autoResume !== false) ids.push(id);
+  }
+  return ids;
+}
+
+export async function setAutoResume(id: string, enabled: boolean): Promise<BookProgress | null> {
+  const progress = await loadProgress(id);
+  if (!progress) return null;
+  progress.autoResume = enabled;
+  await saveProgress(id, progress);
+  return progress;
 }
 
 export async function deleteBook(id: string, userId: string): Promise<boolean> {

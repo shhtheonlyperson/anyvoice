@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { deleteBook, etaSeconds, loadBookMeta, loadProgress, loadSegments } from "@/lib/book-job";
+import { startBookSynthesis } from "@/lib/book-synthesizer";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 
 export const runtime = "nodejs";
@@ -12,6 +13,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
     return withAnyVoiceUserCookie(Response.json({ status: "error", message: "book not found" }, { status: 404 }), session);
   }
   const progress = await loadProgress(id);
+  if (progress?.status === "synthesizing" && progress.autoResume !== false) startBookSynthesis(id); // resume on open
   const eta = progress ? etaSeconds(progress, meta.chapters) : null;
   // Segment texts are sent once on open (not on every poll) for follow-along display.
   const segments = await loadSegments(id);

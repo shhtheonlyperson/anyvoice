@@ -4,6 +4,7 @@ import {
   loadBookMeta,
   loadProgress,
   retryErroredSegments,
+  setAutoResume,
   setBookStatus,
   setFocusChapter,
 } from "@/lib/book-job";
@@ -23,7 +24,17 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     return reply({ status: "error", message: "book not found" }, { status: 404 });
   }
 
-  const body = (await req.json().catch(() => ({}))) as { action?: string; chapter?: number };
+  const body = (await req.json().catch(() => ({}))) as {
+    action?: string;
+    chapter?: number;
+    enabled?: boolean;
+  };
+  if (body.action === "autoResume") {
+    const progress = await setAutoResume(id, body.enabled !== false);
+    // Turning it on while mid-synthesis kicks the loop back off immediately.
+    if (progress?.status === "synthesizing" && progress.autoResume) startBookSynthesis(id);
+    return reply({ progress, eta: progress ? etaSeconds(progress, meta.chapters) : null });
+  }
   if (body.action === "pause") {
     const progress = await setBookStatus(id, "paused");
     return reply({ progress, eta: progress ? etaSeconds(progress, meta.chapters) : null });
@@ -49,6 +60,10 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
   const session = getOrCreateAnyVoiceUserSession(req);
   const meta = await loadBookMeta(id);
   const progress = await loadProgress(id);
+  // Keep synthesis alive while the reader is open / resume on revisit (if opted in).
+  if (progress?.status === "synthesizing" && progress.autoResume !== false && meta?.userId === session.userId) {
+    startBookSynthesis(id);
+  }
   const eta = progress && meta ? etaSeconds(progress, meta.chapters) : null;
   return withAnyVoiceUserCookie(Response.json({ progress, eta }), session);
 }

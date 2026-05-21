@@ -11,6 +11,10 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest) {
   const session = getOrCreateAnyVoiceUserSession(req);
   const books = await listBooks(session.userId);
+  // Revisiting the shelf auto-resumes books left mid-synthesis (if opted in).
+  for (const b of books) {
+    if (b.progress?.status === "synthesizing" && b.progress.autoResume !== false) startBookSynthesis(b.id);
+  }
   return withAnyVoiceUserCookie(Response.json({ books }), session);
 }
 

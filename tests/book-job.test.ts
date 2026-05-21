@@ -131,6 +131,16 @@ describe("book job model", () => {
     expect(eta!).toBeGreaterThan(0);
   });
 
+  it("excludes auto-resume-off books from the resume scan", async () => {
+    const { listInProgressBookIds, setAutoResume } = await import("@/lib/book-job");
+    const on = await makeBook();
+    const off = await makeBook();
+    await setAutoResume(off.id, false);
+    const ids = await listInProgressBookIds();
+    expect(ids).toContain(on.id);
+    expect(ids).not.toContain(off.id);
+  });
+
   it("deletes only the owner's book", async () => {
     const meta = await makeBook("av_owner");
     expect(await deleteBook(meta.id, "av_intruder")).toBe(false);
