@@ -1,0 +1,63 @@
+{
+  "version": "v1",
+  "description": "AnyVoice voice-clone regression set. Focuses on zh-Hant pronunciation, mixed English/Chinese, numbers, and repeat-render stability.",
+  "cases": [
+    {
+      "id": "zh_hant_short_identity",
+      "locale": "zh-Hant",
+      "tags": ["short", "identity"],
+      "text": "我想把這段聲音穩定下來，不要每次都像不同的人。"
+    },
+    {
+      "id": "zh_hant_paragraph",
+      "locale": "zh-Hant",
+      "tags": ["paragraph", "pacing"],
+      "text": "如果今天的錄音品質夠乾淨，這個聲音應該要自然、穩定，而且每一次重新產生都聽起來像同一個人。"
+    },
+    {
+      "id": "zh_hant_numbers_dates",
+      "locale": "zh-Hant",
+      "tags": ["numbers", "dates"],
+      "text": "今天是二零二六年五月十九日，訂單編號是 A 一七三九，請在下午三點半以前回覆。"
+    },
+    {
+      "id": "zh_hant_polyphones",
+      "locale": "zh-Hant",
+      "tags": ["polyphone", "pronunciation"],
+      "text": "重慶、銀行、角色、音樂、長樂這幾個詞，不要因為上下文不夠清楚就讀錯。"
+    },
+    {
+      "id": "zh_hant_custom_readings",
+      "locale": "zh-Hant",
+      "tags": ["polyphone", "pronunciation", "repair"],
+      "text": "這次請把行長、長樂和 TSMC 的讀法固定下來，不要每次重試都變得不一樣。",
+      "pronunciationOverrides": [
+        "pinyin:行長=xing2 zhang3",
+        "長樂[reading]=chang2 le4",
+        {
+          "term": "TSMC",
+          "replacement": "T S M C",
+          "kind": "brand"
+        }
+      ]
+    },
+    {
+      "id": "zh_hant_tone_contrast",
+      "locale": "zh-Hant",
+      "tags": ["tone", "pronunciation"],
+      "text": "媽媽罵馬嗎？買賣慢慢來，明明沒有那麼難。"
+    },
+    {
+      "id": "mixed_en_zh_models",
+      "locale": "zh-Hant",
+      "tags": ["mixed-language", "models"],
+      "text": "請幫我把 AnyVoice、VoxCPM2 和 Brenda 的測試結果整理成一份簡短報告。"
+    },
+    {
+      "id": "tw_terms",
+      "locale": "zh-Hant",
+      "tags": ["taiwan", "traditional-chinese"],
+      "text": "這個專案要支援繁體中文、台灣用語，以及自然的英文夾雜，不要聽起來像生硬翻譯。"
+    }
+  ]
+}

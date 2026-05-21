@@ -9,6 +9,12 @@ import {
   type CloneReadyPayload,
   type CloneWorkerMissingPayload,
 } from "@/lib/clone-runner";
+import {
+  createErrorHistoryRecord,
+  createReadyHistoryRecord,
+  createWorkerMissingHistoryRecord,
+  saveRunHistory,
+} from "@/lib/run-history";
 
 export interface CloneErrorPayload {
   status: "error";
@@ -23,6 +29,10 @@ export type CloneStreamPayload =
   | CloneWorkerMissingPayload
   | CloneErrorPayload;
 
+export interface CloneStreamOptions {
+  userId?: string;
+}
+
 function streamHeaders(): HeadersInit {
   return {
     "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -35,17 +45,29 @@ function enqueueJson(controller: ReadableStreamDefaultController<Uint8Array>, pa
   controller.enqueue(new TextEncoder().encode(`${JSON.stringify(payload)}\n`));
 }
 
-export function localCloneStreamResponse(jobId: string, input: CloneInput): Response {
+async function saveHistoryBestEffort(recordPromise: Promise<unknown>): Promise<void> {
+  await recordPromise.catch(() => {});
+}
+
+export function localCloneStreamResponse(jobId: string, input: CloneInput, options: CloneStreamOptions = {}): Response {
   return new Response(
     new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (payload: CloneStreamPayload) => enqueueJson(controller, payload);
         try {
           const payload = await runLocalCloneWithProgress(jobId, input, send);
+          if (options.userId) {
+            await saveHistoryBestEffort(saveRunHistory(createReadyHistoryRecord(options.userId, input, payload)));
+          }
           send(payload);
         } catch (error) {
           const message = error instanceof Error ? error.message : "synthesis failed";
           await recordCloneError(jobId, message);
+          if (options.userId) {
+            await saveHistoryBestEffort(
+              saveRunHistory(createErrorHistoryRecord(options.userId, jobId, input, message)),
+            );
+          }
           send({ status: "error", jobId, modelId: modelId(), message });
         } finally {
           controller.close();
@@ -56,7 +78,7 @@ export function localCloneStreamResponse(jobId: string, input: CloneInput): Resp
   );
 }
 
-export function workerMissingStreamResponse(jobId: string, input: CloneInput): Response {
+export function workerMissingStreamResponse(jobId: string, input: CloneInput, options: CloneStreamOptions = {}): Response {
   return new Response(
     new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -67,7 +89,11 @@ export function workerMissingStreamResponse(jobId: string, input: CloneInput): R
           phase: "queued",
         });
         await recordWorkerMissingRun(jobId, input);
-        enqueueJson(controller, workerMissingPayload(jobId));
+        const payload = workerMissingPayload(jobId);
+        if (options.userId) {
+          await saveHistoryBestEffort(saveRunHistory(createWorkerMissingHistoryRecord(options.userId, input, payload)));
+        }
+        enqueueJson(controller, payload);
         controller.close();
       },
     }),

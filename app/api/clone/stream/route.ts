@@ -1,8 +1,10 @@
 import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { shouldReturnWorkerMissing } from "@/lib/clone-config";
-import { cloneInputToFormData, isCloneInputError, parseCloneForm } from "@/lib/clone-request";
+import { cloneInputToFormData, isCloneInputError, type CloneInput, type CloneInputError } from "@/lib/clone-request";
 import { localCloneStreamResponse, workerMissingStreamResponse } from "@/lib/clone-stream";
+import { parseCloneFormWithProfile } from "@/lib/profile-clone-input";
+import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 import { isWorkerProxyConfigured, workerAuthHeaders, workerCloneStreamUrl, workerToken } from "@/lib/worker-proxy";
 
 export const runtime = "nodejs";
@@ -12,7 +14,7 @@ function json(data: unknown, init?: ResponseInit) {
   return Response.json(data, init);
 }
 
-async function forwardStreamToWorker(input: ReturnType<typeof parseCloneForm>) {
+async function forwardStreamToWorker(input: CloneInput | CloneInputError) {
   if (isCloneInputError(input)) {
     return json(input.body, { status: input.statusCode });
   }
@@ -65,26 +67,27 @@ async function forwardStreamToWorker(input: ReturnType<typeof parseCloneForm>) {
 }
 
 export async function POST(req: NextRequest) {
+  const session = getOrCreateAnyVoiceUserSession(req);
   let form: FormData;
   try {
     form = await req.formData();
   } catch {
-    return json({ status: "error", message: "multipart form data required" }, { status: 400 });
+    return withAnyVoiceUserCookie(json({ status: "error", message: "multipart form data required" }, { status: 400 }), session);
   }
 
-  const input = parseCloneForm(form);
+  const input = await parseCloneFormWithProfile(form);
 
   if (isWorkerProxyConfigured()) {
-    return forwardStreamToWorker(input);
+    return withAnyVoiceUserCookie(await forwardStreamToWorker(input), session);
   }
   if (isCloneInputError(input)) {
-    return json(input.body, { status: input.statusCode });
+    return withAnyVoiceUserCookie(json(input.body, { status: input.statusCode }), session);
   }
 
   const jobId = nanoid(10);
   if (shouldReturnWorkerMissing()) {
-    return workerMissingStreamResponse(jobId, input);
+    return withAnyVoiceUserCookie(workerMissingStreamResponse(jobId, input, { userId: session.userId }), session);
   }
 
-  return localCloneStreamResponse(jobId, input);
+  return withAnyVoiceUserCookie(localCloneStreamResponse(jobId, input, { userId: session.userId }), session);
 }

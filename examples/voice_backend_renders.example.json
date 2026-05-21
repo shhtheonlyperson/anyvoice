@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "description": "Example manifest for registering externally rendered backend WAVs into the AnyVoice regression scorer.",
+  "backends": [
+    {
+      "backend": "voxcpm2-hifi",
+      "referenceAudio": "/path/to/ready-profile/reference.wav",
+      "promptTextFile": "/path/to/ready-profile/reference-transcript.txt",
+      "renders": [
+        {
+          "caseId": "zh_hant_polyphones",
+          "repeat": 1,
+          "outputWav": "/path/to/voxcpm2-hifi/zh_hant_polyphones-r01.wav"
+        }
+      ]
+    },
+    {
+      "backend": "indextts2",
+      "referenceAudio": "/path/to/ready-profile/reference.wav",
+      "promptTextFile": "/path/to/ready-profile/reference-transcript.txt",
+      "renders": [
+        {
+          "caseId": "zh_hant_polyphones",
+          "repeat": 1,
+          "outputWav": "/path/to/indextts2/zh_hant_polyphones-r01.wav",
+          "metadataJson": {
+            "engine": "IndexTTS2",
+            "notes": "External render registered for AnyVoice scoring."
+          }
+        }
+      ]
+    }
+  ]
+}

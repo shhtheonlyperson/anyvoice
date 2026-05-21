@@ -19,6 +19,7 @@ import {
   recordCloneError,
   recordWorkerMissingRun,
   runLocalClone,
+  runLocalCloneWithProgress,
   workerMissingPayload,
 } from "@/lib/clone-runner";
 import type { CloneInput } from "@/lib/clone-request";
@@ -29,6 +30,10 @@ let tmpRoot: string;
 const originalRunsDir = process.env.ANYVOICE_RUNS_DIR;
 const originalVercel = process.env.VERCEL;
 const originalModel = process.env.ANYVOICE_MODEL_ID;
+const originalHotWorkerUrl = process.env.ANYVOICE_HOT_WORKER_URL;
+const originalCloneMode = process.env.ANYVOICE_VOXCPM_CLONE_MODE;
+const originalLoraPath = process.env.ANYVOICE_VOXCPM_LORA_PATH;
+const originalStabilitySeed = process.env.ANYVOICE_STABILITY_SEED;
 
 function makeInput(overrides: Partial<CloneInput> = {}): CloneInput {
   return {
@@ -83,6 +88,9 @@ beforeEach(async () => {
   tmpRoot = await mkdtemp(path.join(os.tmpdir(), "anyvoice-runner-"));
   process.env.ANYVOICE_RUNS_DIR = tmpRoot;
   delete process.env.VERCEL;
+  delete process.env.ANYVOICE_HOT_WORKER_URL;
+  delete process.env.ANYVOICE_VOXCPM_LORA_PATH;
+  delete process.env.ANYVOICE_STABILITY_SEED;
   spawnMock.mockReset();
 });
 
@@ -94,6 +102,15 @@ afterEach(async () => {
   else process.env.VERCEL = originalVercel;
   if (originalModel === undefined) delete process.env.ANYVOICE_MODEL_ID;
   else process.env.ANYVOICE_MODEL_ID = originalModel;
+  if (originalHotWorkerUrl === undefined) delete process.env.ANYVOICE_HOT_WORKER_URL;
+  else process.env.ANYVOICE_HOT_WORKER_URL = originalHotWorkerUrl;
+  if (originalCloneMode === undefined) delete process.env.ANYVOICE_VOXCPM_CLONE_MODE;
+  else process.env.ANYVOICE_VOXCPM_CLONE_MODE = originalCloneMode;
+  if (originalLoraPath === undefined) delete process.env.ANYVOICE_VOXCPM_LORA_PATH;
+  else process.env.ANYVOICE_VOXCPM_LORA_PATH = originalLoraPath;
+  if (originalStabilitySeed === undefined) delete process.env.ANYVOICE_STABILITY_SEED;
+  else process.env.ANYVOICE_STABILITY_SEED = originalStabilitySeed;
+  vi.unstubAllGlobals();
 });
 
 describe("workerMissingPayload", () => {
@@ -124,11 +141,99 @@ describe("recordWorkerMissingRun", () => {
     expect(parsed.status).toBe("needs_worker");
     expect(parsed.voiceName).toBe("ref.wav");
     expect(parsed.quality).toBe("balanced");
+    expect(parsed.stabilitySeed).toBe(1337);
+    expect(parsed.textPreparation.targetText.model).toBe("hello world");
 
     const targetText = await readFile(path.join(runDir, "target.txt"), "utf-8");
     expect(targetText).toBe("hello world");
+    const targetRaw = await readFile(path.join(runDir, "target.raw.txt"), "utf-8");
+    expect(targetRaw).toBe("hello world");
     const prompt = await readFile(path.join(runDir, "prompt-transcript.txt"), "utf-8");
     expect(prompt).toBe("transcript text");
+    const textPrep = JSON.parse(await readFile(path.join(runDir, "text-prep.json"), "utf-8"));
+    expect(textPrep.targetText.policy).toBe("preserve_zh_hant");
+  });
+
+  it("writes pronunciation overrides into model text and request metadata", async () => {
+    const jobId = "jobPron";
+    await recordWorkerMissingRun(
+      jobId,
+      makeInput({
+        targetText: "重慶、AnyVoice 和行長都要讀準。",
+        pronunciationOverrides: [
+          { term: "重慶", replacement: "重 慶", kind: "polyphone", source: "preset", presetId: "polyphone:chongqing" },
+          { term: "AnyVoice", replacement: "Any Voice", kind: "brand", source: "preset", presetId: "brand:anyvoice" },
+          { term: "行長", replacement: "xing2 zhang3", kind: "pinyin", source: "custom" },
+        ],
+      }),
+    );
+    const runDir = path.join(tmpRoot, jobId);
+    await expect(readFile(path.join(runDir, "target.raw.txt"), "utf-8")).resolves.toBe("重慶、AnyVoice 和行長都要讀準。");
+    await expect(readFile(path.join(runDir, "target.txt"), "utf-8")).resolves.toBe("重 慶、Any Voice 和xing2 zhang3都要讀準。");
+    const textPrep = JSON.parse(await readFile(path.join(runDir, "text-prep.json"), "utf-8"));
+    expect(textPrep.targetText.pronunciationOverrides).toEqual([
+      { term: "AnyVoice", replacement: "Any Voice", kind: "brand", source: "preset", presetId: "brand:anyvoice", count: 1 },
+      { term: "重慶", replacement: "重 慶", kind: "polyphone", source: "preset", presetId: "polyphone:chongqing", count: 1 },
+      { term: "行長", replacement: "xing2 zhang3", kind: "pinyin", source: "custom", count: 1 },
+    ]);
+    const request = JSON.parse(await readFile(path.join(runDir, "request.json"), "utf-8"));
+    expect(request.pronunciationOverrides).toEqual([
+      { term: "重慶", replacement: "重 慶", kind: "polyphone", source: "preset", presetId: "polyphone:chongqing" },
+      { term: "AnyVoice", replacement: "Any Voice", kind: "brand", source: "preset", presetId: "brand:anyvoice" },
+      { term: "行長", replacement: "xing2 zhang3", kind: "pinyin", source: "custom" },
+    ]);
+  });
+
+  it("auto-applies known pronunciation presets to generated target text", async () => {
+    const jobId = "jobAutoPron";
+    await recordWorkerMissingRun(
+      jobId,
+      makeInput({
+        targetText: "請用我的聲音說重慶、銀行和 VoxCPM2。",
+        promptTranscript: "請用我的聲音說這句話。",
+      }),
+    );
+    const runDir = path.join(tmpRoot, jobId);
+    await expect(readFile(path.join(runDir, "target.raw.txt"), "utf-8")).resolves.toBe(
+      "請用我的聲音說重慶、銀行和 VoxCPM2。",
+    );
+    await expect(readFile(path.join(runDir, "target.txt"), "utf-8")).resolves.toBe(
+      "請用我的聲音說重 慶、銀 行和 Vox C P M two。",
+    );
+    const prompt = await readFile(path.join(runDir, "prompt-transcript.txt"), "utf-8");
+    expect(prompt).toBe("請用我的聲音說這句話。");
+    const textPrep = JSON.parse(await readFile(path.join(runDir, "text-prep.json"), "utf-8"));
+    expect(textPrep.targetText.operations).toContain("auto_apply_pronunciation_presets");
+    expect(textPrep.targetText.pronunciationOverrides).toEqual([
+      {
+        term: "VoxCPM2",
+        replacement: "Vox C P M two",
+        reason: "brand",
+        kind: "brand",
+        source: "preset",
+        presetId: "brand:voxcpm2",
+        count: 1,
+      },
+      {
+        term: "重慶",
+        replacement: "重 慶",
+        reason: "polyphone",
+        kind: "polyphone",
+        source: "preset",
+        presetId: "polyphone:chongqing",
+        count: 1,
+      },
+      {
+        term: "銀行",
+        replacement: "銀 行",
+        reason: "polyphone",
+        kind: "polyphone",
+        source: "preset",
+        presetId: "polyphone:bank",
+        count: 1,
+      },
+    ]);
+    expect(textPrep.promptTranscript.operations).not.toContain("auto_apply_pronunciation_presets");
   });
 
   it("always writes the prompt transcript file (required field)", async () => {
@@ -185,6 +290,7 @@ describe("runLocalClone", () => {
           cfgValue: 1.5,
           denoise: true,
           qualityPreset: "quality",
+          cloneMode: "hifi",
         },
       }) as never,
     );
@@ -215,6 +321,7 @@ describe("runLocalClone", () => {
           cfg_value: 2.0,
           denoise: 0,
           quality_preset: "speed",
+          clone_mode: "hifi",
         },
       }) as never,
     );
@@ -269,6 +376,129 @@ describe("runLocalClone", () => {
     await runLocalClone("jobArgs", makeInput({ promptTranscript: "transcript here" }));
     const args = spawnMock.mock.calls[0][1] as string[];
     expect(args).toContain("--prompt-text-file");
+    expect(args).toContain("--text-prep-file");
     expect(args).toContain("--quality");
+    expect(args).toContain("--seed");
+    expect(args[args.indexOf("--seed") + 1]).toBe("1337");
+    expect(args).toContain("--clone-mode");
+    expect(args[args.indexOf("--clone-mode") + 1]).toBe("hifi");
+  });
+
+  it("can pass the prompt-only clone mode for rollback A/B tests", async () => {
+    process.env.ANYVOICE_VOXCPM_CLONE_MODE = "prompt";
+    spawnMock.mockImplementation(() =>
+      fakeSuccess({
+        referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
+        effectiveParams: { timesteps: 8, cfgValue: 2, denoise: false, qualityPreset: "balanced", cloneMode: "prompt" },
+      }) as never,
+    );
+    const result = await runLocalClone("jobPrompt", makeInput());
+    const args = spawnMock.mock.calls[0][1] as string[];
+    expect(args[args.indexOf("--clone-mode") + 1]).toBe("prompt");
+    expect(result.effectiveParams.cloneMode).toBe("prompt");
+  });
+
+  it("can disable the stability seed for exploratory one-shot renders", async () => {
+    process.env.ANYVOICE_STABILITY_SEED = "off";
+    spawnMock.mockImplementation(() =>
+      fakeSuccess({
+        referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
+        effectiveParams: { timesteps: 8, cfgValue: 2, denoise: false, qualityPreset: "balanced", cloneMode: "hifi" },
+      }) as never,
+    );
+    await runLocalClone("jobNoSeed", makeInput());
+    const args = spawnMock.mock.calls[0][1] as string[];
+    expect(args).not.toContain("--seed");
+    const request = JSON.parse(await readFile(path.join(tmpRoot, "jobNoSeed", "request.json"), "utf-8"));
+    expect(request.stabilitySeed).toBeNull();
+  });
+
+  it("passes a configured VoxCPM LoRA path to the one-shot Python worker", async () => {
+    process.env.ANYVOICE_VOXCPM_LORA_PATH = "/tmp/voice-lora/lora_weights.ckpt";
+    spawnMock.mockImplementation(() =>
+      fakeSuccess({
+        referenceQuality: { grade: "B", durationSec: 6, snrDb: 25, clippingRatio: 0, vadActiveRatio: 0.8, warnings: [] },
+        effectiveParams: {
+          timesteps: 8,
+          cfgValue: 2,
+          denoise: false,
+          qualityPreset: "balanced",
+          cloneMode: "hifi",
+          loraEnabled: true,
+          loraPath: "/tmp/voice-lora/lora_weights.ckpt",
+        },
+      }) as never,
+    );
+    const result = await runLocalClone("jobLora", makeInput());
+    const args = spawnMock.mock.calls[0][1] as string[];
+    expect(args).toContain("--lora-path");
+    expect(args[args.indexOf("--lora-path") + 1]).toBe("/tmp/voice-lora/lora_weights.ckpt");
+    expect(result.effectiveParams.loraEnabled).toBe(true);
+    expect(result.effectiveParams.loraPath).toBe("/tmp/voice-lora/lora_weights.ckpt");
+  });
+
+  it("uses a configured hot worker instead of spawning per-request Python", async () => {
+    process.env.ANYVOICE_HOT_WORKER_URL = "http://127.0.0.1:8765";
+    process.env.ANYVOICE_VOXCPM_LORA_PATH = "/tmp/voice-lora/lora_weights.ckpt";
+    const progressPhases: string[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.cloneMode).toBe("hifi");
+      expect(body.loraPath).toBe("/tmp/voice-lora/lora_weights.ckpt");
+      expect(body.stabilitySeed).toBe(1337);
+      expect(body.textPrepFile).toMatch(/text-prep\.json$/);
+      await writeFile(
+        body.metadataOutput,
+        JSON.stringify({
+          referenceQuality: {
+            grade: "A",
+            durationSec: 8,
+            snrDb: 28,
+            clippingRatio: 0,
+            vadActiveRatio: 0.8,
+            warnings: [],
+          },
+          effectiveParams: {
+            timesteps: 40,
+            cfgValue: 3,
+            denoise: true,
+            qualityPreset: "quality",
+            cloneMode: "hifi",
+            stabilitySeed: 1337,
+          },
+          hotWorker: { reusedHotModel: true },
+        }),
+        "utf-8",
+      );
+      await writeFile(body.output, Buffer.from([1, 2, 3]), null);
+      return new Response(
+        [
+          JSON.stringify({ type: "progress", phase: "model_ready", reusedHotModel: true }),
+          JSON.stringify({ type: "progress", phase: "synthesis_started" }),
+          JSON.stringify({ type: "completed", payload: { ok: true } }),
+          "",
+        ].join("\n"),
+        { status: 200, headers: { "content-type": "application/x-ndjson" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await runLocalCloneWithProgress(
+      "jobHot",
+      makeInput({ quality: "quality" }),
+      (payload) => progressPhases.push(payload.phase),
+    );
+
+    expect(result.status).toBe("ready");
+    expect(result.referenceQuality.grade).toBe("A");
+    expect(result.effectiveParams.qualityPreset).toBe("quality");
+    expect(result.effectiveParams.stabilitySeed).toBe(1337);
+    expect(progressPhases).toContain("model_ready");
+    expect(progressPhases).toContain("synthesis_started");
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/clone",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

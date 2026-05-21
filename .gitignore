@@ -6,7 +6,10 @@
 node_modules/
 out/
 coverage/
+generated/
 .vercel/
 .anyvoice/
 *.tsbuildinfo
 .vercel
+__pycache__/
+*.pyc

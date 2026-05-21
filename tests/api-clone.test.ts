@@ -1,4 +1,7 @@
 // @vitest-environment node
+import path from "node:path";
+import os from "node:os";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/clone-runner", () => ({
@@ -13,6 +16,13 @@ vi.mock("@/lib/clone-runner", () => ({
   })),
 }));
 
+vi.mock("@/lib/run-history", () => ({
+  createReadyHistoryRecord: vi.fn(() => ({ id: "ready-history" })),
+  createWorkerMissingHistoryRecord: vi.fn(() => ({ id: "missing-history" })),
+  createErrorHistoryRecord: vi.fn(() => ({ id: "error-history" })),
+  saveRunHistory: vi.fn(async () => {}),
+}));
+
 vi.mock("nanoid", () => ({ nanoid: () => "test-job-id" }));
 
 import { POST } from "@/app/api/clone/route";
@@ -22,11 +32,14 @@ import {
   runLocalClone,
   workerMissingPayload,
 } from "@/lib/clone-runner";
+import { persistVoiceProfileManifest, voiceProfileManifestPath, type VoiceProfileSummary } from "@/lib/voice-profile";
+import { saveRunHistory } from "@/lib/run-history";
 
 const runMock = vi.mocked(runLocalClone);
 const recordErrMock = vi.mocked(recordCloneError);
 const recordMissingMock = vi.mocked(recordWorkerMissingRun);
 const missingPayloadMock = vi.mocked(workerMissingPayload);
+const saveHistoryMock = vi.mocked(saveRunHistory);
 
 const originalEnv = { ...process.env };
 
@@ -48,6 +61,66 @@ function makeReq(form?: FormData, init?: RequestInit): import("next/server").Nex
     body,
     ...init,
   }) as unknown as import("next/server").NextRequest;
+}
+
+const profileTranscriptFixtures = [
+  "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，世界很安靜。",
+  "日期範例是二零二六年五月二十日，我會用自然的速度，把每一句話清楚地讀完。",
+  "如果遇到 Brenda、AnyVoice、台北、紐約、重慶、銀行、角色、音樂和長樂，我會保持穩定節奏。",
+  "這段錄音包含高低起伏、停頓和短句，目的是讓數位聲音更接近我平常說話的方式。",
+  "請確認錄音環境安靜、沒有回音，也不要離麥克風太近，讓聲音保持乾淨自然。",
+];
+
+async function writeEligibleProfileRun(
+  root: string,
+  id: string,
+  transcript = profileTranscriptFixtures[Number(id.replace(/\D/g, "")) - 1] ?? `請錄製穩定聲音 ${id}。`,
+) {
+  const runDir = path.join(root, id);
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "reference_16k_mono.wav"), Buffer.from([1, 2, 3, 4]));
+  await writeFile(path.join(runDir, "prompt-transcript.raw.txt"), transcript, "utf-8");
+  await writeFile(path.join(runDir, "target.raw.txt"), "target", "utf-8");
+  await writeFile(
+    path.join(runDir, "metadata.json"),
+    JSON.stringify({
+      referenceQuality: {
+        grade: "A",
+        durationSec: 8,
+        snrDb: 24,
+        clippingRatio: 0,
+        vadActiveRatio: 0.8,
+        warnings: [],
+      },
+    }),
+    "utf-8",
+  );
+}
+
+async function writePassingProfileValidation(validationRoot: string, profile: VoiceProfileSummary) {
+  await mkdir(validationRoot, { recursive: true });
+  await writeFile(
+    path.join(validationRoot, "local-default.json"),
+    `${JSON.stringify(
+      {
+        createdAt: "2026-05-19T00:00:00.000Z",
+        profile: voiceProfileManifestPath("local-default"),
+        status: "pass",
+        summary: { total: profile.clips.length, passed: profile.clips.length, failed: 0 },
+        clips: profile.clips.map((clip) => ({
+          sourceRunId: clip.sourceRunId,
+          expectedTranscript: clip.transcriptRaw,
+          audioPath: clip.audioPath,
+          verdict: "pass",
+          cer: { rate: 0 },
+          wer: { rate: 0 },
+        })),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
 }
 
 beforeEach(() => {
@@ -104,7 +177,7 @@ describe("POST /api/clone", () => {
         warnings: [],
       },
       targetLanguage: "en",
-      effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced" },
+      effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced", cloneMode: "hifi" },
     });
     const res = await POST(makeReq(buildForm()));
     expect(res.status).toBe(200);
@@ -112,6 +185,51 @@ describe("POST /api/clone", () => {
     expect(body.status).toBe("ready");
     expect(body.jobId).toBe("test-job-id");
     expect(runMock).toHaveBeenCalledTimes(1);
+    expect(saveHistoryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("can synthesize from a ready voice profile without an uploaded voice", async () => {
+    const profileRoot = await mkdtemp(path.join(os.tmpdir(), "anyvoice-api-profile-clone-"));
+    const validationRoot = path.join(profileRoot, "transcript-validation");
+    process.env.ANYVOICE_RUNS_DIR = profileRoot;
+    process.env.ANYVOICE_VOICE_PROFILE_ROOT = path.join(profileRoot, "voices");
+    process.env.ANYVOICE_TRANSCRIPT_VALIDATION_ROOT = validationRoot;
+    try {
+      await Promise.all(Array.from({ length: 5 }, (_, index) => writeEligibleProfileRun(profileRoot, `clip-${index + 1}`)));
+      const profile = await persistVoiceProfileManifest({ profileId: "local-default" });
+      await writePassingProfileValidation(validationRoot, profile);
+      runMock.mockResolvedValue({
+        status: "ready",
+        jobId: "test-job-id",
+        modelId: "openbmb/VoxCPM2",
+        audioUrl: "/api/runs/test-job-id/audio",
+        referenceQuality: {
+          grade: "A",
+          durationSec: 8,
+          snrDb: 25,
+          clippingRatio: 0,
+          vadActiveRatio: 0.8,
+          warnings: [],
+        },
+        targetLanguage: "zh",
+        effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced", cloneMode: "hifi" },
+      });
+
+      const form = new FormData();
+      form.set("useVoiceProfile", "yes");
+      form.set("targetText", "請用我的數位聲音說這句。");
+      form.set("consent", "yes");
+      const res = await POST(makeReq(form));
+
+      expect(res.status).toBe(200);
+      expect(runMock).toHaveBeenCalledTimes(1);
+      const input = runMock.mock.calls[0][1];
+      expect(input.sourceKind).toBe("profile");
+      expect(input.promptTranscript).toBe(profileTranscriptFixtures[0]);
+      expect(input.profileReference?.referenceClipIds).toHaveLength(5);
+    } finally {
+      await rm(profileRoot, { recursive: true, force: true });
+    }
   });
 
   it("returns needs_worker shape when stub is on", async () => {
@@ -122,6 +240,7 @@ describe("POST /api/clone", () => {
     expect(body.status).toBe("needs_worker");
     expect(recordMissingMock).toHaveBeenCalled();
     expect(missingPayloadMock).toHaveBeenCalledWith("test-job-id");
+    expect(saveHistoryMock).toHaveBeenCalledTimes(1);
   });
 
   it("records error and returns 500 when the runner throws", async () => {
@@ -132,6 +251,7 @@ describe("POST /api/clone", () => {
     expect(body.message).toBe("model exploded");
     expect(body.jobId).toBe("test-job-id");
     expect(recordErrMock).toHaveBeenCalledWith("test-job-id", "model exploded");
+    expect(saveHistoryMock).toHaveBeenCalledTimes(1);
   });
 
   it("returns 500 when worker URL is configured but invalid", async () => {

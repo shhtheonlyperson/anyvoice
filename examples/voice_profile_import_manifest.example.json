@@ -1,0 +1,24 @@
+{
+  "clips": [
+    {
+      "audioPath": "/path/to/profile-clip-01.wav",
+      "transcript": "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，遠方傳來陣陣鳥鳴，世界顯得格外安靜。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-02.wav",
+      "transcript": "日期範例是二零二六年五月二十日，我會用自然的速度，把每一句話清楚地讀完。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-03.wav",
+      "transcript": "如果遇到重要名字，例如 Brenda、AnyVoice、台北、紐約、重慶、銀行、角色、音樂和長樂，我會保持穩定的音量與節奏。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-04.wav",
+      "transcript": "這段錄音包含高低起伏、停頓和短句，目的是讓數位聲音更接近我平常說話的方式。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-05.wav",
+      "transcript": "請確認錄音環境安靜、沒有回音，也不要離麥克風太近，讓聲音保持乾淨自然。"
+    }
+  ]
+}

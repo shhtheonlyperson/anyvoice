@@ -3,11 +3,15 @@ import path from "node:path";
 import os from "node:os";
 import {
   isWorkerEnabled,
+  hotWorkerUrl,
   maxUploadBytes,
   modelId,
   normalizeTargetText,
   runsRoot,
   shouldReturnWorkerMissing,
+  stabilitySeed,
+  voxcpmCloneMode,
+  voxcpmLoraPath,
 } from "@/lib/clone-config";
 
 describe("clone config", () => {
@@ -76,5 +80,33 @@ describe("clone config", () => {
 
   it("returns the env model when overridden", () => {
     expect(modelId({ ANYVOICE_MODEL_ID: "x/y" })).toBe("x/y");
+  });
+
+  it("defaults VoxCPM clone mode to hifi and only allows prompt as rollback", () => {
+    expect(voxcpmCloneMode({})).toBe("hifi");
+    expect(voxcpmCloneMode({ ANYVOICE_VOXCPM_CLONE_MODE: "prompt" })).toBe("prompt");
+    expect(voxcpmCloneMode({ ANYVOICE_VOXCPM_CLONE_MODE: "unknown" })).toBe("hifi");
+  });
+
+  it("normalizes the optional hot worker URL", () => {
+    expect(hotWorkerUrl({})).toBe("");
+    expect(hotWorkerUrl({ ANYVOICE_HOT_WORKER_URL: " http://127.0.0.1:8765 " })).toBe(
+      "http://127.0.0.1:8765",
+    );
+  });
+
+  it("normalizes the optional VoxCPM LoRA path", () => {
+    expect(voxcpmLoraPath({})).toBe("");
+    expect(voxcpmLoraPath({ ANYVOICE_VOXCPM_LORA_PATH: " /tmp/lora_weights.ckpt " })).toBe(
+      "/tmp/lora_weights.ckpt",
+    );
+  });
+
+  it("defaults to a fixed stability seed and allows explicit opt-out", () => {
+    expect(stabilitySeed({})).toBe(1337);
+    expect(stabilitySeed({ ANYVOICE_STABILITY_SEED: "42" })).toBe(42);
+    expect(stabilitySeed({ ANYVOICE_STABILITY_SEED: "off" })).toBeNull();
+    expect(stabilitySeed({ ANYVOICE_STABILITY_SEED: "random" })).toBeNull();
+    expect(stabilitySeed({ ANYVOICE_STABILITY_SEED: "bad" })).toBe(1337);
   });
 });

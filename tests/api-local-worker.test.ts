@@ -101,7 +101,7 @@ describe("POST /api/local-worker/clone", () => {
         warnings: [],
       },
       targetLanguage: "en",
-      effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced" },
+      effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced", cloneMode: "hifi" },
     });
     const res = await POST(makeReq(buildForm(), { authorization: "Bearer secret" }));
     expect(res.status).toBe(200);

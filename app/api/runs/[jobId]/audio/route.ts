@@ -1,7 +1,9 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { NextRequest } from "next/server";
+import { findRunById } from "@/lib/run-history";
 import { safeRunFile } from "@/lib/run-paths";
+import { readAnyVoiceUserId } from "@/lib/user-session";
 import {
   isWorkerMode,
   isWorkerProxyConfigured,
@@ -39,10 +41,21 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ jobId:
     });
   }
 
-  if (isWorkerMode()) {
+  const workerMode = isWorkerMode();
+  if (workerMode) {
     const authFailure = workerAuthFailure(_req);
     if (authFailure) {
       return new Response(authFailure.body.message, { status: authFailure.statusCode });
+    }
+  }
+
+  if (!workerMode) {
+    const owner = await findRunById(jobId);
+    if (owner) {
+      const userId = readAnyVoiceUserId(_req);
+      if (!userId || owner.userId !== userId) {
+        return new Response("audio not found", { status: 404 });
+      }
     }
   }
 

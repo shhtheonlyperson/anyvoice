@@ -79,6 +79,48 @@ describe("cloneInputToFormData", () => {
     const form = cloneInputToFormData(input);
     expect(form.get("quality")).toBe("balanced");
   });
+
+  it("parses and round-trips pronunciation overrides", () => {
+    const parsed = parseCloneForm(
+      buildForm({ pronunciationOverrides: "重慶=重 慶\nAnyVoice=Any Voice\npinyin:行長=xing2 zhang3" }),
+    );
+    expect(isCloneInputError(parsed)).toBe(false);
+    if (isCloneInputError(parsed)) throw new Error("expected clone input");
+    expect(parsed.pronunciationOverrides).toEqual([
+      {
+        term: "重慶",
+        replacement: "重 慶",
+        kind: "polyphone",
+        source: "preset",
+        presetId: "polyphone:chongqing",
+      },
+      {
+        term: "AnyVoice",
+        replacement: "Any Voice",
+        kind: "brand",
+        source: "preset",
+        presetId: "brand:anyvoice",
+      },
+      {
+        term: "行長",
+        replacement: "xing2 zhang3",
+        kind: "pinyin",
+        source: "custom",
+      },
+    ]);
+
+    const form = cloneInputToFormData(parsed);
+    expect(form.get("pronunciationOverrides")).toBe("重慶=重 慶\nAnyVoice=Any Voice\npinyin:行長=xing2 zhang3");
+  });
+
+  it("rejects malformed pronunciation overrides", () => {
+    const result = parseCloneForm(buildForm({ pronunciationOverrides: "重慶" }));
+    expect(isCloneInputError(result)).toBe(true);
+    if (isCloneInputError(result)) {
+      expect(result.statusCode).toBe(400);
+      expect(result.body.message).toMatch(/pronunciation override/);
+    }
+  });
 });
 
 describe("detectTargetLanguage", () => {

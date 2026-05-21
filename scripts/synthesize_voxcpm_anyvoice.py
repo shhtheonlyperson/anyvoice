@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,19 @@ def read_text_arg(value: str | None, file_path: str | None) -> str:
     if value:
         return value.strip()
     raise ValueError("Text is required.")
+
+
+def read_json_file(file_path: str | None) -> dict[str, Any] | None:
+    if not file_path:
+        return None
+    path = Path(file_path)
+    if not path.exists():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"read_failed:{exc}"}
+    return parsed if isinstance(parsed, dict) else {"error": "json_root_not_object"}
 
 
 def ensure_parent(path: str | Path) -> Path:
@@ -208,10 +222,121 @@ def analyze_reference_quality(wav_path: Path) -> dict[str, Any]:
 
 
 QUALITY_PRESETS: dict[str, dict[str, Any]] = {
-    "speed": {"timesteps": 10, "cfg": 2.0, "denoise": "off"},
-    "balanced": {"timesteps": 25, "cfg": 2.5, "denoise": "auto"},
-    "quality": {"timesteps": 40, "cfg": 3.0, "denoise": "on"},
+    # Brenda Voice's stable VoxCPM2 lane uses low CFG and few steps
+    # (cfg=2.0, steps=8). In AnyVoice, arbitrary user references make
+    # forced denoise risky, so balanced/quality only denoise noisy clips.
+    "speed": {"timesteps": 6, "cfg": 1.8, "denoise": "off"},
+    "balanced": {"timesteps": 8, "cfg": 2.0, "denoise": "auto"},
+    "quality": {"timesteps": 10, "cfg": 2.0, "denoise": "auto"},
 }
+
+
+def default_stability_seed() -> int | None:
+    value = os.environ.get("ANYVOICE_STABILITY_SEED", "1337").strip().lower()
+    if value in {"", "off", "none", "random"}:
+        return None
+    try:
+        seed = int(value)
+    except ValueError:
+        return 1337
+    return seed if 0 <= seed <= 2_147_483_647 else 1337
+
+
+def apply_stability_seed(seed: int | None) -> dict[str, Any]:
+    if seed is None:
+        return {
+            "seed": None,
+            "enabled": False,
+            "backends": [],
+        }
+
+    random.seed(seed)
+    np.random.seed(seed % (2**32 - 1))
+    backends = ["python_random", "numpy"]
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            backends.append("torch_cuda")
+        if getattr(torch.backends, "mps", None) is not None:
+            backends.append("torch_mps")
+        backends.append("torch")
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "seed": seed,
+            "enabled": True,
+            "backends": backends,
+            "warning": f"torch_seed_unavailable:{exc}",
+        }
+
+    return {
+        "seed": seed,
+        "enabled": True,
+        "backends": backends,
+    }
+
+
+def default_clone_mode() -> str:
+    value = os.environ.get("ANYVOICE_VOXCPM_CLONE_MODE", "hifi").strip().lower()
+    return value if value in {"hifi", "prompt"} else "hifi"
+
+
+def default_lora_path() -> str:
+    return os.environ.get("ANYVOICE_VOXCPM_LORA_PATH", "").strip()
+
+
+def normalize_lora_path(value: str | None) -> str | None:
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"LoRA weights not found: {path}")
+    return str(path.resolve())
+
+
+def build_lora_config(
+    *,
+    lora_path: str | None,
+    lora_r: int,
+    lora_alpha: int,
+    lora_dropout: float,
+    lora_disable_lm: bool,
+    lora_disable_dit: bool,
+    lora_enable_proj: bool,
+) -> Any | None:
+    if not lora_path:
+        return None
+    if lora_r <= 0:
+        raise ValueError("--lora-r must be a positive integer")
+    if lora_alpha <= 0:
+        raise ValueError("--lora-alpha must be a positive integer")
+    if not 0.0 <= lora_dropout <= 1.0:
+        raise ValueError("--lora-dropout must be between 0.0 and 1.0")
+    from voxcpm.model.voxcpm import LoRAConfig
+
+    return LoRAConfig(
+        enable_lm=not lora_disable_lm,
+        enable_dit=not lora_disable_dit,
+        enable_proj=lora_enable_proj,
+        r=lora_r,
+        alpha=lora_alpha,
+        dropout=lora_dropout,
+    )
+
+
+def lora_config_metadata(lora_config: Any | None) -> dict[str, Any] | None:
+    if lora_config is None:
+        return None
+    return {
+        "r": getattr(lora_config, "r", None),
+        "alpha": getattr(lora_config, "alpha", None),
+        "dropout": getattr(lora_config, "dropout", None),
+        "enableLm": getattr(lora_config, "enable_lm", None),
+        "enableDit": getattr(lora_config, "enable_dit", None),
+        "enableProj": getattr(lora_config, "enable_proj", None),
+    }
 
 
 def should_enable_optimize(requested: bool) -> tuple[bool, str]:
@@ -267,6 +392,12 @@ def main() -> None:
     parser.add_argument("--inference-timesteps", type=int, default=10)
     parser.add_argument("--min-len", type=int, default=2)
     parser.add_argument("--max-len", type=int, default=4096)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=default_stability_seed(),
+        help="Stability seed for Python, NumPy, and Torch RNGs. Set ANYVOICE_STABILITY_SEED=off to disable the default.",
+    )
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--denoise", action="store_true")
     parser.add_argument("--load-denoiser", action="store_true", default=True)
@@ -284,7 +415,31 @@ def main() -> None:
         default="balanced",
         help="Quality preset; sets timesteps/cfg/denoise unless overridden by explicit flags.",
     )
+    parser.add_argument(
+        "--clone-mode",
+        choices=("hifi", "prompt"),
+        default=default_clone_mode(),
+        help=(
+            "VoxCPM2 clone call path. hifi passes prompt_wav_path + prompt_text + "
+            "reference_wav_path. prompt keeps the older prompt-only path for A/B rollback."
+        ),
+    )
+    parser.add_argument(
+        "--lora-path",
+        default=default_lora_path(),
+        help="Optional VoxCPM LoRA weights path. Also configurable with ANYVOICE_VOXCPM_LORA_PATH.",
+    )
+    parser.add_argument("--lora-r", type=int, default=32, help="LoRA rank when --lora-path is set.")
+    parser.add_argument("--lora-alpha", type=int, default=16, help="LoRA alpha when --lora-path is set.")
+    parser.add_argument("--lora-dropout", type=float, default=0.0, help="LoRA dropout when --lora-path is set.")
+    parser.add_argument("--lora-disable-lm", action="store_true", help="Disable LoRA on LM layers.")
+    parser.add_argument("--lora-disable-dit", action="store_true", help="Disable LoRA on DiT layers.")
+    parser.add_argument("--lora-enable-proj", action="store_true", help="Enable LoRA on projection layers.")
     parser.add_argument("--metadata-output")
+    parser.add_argument(
+        "--text-prep-file",
+        help="Optional JSON file describing raw/model text preparation.",
+    )
     parser.add_argument(
         "--progress-jsonl",
         action="store_true",
@@ -302,6 +457,7 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     text = read_text_arg(args.text, args.text_file)
+    text_preparation = read_json_file(args.text_prep_file)
 
     if args.prompt_text and args.prompt_text_file:
         raise ValueError("Provide --prompt-text or --prompt-text-file, not both.")
@@ -315,6 +471,8 @@ def main() -> None:
         )
     if not prompt_text:
         raise ValueError("Reference transcript must not be empty.")
+    if args.seed is not None and not 0 <= args.seed <= 2_147_483_647:
+        raise ValueError("--seed must be between 0 and 2147483647, or omit it")
 
     reference_input = Path(args.reference_audio)
     if not reference_input.exists():
@@ -353,6 +511,18 @@ def main() -> None:
     if optimize_requested and not optimize_enabled:
         print(f"VoxCPM optimize disabled: {optimize_reason}", file=sys.stderr)
 
+    lora_path = normalize_lora_path(args.lora_path)
+    lora_config = build_lora_config(
+        lora_path=lora_path,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        lora_disable_lm=args.lora_disable_lm,
+        lora_disable_dit=args.lora_disable_dit,
+        lora_enable_proj=args.lora_enable_proj,
+    )
+    lora_meta = lora_config_metadata(lora_config)
+
     emit_progress(args.progress_jsonl, "model_loading", "Loading VoxCPM2")
     model = VoxCPM.from_pretrained(
         args.model_id,
@@ -360,21 +530,23 @@ def main() -> None:
         cache_dir=args.cache_dir,
         local_files_only=args.local_files_only,
         optimize=optimize_enabled,
+        lora_config=lora_config,
+        lora_weights_path=lora_path,
     )
     emit_progress(args.progress_jsonl, "model_ready", "VoxCPM2 ready")
 
-    # IMPORTANT: pass only prompt_wav_path + prompt_text (continuation/ultimate
-    # mode). When prompt_wav_path and reference_wav_path were both set to the
-    # same file VoxCPM2 emitted prompt audio + target audio (the user heard the
-    # script read aloud before their actual text). Brenda's pipeline avoids this
-    # by using a separate prompt clip; we only have one reference clip per run,
-    # so omit reference_wav_path entirely.
     effective_params = {
         "timesteps": effective_timesteps,
         "cfgValue": effective_cfg,
         "denoise": effective_denoise,
         "qualityPreset": args.quality,
+        "cloneMode": args.clone_mode,
+        "stabilitySeed": args.seed,
+        "loraEnabled": bool(lora_path),
+        "loraPath": lora_path,
     }
+    if lora_meta is not None:
+        effective_params["loraConfig"] = lora_meta
 
     emit_progress(
         args.progress_jsonl,
@@ -382,17 +554,25 @@ def main() -> None:
         "Synthesizing voice",
         effectiveParams=effective_params,
     )
-    wav = model.generate(
-        text=text,
-        prompt_wav_path=str(reference_wav),
-        prompt_text=prompt_text,
-        cfg_value=effective_cfg,
-        inference_timesteps=effective_timesteps,
-        min_len=args.min_len,
-        max_len=args.max_len,
-        normalize=args.normalize,
-        denoise=effective_denoise,
-    )
+    seed_metadata = apply_stability_seed(args.seed)
+    generate_kwargs: dict[str, Any] = {
+        "text": text,
+        "prompt_wav_path": str(reference_wav),
+        "prompt_text": prompt_text,
+        "cfg_value": effective_cfg,
+        "inference_timesteps": effective_timesteps,
+        "min_len": args.min_len,
+        "max_len": args.max_len,
+        "normalize": args.normalize,
+        "denoise": effective_denoise,
+    }
+    if args.clone_mode == "hifi":
+        # Hi-Fi mode: prompt audio/text anchors pronunciation alignment, while
+        # reference_wav_path anchors speaker timbre. Brenda's stable path uses
+        # this combination; prompt mode remains available for A/B rollback.
+        generate_kwargs["reference_wav_path"] = str(reference_wav)
+
+    wav = model.generate(**generate_kwargs)
 
     output_path = ensure_parent(args.output)
     sf.write(str(output_path), wav, model.tts_model.sample_rate)
@@ -403,6 +583,7 @@ def main() -> None:
         "mode": "ultimate",
         "reference_audio": str(reference_input),
         "converted_reference_audio": str(reference_wav),
+        "clone_mode": args.clone_mode,
         "prompt_text_present": True,
         "char_count": len(text),
         "cfg_value": effective_cfg,
@@ -414,7 +595,15 @@ def main() -> None:
         "output": str(output_path),
         "referenceQuality": reference_quality,
         "effectiveParams": effective_params,
+        "determinism": seed_metadata,
+        "lora": {
+            "enabled": bool(lora_path),
+            "path": lora_path,
+            "config": lora_meta,
+        },
     }
+    if text_preparation is not None:
+        metadata["textPreparation"] = text_preparation
 
     if args.metadata_output:
         ensure_parent(args.metadata_output).write_text(

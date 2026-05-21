@@ -1,6 +1,12 @@
 import { maxUploadBytes, normalizeTargetText } from "@/lib/clone-config";
+import {
+  parsePronunciationOverrides,
+  serializePronunciationOverride,
+  type PronunciationOverride,
+} from "@/lib/text-prep";
 
 export type QualityPreset = "speed" | "balanced" | "quality";
+export type SourceKind = "sample" | "scripted" | "freeform" | "uploaded" | "profile";
 
 export const QUALITY_PRESETS: ReadonlyArray<QualityPreset> = ["speed", "balanced", "quality"];
 
@@ -11,6 +17,21 @@ export interface CloneInput {
   targetText: string;
   promptTranscript: string;
   quality: QualityPreset;
+  sourceKind?: SourceKind;
+  pronunciationOverrides?: PronunciationOverride[];
+  profileReference?: {
+    voiceProfileId: string;
+    sourceRunId: string;
+    referenceClipIds: string[];
+    audioPath: string;
+    transcriptScript?: string;
+    coverageFeatures?: string[];
+    targetCoverageFeatures?: string[];
+    matchedCoverageFeatures?: string[];
+    pronunciationPresetIds?: string[];
+    targetPronunciationPresetIds?: string[];
+    matchedPronunciationPresetIds?: string[];
+  };
 }
 
 export interface CloneInputError {
@@ -29,12 +50,18 @@ function isQualityPreset(value: string): value is QualityPreset {
   return (QUALITY_PRESETS as ReadonlyArray<string>).includes(value);
 }
 
+function isSourceKind(value: string): value is SourceKind {
+  return value === "sample" || value === "scripted" || value === "freeform" || value === "uploaded" || value === "profile";
+}
+
 export function parseCloneForm(form: FormData): CloneInput | CloneInputError {
   const voice = form.get("voice");
   const consent = form.get("consent");
   const targetText = normalizeTargetText(String(form.get("targetText") || ""));
   const promptTranscript = normalizeTargetText(String(form.get("promptTranscript") || ""));
   const qualityRaw = form.get("quality");
+  const sourceKindRaw = form.get("sourceKind");
+  const pronunciationOverridesRaw = String(form.get("pronunciationOverrides") || "");
 
   if (!(voice instanceof File)) {
     return { statusCode: 400, body: { status: "error", message: "voice file required" } };
@@ -73,12 +100,32 @@ export function parseCloneForm(form: FormData): CloneInput | CloneInputError {
     quality = candidate;
   }
 
-  return {
+  const input: CloneInput = {
     voice,
     targetText,
     promptTranscript,
     quality,
   };
+  if (pronunciationOverridesRaw.trim()) {
+    const parsed = parsePronunciationOverrides(pronunciationOverridesRaw);
+    if (parsed.rejected.length > 0) {
+      const first = parsed.rejected[0];
+      return {
+        statusCode: 400,
+        body: {
+          status: "error",
+          message: `invalid pronunciation override on line ${first.line}: ${first.reason}`,
+        },
+      };
+    }
+    if (parsed.overrides.length > 0) input.pronunciationOverrides = parsed.overrides;
+  }
+  if (sourceKindRaw !== null && sourceKindRaw !== undefined) {
+    const candidate = String(sourceKindRaw).trim().toLowerCase();
+    if (isSourceKind(candidate)) input.sourceKind = candidate;
+  }
+
+  return input;
 }
 
 export function cloneInputToFormData(input: CloneInput): FormData {
@@ -87,6 +134,13 @@ export function cloneInputToFormData(input: CloneInput): FormData {
   form.set("targetText", input.targetText);
   form.set("promptTranscript", input.promptTranscript);
   form.set("quality", input.quality);
+  if (input.pronunciationOverrides?.length) {
+    form.set(
+      "pronunciationOverrides",
+      input.pronunciationOverrides.map(serializePronunciationOverride).join("\n"),
+    );
+  }
+  if (input.sourceKind) form.set("sourceKind", input.sourceKind);
   form.set("consent", "yes");
   return form;
 }

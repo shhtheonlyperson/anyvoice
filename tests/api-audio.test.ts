@@ -5,9 +5,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "@/app/api/runs/[jobId]/audio/route";
+import { saveRunHistory, type RunHistoryRecord } from "@/lib/run-history";
+import { ANYVOICE_USER_COOKIE } from "@/lib/user-session";
 
 const originalEnv = { ...process.env };
 let tmpRoot: string;
+let historyFile: string;
+
+const ownerId = "av_33333333-3333-4333-8333-333333333333";
+const otherId = "av_44444444-4444-4444-8444-444444444444";
 
 function makeContext(jobId: string) {
   return { params: Promise.resolve({ jobId }) };
@@ -22,7 +28,9 @@ function makeReq(headers: Record<string, string> = {}): import("next/server").Ne
 
 beforeEach(async () => {
   tmpRoot = await mkdtemp(path.join(os.tmpdir(), "anyvoice-audio-"));
+  historyFile = path.join(tmpRoot, "history.json");
   process.env.ANYVOICE_RUNS_DIR = tmpRoot;
+  process.env.ANYVOICE_HISTORY_FILE = historyFile;
   delete process.env.VERCEL;
   delete process.env.ANYVOICE_WORKER_URL;
   delete process.env.ANYVOICE_WORKER_TOKEN;
@@ -78,6 +86,43 @@ describe("GET /api/runs/[jobId]/audio", () => {
     const res = await GET(makeReq({ authorization: "Bearer secret" }), makeContext("job3"));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-length")).toBe("3");
+  });
+
+  it("scopes history-owned audio to the owning browser cookie", async () => {
+    const runDir = path.join(tmpRoot, "owned-job");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from([1, 1, 1]));
+    const record: RunHistoryRecord = {
+      id: "owned-job",
+      userId: ownerId,
+      status: "ready",
+      modelId: "openbmb/VoxCPM2",
+      voiceName: "ref.wav",
+      voiceType: "audio/wav",
+      voiceSize: 3,
+      targetText: "hello",
+      promptTranscript: "hello",
+      quality: "balanced",
+      audioUrl: "/api/runs/owned-job/audio",
+      createdAt: "2026-05-19T10:00:00.000Z",
+      completedAt: "2026-05-19T10:00:00.000Z",
+    };
+    await saveRunHistory(record);
+
+    const missingCookie = await GET(makeReq(), makeContext("owned-job"));
+    expect(missingCookie.status).toBe(404);
+
+    const wrongCookie = await GET(
+      makeReq({ cookie: `${ANYVOICE_USER_COOKIE}=${encodeURIComponent(otherId)}` }),
+      makeContext("owned-job"),
+    );
+    expect(wrongCookie.status).toBe(404);
+
+    const ownerCookie = await GET(
+      makeReq({ cookie: `${ANYVOICE_USER_COOKIE}=${encodeURIComponent(ownerId)}` }),
+      makeContext("owned-job"),
+    );
+    expect(ownerCookie.status).toBe(200);
   });
 
   it("forwards through fetch when worker proxy is configured", async () => {

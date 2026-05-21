@@ -6,15 +6,43 @@ export interface CloneEnv {
   ANYVOICE_ENABLE_LOCAL_VOXCPM?: string;
   ANYVOICE_STUB?: string;
   ANYVOICE_MODEL_ID?: string;
+  ANYVOICE_VOXCPM_CLONE_MODE?: string;
+  ANYVOICE_VOXCPM_LORA_PATH?: string;
+  ANYVOICE_STABILITY_SEED?: string;
   ANYVOICE_MAX_UPLOAD_MB?: string;
   ANYVOICE_RUNS_DIR?: string;
   ANYVOICE_WORKER_URL?: string;
   ANYVOICE_WORKER_TOKEN?: string;
+  ANYVOICE_HOT_WORKER_URL?: string;
+  ANYVOICE_HISTORY_FILE?: string;
   VERCEL?: string;
 }
 
+export type VoxCpmCloneMode = "hifi" | "prompt";
+
 export function modelId(env: CloneEnv = process.env): string {
   return env.ANYVOICE_MODEL_ID || "openbmb/VoxCPM2";
+}
+
+export function voxcpmCloneMode(env: CloneEnv = process.env): VoxCpmCloneMode {
+  const value = (env.ANYVOICE_VOXCPM_CLONE_MODE || "hifi").trim().toLowerCase();
+  return value === "prompt" ? "prompt" : "hifi";
+}
+
+export function voxcpmLoraPath(env: CloneEnv = process.env): string {
+  return (env.ANYVOICE_VOXCPM_LORA_PATH || "").trim();
+}
+
+export function stabilitySeed(env: CloneEnv = process.env): number | null {
+  const raw = (env.ANYVOICE_STABILITY_SEED || "1337").trim().toLowerCase();
+  if (raw === "" || raw === "off" || raw === "none" || raw === "random") return null;
+  const seed = Number(raw);
+  if (!Number.isInteger(seed) || seed < 0 || seed > 2_147_483_647) return 1337;
+  return seed;
+}
+
+export function hotWorkerUrl(env: CloneEnv = process.env): string {
+  return (env.ANYVOICE_HOT_WORKER_URL || "").trim();
 }
 
 export function maxUploadBytes(env: CloneEnv = process.env): number {

@@ -1,8 +1,16 @@
 import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { shouldReturnWorkerMissing } from "@/lib/clone-config";
-import { cloneInputToFormData, isCloneInputError, parseCloneForm } from "@/lib/clone-request";
+import { cloneInputToFormData, isCloneInputError, type CloneInput, type CloneInputError } from "@/lib/clone-request";
 import { recordCloneError, recordWorkerMissingRun, runLocalClone, workerMissingPayload } from "@/lib/clone-runner";
+import { parseCloneFormWithProfile } from "@/lib/profile-clone-input";
+import {
+  createErrorHistoryRecord,
+  createReadyHistoryRecord,
+  createWorkerMissingHistoryRecord,
+  saveRunHistory,
+} from "@/lib/run-history";
+import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 import { isWorkerProxyConfigured, workerAuthHeaders, workerCloneUrl, workerToken } from "@/lib/worker-proxy";
 
 export const runtime = "nodejs";
@@ -12,7 +20,7 @@ function json(data: unknown, init?: ResponseInit) {
   return Response.json(data, init);
 }
 
-async function forwardToWorker(input: ReturnType<typeof parseCloneForm>) {
+async function forwardToWorker(input: CloneInput | CloneInputError) {
   if (isCloneInputError(input)) {
     return json(input.body, { status: input.statusCode });
   }
@@ -56,33 +64,39 @@ async function forwardToWorker(input: ReturnType<typeof parseCloneForm>) {
 }
 
 export async function POST(req: NextRequest) {
+  const session = getOrCreateAnyVoiceUserSession(req);
   let form: FormData;
   try {
     form = await req.formData();
   } catch {
-    return json({ status: "error", message: "multipart form data required" }, { status: 400 });
+    return withAnyVoiceUserCookie(json({ status: "error", message: "multipart form data required" }, { status: 400 }), session);
   }
 
-  const input = parseCloneForm(form);
+  const input = await parseCloneFormWithProfile(form);
 
   if (isWorkerProxyConfigured()) {
-    return forwardToWorker(input);
+    return withAnyVoiceUserCookie(await forwardToWorker(input), session);
   }
   if (isCloneInputError(input)) {
-    return json(input.body, { status: input.statusCode });
+    return withAnyVoiceUserCookie(json(input.body, { status: input.statusCode }), session);
   }
 
   const jobId = nanoid(10);
   if (shouldReturnWorkerMissing()) {
     await recordWorkerMissingRun(jobId, input);
-    return json(workerMissingPayload(jobId));
+    const payload = workerMissingPayload(jobId);
+    await saveRunHistory(createWorkerMissingHistoryRecord(session.userId, input, payload)).catch(() => {});
+    return withAnyVoiceUserCookie(json(payload), session);
   }
 
   try {
-    return json(await runLocalClone(jobId, input));
+    const payload = await runLocalClone(jobId, input);
+    await saveRunHistory(createReadyHistoryRecord(session.userId, input, payload)).catch(() => {});
+    return withAnyVoiceUserCookie(json(payload), session);
   } catch (error) {
     const message = error instanceof Error ? error.message : "synthesis failed";
     await recordCloneError(jobId, message);
-    return json({ status: "error", jobId, message }, { status: 500 });
+    await saveRunHistory(createErrorHistoryRecord(session.userId, jobId, input, message)).catch(() => {});
+    return withAnyVoiceUserCookie(json({ status: "error", jobId, message }, { status: 500 }), session);
   }
 }

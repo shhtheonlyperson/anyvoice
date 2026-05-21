@@ -1,0 +1,44 @@
+{
+  "clips": [
+    {
+      "audioPath": "/path/to/profile-clip-01.wav",
+      "transcript": "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，遠方傳來陣陣鳥鳴，世界顯得格外安靜。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-02.wav",
+      "transcript": "日期範例是二零二六年五月二十日，我會用自然的速度，把每一句話清楚地讀完。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-03.wav",
+      "transcript": "如果遇到重要名字，例如 Brenda、AnyVoice、台北、紐約、重慶、銀行、角色、音樂和長樂，我會保持穩定的音量與節奏。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-04.wav",
+      "transcript": "這段錄音包含高低起伏、停頓和短句，目的是讓數位聲音更接近我平常說話的方式。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-05.wav",
+      "transcript": "請確認錄音環境安靜、沒有回音，也不要離麥克風太近，讓聲音保持乾淨自然。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-06.wav",
+      "transcript": "今天的任務有三件事：整理想法、確認細節，最後用清楚的語氣說出結論。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-07.wav",
+      "transcript": "我可能會先停一下，再補充一句：這不是急著完成，而是要把每個字都說準。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-08.wav",
+      "transcript": "遇到英文或產品名稱時，例如 OpenAI、Mac Studio、VoxCPM2 和 TestFlight，我會用平常說話的方式讀出來。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-09.wav",
+      "transcript": "請注意多音字：重慶、行長、長樂、角色和音樂，都要保持固定讀法，不要忽快忽慢。"
+    },
+    {
+      "audioPath": "/path/to/profile-clip-10.wav",
+      "transcript": "最後這段用比較放鬆的語氣收尾。如果聲音穩定、停頓自然，數位分身才會更像本人。"
+    }
+  ]
+}
