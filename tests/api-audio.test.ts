@@ -57,6 +57,38 @@ describe("GET /api/runs/[jobId]/audio", () => {
     expect(res.headers.get("content-length")).toBe("5");
   });
 
+  it("serves the compressed m4a (audio/mp4) by default when present", async () => {
+    const runDir = path.join(tmpRoot, "mjob");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from(new Array(20).fill(7)));
+    await writeFile(path.join(runDir, "output.m4a"), Buffer.from([1, 2, 3, 4]));
+    const res = await GET(makeReq(), makeContext("mjob"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/mp4");
+    expect(res.headers.get("content-length")).toBe("4");
+  });
+
+  it("serves the lossless WAV for ?format=wav even when m4a exists", async () => {
+    const runDir = path.join(tmpRoot, "wjob");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from(new Array(20).fill(7)));
+    await writeFile(path.join(runDir, "output.m4a"), Buffer.from([1, 2, 3, 4]));
+    const req = new Request("http://localhost/api/runs/x/audio?format=wav", { method: "GET" }) as unknown as import("next/server").NextRequest;
+    const res = await GET(req, makeContext("wjob"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/wav");
+    expect(res.headers.get("content-length")).toBe("20");
+  });
+
+  it("falls back to WAV when no compressed file was produced", async () => {
+    const runDir = path.join(tmpRoot, "fjob");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, "output.wav"), Buffer.from([1, 2, 3]));
+    const res = await GET(makeReq(), makeContext("fjob"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/wav");
+  });
+
   it("advertises Accept-Ranges so playback can start before full load", async () => {
     const runDir = path.join(tmpRoot, "rjob");
     await mkdir(runDir, { recursive: true });

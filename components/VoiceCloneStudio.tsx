@@ -954,7 +954,11 @@ export function VoiceCloneStudio() {
                     </button>
                   ))}
                 </div>
-                <a className="btn btn--on-dark" href={audioUrl || "#"} download>
+                <a
+                  className="btn btn--on-dark"
+                  href={audioUrl ? `${audioUrl}?format=wav` : "#"}
+                  download
+                >
                   {t.download}
                 </a>
                 <button className="btn btn--on-dark" onClick={doGenerate}>

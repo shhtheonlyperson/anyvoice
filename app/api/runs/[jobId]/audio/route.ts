@@ -65,7 +65,22 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ jobId:
     }
   }
 
-  const outputPath = safeRunFile(jobId, "output.wav");
+  // Default to the small AAC/m4a for fast streaming playback; ?format=wav
+  // serves the lossless WAV (used by the download button). Fall back to WAV
+  // if the compressed file wasn't produced (e.g. ffmpeg unavailable).
+  const wantWav = new URL(_req.url).searchParams.get("format") === "wav";
+  let outputPath = safeRunFile(jobId, "output.wav");
+  let contentType = "audio/wav";
+  if (!wantWav) {
+    const m4aPath = safeRunFile(jobId, "output.m4a");
+    try {
+      await stat(m4aPath);
+      outputPath = m4aPath;
+      contentType = "audio/mp4";
+    } catch {
+      /* compressed file missing — serve WAV */
+    }
+  }
 
   let size: number;
   try {
@@ -75,10 +90,10 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ jobId:
   }
 
   const baseHeaders: Record<string, string> = {
-    "Content-Type": "audio/wav",
+    "Content-Type": contentType,
     "Cache-Control": "private, max-age=3600",
     // Advertise range support so the browser can play progressively and seek
-    // without downloading the whole WAV first.
+    // without downloading the whole file first.
     "Accept-Ranges": "bytes",
   };
 

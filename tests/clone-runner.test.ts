@@ -495,7 +495,14 @@ describe("runLocalClone", () => {
     expect(result.effectiveParams.stabilitySeed).toBe(1337);
     expect(progressPhases).toContain("model_ready");
     expect(progressPhases).toContain("synthesis_started");
-    expect(spawnMock).not.toHaveBeenCalled();
+    // Hot worker handles synthesis: no per-request Python is spawned. (A best-effort
+    // ffmpeg compression transcode may spawn, which is fine.)
+    const synthesisSpawns = spawnMock.mock.calls.filter(
+      ([cmd, args]) =>
+        String(cmd).includes("python") ||
+        (Array.isArray(args) && args.some((a) => String(a).includes("synthesize_voxcpm"))),
+    );
+    expect(synthesisSpawns).toHaveLength(0);
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8765/clone",
       expect.objectContaining({ method: "POST" }),

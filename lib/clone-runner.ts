@@ -168,6 +168,23 @@ function runCommand(
   });
 }
 
+// Produce a small AAC/m4a alongside output.wav for fast streaming playback.
+// Best-effort: if ffmpeg is missing or fails, the audio route falls back to WAV.
+// `+faststart` puts the moov atom first so playback starts before full download.
+async function transcodeToCompressed(runDir: string): Promise<void> {
+  const wav = path.join(runDir, "output.wav");
+  const m4a = path.join(runDir, "output.m4a");
+  try {
+    await runCommand(
+      process.env.ANYVOICE_FFMPEG || "ffmpeg",
+      ["-y", "-hide_banner", "-loglevel", "error", "-i", wav, "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", m4a],
+      runDir,
+    );
+  } catch {
+    /* keep WAV-only playback */
+  }
+}
+
 export function workerMissingPayload(jobId: string): CloneWorkerMissingPayload {
   return {
     status: "needs_worker",
@@ -537,6 +554,7 @@ export async function runLocalCloneWithProgress(
       modelId: currentModelId,
       phase: "finalizing",
     });
+    await transcodeToCompressed(files.runDir);
     const metadata = await readMetadata(files.metadataPath);
     const referenceQuality = parseReferenceQuality(metadata?.referenceQuality);
     const effectiveParams = parseEffectiveParams(metadata?.effectiveParams, input.quality);
@@ -593,6 +611,7 @@ export async function runLocalCloneWithProgress(
     modelId: currentModelId,
     phase: "finalizing",
   });
+  await transcodeToCompressed(files.runDir);
 
   const metadata = await readMetadata(files.metadataPath);
   const referenceQuality = parseReferenceQuality(metadata?.referenceQuality);
