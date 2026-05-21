@@ -428,6 +428,21 @@ textarea.target:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.15);
 }
+.field {
+  width: 100%;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  font: 400 16px/1.5 var(--sans);
+  color: var(--ink);
+  resize: vertical;
+}
+.field:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.15);
+}
 .row {
   display: flex;
   align-items: center;

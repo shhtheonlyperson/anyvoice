@@ -216,6 +216,17 @@ type Copy = {
   enrollNoisy: string;
   enrollClipping: string;
   enrollScriptBlocked: string;
+  youtubeTitle: string;
+  youtubeHint: string;
+  youtubeNotice: string;
+  youtubeUrlPlaceholder: string;
+  youtubeStartPlaceholder: string;
+  youtubeConsent: string;
+  youtubeImport: string;
+  youtubeImporting: string;
+  youtubeNoCaptions: string;
+  youtubeOk: string;
+  youtubeFailed: string;
   micBlocked: string;
   micProcessing: string;
   listTitle: string;
@@ -292,6 +303,17 @@ const COPY: Record<Locale, Copy> = {
     enrollNoisy: "背景雜訊偏高，請在更安靜的環境重錄。",
     enrollClipping: "音量過大造成削波，請降低輸入音量或離麥克風遠一點。",
     enrollScriptBlocked: "稿件含簡體或混用字，無法錄製。",
+    youtubeTitle: "從 YouTube 匯入聲音",
+    youtubeHint: "貼上 YouTube 影片網址即可擷取一段聲音來複製。網址含 &t=（例如 &t=300 代表從 5:00 開始）就會從該時間點取約 12 秒。",
+    youtubeNotice: "僅供個人與研究用途。請確認你有權使用這段聲音。",
+    youtubeUrlPlaceholder: "https://www.youtube.com/watch?v=…&t=300",
+    youtubeStartPlaceholder: "起始時間（選填，如 5:00）",
+    youtubeConsent: "我確認此匯入僅供個人／研究用途，且我有權使用這段聲音。",
+    youtubeImport: "匯入",
+    youtubeImporting: "匯入中…（下載與分析需要一點時間）",
+    youtubeNoCaptions: "這段沒有字幕，請改貼上有字幕的片段，或在下方自行輸入逐字稿。",
+    youtubeOk: "匯入成功，聲音已建立。",
+    youtubeFailed: "匯入失敗，請確認網址或稍後再試。",
     micBlocked: "無法取得麥克風權限。",
     micProcessing: "偵測到麥克風仍開啟降噪或回音消除，請關閉後重試。",
     listTitle: "全部語句",
@@ -366,6 +388,17 @@ const COPY: Record<Locale, Copy> = {
     enrollNoisy: "Background noise is high. Re-record in a quieter room.",
     enrollClipping: "Volume too high (clipping). Lower input gain or move back from the mic.",
     enrollScriptBlocked: "Script is Simplified or mixed Chinese and can't be recorded.",
+    youtubeTitle: "Import a voice from YouTube",
+    youtubeHint: "Paste a YouTube URL to grab a clip to clone. A URL with &t= (e.g. &t=300 = start at 5:00) takes ~12s from that point.",
+    youtubeNotice: "Personal & research use only. Confirm you have the right to use this voice.",
+    youtubeUrlPlaceholder: "https://www.youtube.com/watch?v=…&t=300",
+    youtubeStartPlaceholder: "Start time (optional, e.g. 5:00)",
+    youtubeConsent: "I confirm this import is for personal/research use and I have the right to use this voice.",
+    youtubeImport: "Import",
+    youtubeImporting: "Importing… (download + analysis takes a moment)",
+    youtubeNoCaptions: "No captions in this window — pick a captioned section or type the transcript below.",
+    youtubeOk: "Imported — your voice is built.",
+    youtubeFailed: "Import failed. Check the URL or try again later.",
     micBlocked: "Couldn't get microphone permission.",
     micProcessing: "The mic still has noise suppression / echo cancellation on. Disable it and retry.",
     listTitle: "All lines",
@@ -513,6 +546,14 @@ export function VoiceCloneStudio() {
   const [enrolling, setEnrolling] = useState(false);
   const [buildMessage, setBuildMessage] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  // ---- YouTube import (build screen disclosure)
+  const [ytUrl, setYtUrl] = useState("");
+  const [ytStart, setYtStart] = useState("");
+  const [ytTranscript, setYtTranscript] = useState("");
+  const [ytConsent, setYtConsent] = useState(false);
+  const [ytBusy, setYtBusy] = useState(false);
+  const [ytMessage, setYtMessage] = useState("");
+  const [ytError, setYtError] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -814,6 +855,61 @@ export function VoiceCloneStudio() {
       markClip("bad", t.enrollFailed);
     } finally {
       setEnrolling(false);
+    }
+  }
+
+  // Parse a "5:00" / "300" / "1h2m3s" start time into seconds (client-side).
+  function parseStartSeconds(value: string): number | undefined {
+    const raw = value.trim().toLowerCase();
+    if (!raw) return undefined;
+    if (/^\d+$/.test(raw)) return Number(raw);
+    if (raw.includes(":")) {
+      const parts = raw.split(":");
+      if (parts.length > 3 || parts.some((p) => !/^\d+$/.test(p))) return undefined;
+      return parts.reduce((acc, p) => acc * 60 + Number(p), 0);
+    }
+    const m = raw.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+    if (!m || (!m[1] && !m[2] && !m[3])) return undefined;
+    return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
+  }
+
+  async function importFromYoutube() {
+    if (!ytUrl.trim() || !ytConsent || ytBusy) return;
+    setYtBusy(true);
+    setYtError(false);
+    setYtMessage(t.youtubeImporting);
+    try {
+      const response = await fetch("/api/voice-profile/enroll/youtube", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: ytUrl.trim(),
+          startSeconds: parseStartSeconds(ytStart),
+          transcriptOverride: ytTranscript.trim() || undefined,
+          consent: "yes",
+        }),
+      });
+      const payload = (await response.json()) as VoiceProfileEnrollmentPayload & { code?: string };
+      if (!response.ok || payload.status !== "enrolled") {
+        setYtError(true);
+        setYtMessage(payload.code === "no_captions" ? t.youtubeNoCaptions : payload.message || t.youtubeFailed);
+        return;
+      }
+      if (payload.profile) setProfile(payload.profile);
+      const quality = payload.referenceQuality;
+      const passing = new Set(payload.profile?.requirements?.passingGrades ?? ["A", "B"]);
+      if (quality?.grade && !passing.has(quality.grade)) {
+        setYtError(true);
+        setYtMessage(rejectionMessage(quality));
+        return;
+      }
+      setYtError(false);
+      setYtMessage(t.youtubeOk);
+    } catch {
+      setYtError(true);
+      setYtMessage(t.youtubeFailed);
+    } finally {
+      setYtBusy(false);
     }
   }
 
@@ -1167,6 +1263,63 @@ export function VoiceCloneStudio() {
               </div>
             </>
           )}
+
+          <details className="adv">
+            <summary>▸ {t.youtubeTitle}</summary>
+            <p className="muted small" style={{ marginTop: 12 }}>
+              {t.youtubeHint}
+            </p>
+            <p className="muted small" style={{ marginTop: 8, fontStyle: "italic" }}>
+              {t.youtubeNotice}
+            </p>
+            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+              <input
+                type="url"
+                className="field"
+                placeholder={t.youtubeUrlPlaceholder}
+                value={ytUrl}
+                onChange={(e) => setYtUrl(e.target.value)}
+                disabled={ytBusy}
+              />
+              <input
+                type="text"
+                className="field"
+                placeholder={t.youtubeStartPlaceholder}
+                value={ytStart}
+                onChange={(e) => setYtStart(e.target.value)}
+                disabled={ytBusy}
+              />
+              <textarea
+                className="field"
+                rows={2}
+                placeholder={t.uploadTranscriptPlaceholder}
+                value={ytTranscript}
+                onChange={(e) => setYtTranscript(e.target.value)}
+                disabled={ytBusy}
+              />
+              <label className="row small" style={{ gap: 8, alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={ytConsent}
+                  onChange={(e) => setYtConsent(e.target.checked)}
+                  disabled={ytBusy}
+                />
+                <span>{t.youtubeConsent}</span>
+              </label>
+              <button
+                className="btn"
+                onClick={importFromYoutube}
+                disabled={ytBusy || !ytUrl.trim() || !ytConsent}
+              >
+                {ytBusy ? t.youtubeImporting : t.youtubeImport}
+              </button>
+              {ytMessage && (
+                <p className={ytError ? "notice notice--error" : "notice"} style={{ marginTop: 4 }}>
+                  {ytMessage}
+                </p>
+              )}
+            </div>
+          </details>
 
           <details className="adv">
             <summary>▸ {t.advTitle}</summary>
