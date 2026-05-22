@@ -29,11 +29,19 @@ import {
 import {
   BUILD_LINE_COUNT,
   BUILD_SCRIPT_PACK,
-  COVERAGE_FEATURES,
-  deriveCoverage,
   lineStatusFromGrade,
   type BuildScriptLocale,
 } from "./build-script";
+import {
+  coverageFromTexts,
+  phonemesInText,
+  FINALS,
+  INITIALS,
+  TONES,
+  type Final,
+  type Initial,
+  type Tone,
+} from "@/lib/mandarin-phonemes";
 import { useLang, useT, type Lang, type Translate } from "./i18n";
 import type { ProfileListItem } from "./lib/anyvoice-client";
 import { deleteProfile, renameProfile } from "./lib/anyvoice-client";
@@ -178,14 +186,19 @@ function BuildRecordingStage({
   const recordedCount = statuses.filter((s) => s === "pass").length;
   const enrolling = statuses[cur] === "processing";
 
-  // Coverage sidecar derived from the transcripts of lines passed so far + the
-  // current line (honest: uses the analyzer's real coverage features).
+  // Phoneme coverage sidecar — deterministic, text-derived from the transcripts
+  // of the lines passed so far (honest: which phonemes the recorded lines
+  // CONTAIN; NOT audio-verified pronunciation — the A–D grade is that signal).
   const coverage = useMemo(() => {
     const recorded = lines.filter((_, i) => statuses[i] === "pass").map((l) => l.text);
-    return deriveCoverage(recorded);
+    return coverageFromTexts(recorded);
   }, [lines, statuses]);
-  const activeFeatures = useMemo(
-    () => new Set(currentLine ? deriveCoverageForLine(currentLine.text) : []),
+  const coveredInitials = useMemo(() => new Set<Initial>(coverage.initials), [coverage]);
+  const coveredFinals = useMemo(() => new Set<Final>(coverage.finals), [coverage]);
+  const coveredTones = useMemo(() => new Set<Tone>(coverage.tones), [coverage]);
+  // Phonemes in the current line — ringed as "recent" in the grid.
+  const active = useMemo(
+    () => (currentLine ? phonemesInText(currentLine.text) : phonemesInText("")),
     [currentLine],
   );
 
@@ -498,52 +511,85 @@ function BuildRecordingStage({
         </div>
       </div>
 
-      {/* Phoneme coverage sidecar — honest approximation (see build-script.ts). */}
+      {/* Phoneme coverage sidecar — real Mandarin inventory, text-derived from
+          the recorded lines' transcripts (see lib/mandarin-phonemes.ts). */}
       <aside className="card-dark coverage-sidecar">
         <div className="row between" style={{ marginBottom: 12 }}>
           <span className="player-eyebrow">{t("build.coverage.title")}</span>
           <span className="player-time">
-            {coverage.filter((c) => c.covered).length} / {COVERAGE_FEATURES.length}
+            {coverage.covered} / {coverage.total}
           </span>
         </div>
-        <div className="coverage-grid">
-          {coverage.map((bucket) => (
-            <div
-              key={bucket.feature}
-              className={
-                "coverage-cell" +
-                (bucket.covered ? " covered" : "") +
-                (activeFeatures.has(bucket.feature) ? " recent" : "")
-              }
-            >
-              <span className="coverage-cell-label">{t(`build.coverage.feature.${bucket.feature}`)}</span>
-              <span className="coverage-cell-count">{bucket.count}</span>
-            </div>
-          ))}
+
+        <div className="coverage-section">
+          <span className="coverage-section-label">{t("build.coverage.initials")}</span>
+          <div className="phoneme-row">
+            {INITIALS.map((p) => (
+              <span
+                key={`i-${p}`}
+                className={
+                  "phoneme-cell" +
+                  (coveredInitials.has(p) ? " covered-3" : "") +
+                  (active.initials.has(p) ? " recent" : "")
+                }
+              >
+                {p}
+              </span>
+            ))}
+          </div>
         </div>
+
+        <div className="coverage-section">
+          <span className="coverage-section-label">{t("build.coverage.finals")}</span>
+          <div className="phoneme-row">
+            {FINALS.map((p) => (
+              <span
+                key={`f-${p}`}
+                className={
+                  "phoneme-cell" +
+                  (coveredFinals.has(p) ? " covered-3" : "") +
+                  (active.finals.has(p) ? " recent" : "")
+                }
+              >
+                {p === "i_" ? "ɿ" : p}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="coverage-section">
+          <span className="coverage-section-label">{t("build.coverage.tones")}</span>
+          <div className="phoneme-row">
+            {TONES.map((p) => (
+              <span
+                key={`t-${p}`}
+                className={
+                  "phoneme-cell" +
+                  (coveredTones.has(p) ? " covered-3" : "") +
+                  (active.tones.has(p) ? " recent" : "")
+                }
+              >
+                {p === "neutral" ? "·" : p}
+              </span>
+            ))}
+          </div>
+        </div>
+
         <p className="small" style={{ color: "var(--color-on-dark-soft)", marginTop: 12 }}>
           {t("build.coverage.note")}
         </p>
         <div className="row gap-16 mt-16">
           <div className="row gap-6" style={{ color: "var(--color-on-dark-soft)", fontSize: 12 }}>
-            <span className="coverage-cell covered" style={{ width: 14, height: 14, minHeight: 14, padding: 0 }} />{" "}
+            <span className="phoneme-cell covered-3" style={{ width: 14, height: 14 }} />{" "}
             {t("build.coverage.legend.covered")}
           </div>
           <div className="row gap-6" style={{ color: "var(--color-on-dark-soft)", fontSize: 12 }}>
-            <span className="coverage-cell" style={{ width: 14, height: 14, minHeight: 14, padding: 0 }} />{" "}
-            {t("build.coverage.legend.missing")}
+            <span className="phoneme-cell" style={{ width: 14, height: 14 }} /> {t("build.coverage.legend.missing")}
           </div>
         </div>
       </aside>
     </div>
   );
-}
-
-// Coverage features hit by a single line — used to ring the "active" buckets.
-function deriveCoverageForLine(text: string) {
-  return deriveCoverage([text])
-    .filter((b) => b.covered)
-    .map((b) => b.feature);
 }
 
 export function BuildTab({

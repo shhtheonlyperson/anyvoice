@@ -2,25 +2,22 @@
  * record-and-grade Build flow.
  *
  * Each line is one clip our existing enroll + analyzer already grades. The pack
- * extends VoiceCloneStudio's original 5-line SCRIPT_PACK to 24 lines that
- * broaden coverage across the analyzer's real coverage features (see
- * `detectVoiceProfileCoverageFeatures` in lib/text-prep):
+ * extends VoiceCloneStudio's original 5-line SCRIPT_PACK to 24 lines tuned so
+ * that completing all 24 yields FULL Mandarin phoneme coverage — every initial
+ * (聲母), every final (韻母), and all five tones (聲調) in the canonical pinyin
+ * inventory (see lib/mandarin-phonemes.ts; verified by a test). The recorder's
+ * coverage sidecar reports that phoneme coverage deterministically from the
+ * transcripts of the lines recorded so far. This is TEXT-DERIVED coverage (what
+ * the lines contain), not audio-verified pronunciation — the per-clip A–D grade
+ * stays the separate signal for how well a clip was spoken.
  *
- *   - zh_hant            proven Traditional markers
- *   - numbers_dates      digits + CJK numerals with date/time units
- *   - latin_terms        Latin brand/place names
- *   - polyphones         重慶 / 銀行 / 角色 / 音樂 / 長樂 (the analyzer's preset set)
- *   - punctuation_rhythm commas / full stops / question marks for prosody
- *
- * Lines are tuned to the 6–20s readable band (the enroll duration gate). zh-Hant
- * is the default pack; an English parallel pack mirrors the same coverage so the
- * flow works in either locale. Per-line pronunciation cues mirror SCRIPT_CUES.
+ * The pack also keeps natural broad-content markers — CJK/digit numbers + dates,
+ * Latin brand/place names, the polyphones 重慶 / 銀行 / 角色 / 音樂 / 長樂, and
+ * comma/period/question-mark prosody. Lines are tuned to the 6–20s readable band
+ * (the enroll duration gate). zh-Hant is the default pack; an English parallel
+ * pack mirrors it so the flow works in either locale. Per-line cues mirror
+ * SCRIPT_CUES.
  */
-
-import {
-  detectVoiceProfileCoverageFeatures,
-  type VoiceProfileCoverageFeature,
-} from "@/lib/text-prep";
 
 export type BuildScriptLocale = "zh-Hant" | "en";
 
@@ -51,13 +48,13 @@ const ZH_LINES: Array<{ text: string; cues?: string[] }> = [
   { text: "他在銀行上班，每天細心核對每一筆帳目，從不馬虎。", cues: ["銀行"] },
   { text: "在這齣戲裡，他扮演的角色既溫柔又堅強，讓觀眾印象深刻。", cues: ["角色"] },
   { text: "夜晚的廣場上播著輕快的音樂，孩子們圍著噴泉開心地跑來跑去。", cues: ["音樂"] },
-  { text: "我的老家在福建長樂，那裡靠海，海風總是帶著鹹鹹的味道。", cues: ["長樂"] },
+  { text: "我的老家在福建長樂，那裡靠海，海風嗡嗡地吹，總是帶著鹹鹹的味道。", cues: ["長樂"] },
   { text: "你準備好了嗎？我們現在就出發，好不好？" },
   { text: "等一下！別忘了帶傘，外面好像快下雨了。" },
   { text: "如果可以的話，我希望能多陪陪家人，慢慢地、好好地過每一天。" },
   { text: "謝謝你一直以來的支持與陪伴，這對我來說，意義非常重大。" },
   { text: "讓我想想……嗯，這個問題其實沒有標準答案，要看當下的情況而定。" },
-  { text: "無論晴天或雨天，無論順境或逆境，我都會堅持把這件事完成。" },
+  { text: "無論晴天或雨天，我都會迅速穿上裙子或外套，堅持把這件事完成。" },
   { text: "最後，祝你有美好的一天，我們下次再見，保重！" },
 ];
 
@@ -105,43 +102,6 @@ if (ZH_LINES.length !== EN_LINES.length) {
 
 /** Number of guided lines in the build script (derived to avoid drift). */
 export const BUILD_LINE_COUNT = ZH_LINES.length;
-
-/** All coverage feature buckets, in display order for the sidecar grid. */
-export const COVERAGE_FEATURES: VoiceProfileCoverageFeature[] = [
-  "zh_hant",
-  "numbers_dates",
-  "latin_terms",
-  "polyphones",
-  "punctuation_rhythm",
-];
-
-export interface CoverageBucket {
-  feature: VoiceProfileCoverageFeature;
-  /** How many recorded lines so far hit this coverage feature. */
-  count: number;
-  covered: boolean;
-}
-
-/**
- * Honest coverage derivation. We do NOT have a real IPA-40 phoneme grid in the
- * backend, so we approximate the handoff's phoneme sidecar with the analyzer's
- * REAL coverage features (lib/text-prep) detected on the transcripts of the
- * lines recorded so far. The grid is labelled "涵蓋面 / Coverage" rather than
- * faking phoneme data. A bucket is "covered" once any recorded line hits it.
- */
-export function deriveCoverage(recordedTranscripts: string[]): CoverageBucket[] {
-  const counts = new Map<VoiceProfileCoverageFeature, number>();
-  for (const feature of COVERAGE_FEATURES) counts.set(feature, 0);
-  for (const transcript of recordedTranscripts) {
-    for (const feature of detectVoiceProfileCoverageFeatures(transcript)) {
-      counts.set(feature, (counts.get(feature) ?? 0) + 1);
-    }
-  }
-  return COVERAGE_FEATURES.map((feature) => {
-    const count = counts.get(feature) ?? 0;
-    return { feature, count, covered: count > 0 };
-  });
-}
 
 /** Map an analyzer grade to the line-list status the design renders. */
 export function lineStatusFromGrade(grade: "A" | "B" | "C" | "D" | string | undefined): "pass" | "retry" {

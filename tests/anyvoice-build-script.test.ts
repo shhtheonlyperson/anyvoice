@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   BUILD_LINE_COUNT,
   BUILD_SCRIPT_PACK,
-  COVERAGE_FEATURES,
-  deriveCoverage,
   lineStatusFromGrade,
 } from "@/components/anyvoice/build-script";
-import { detectVoiceProfileCoverageFeatures } from "@/lib/text-prep";
+import {
+  coverageFromTexts,
+  FINALS,
+  INITIALS,
+  TONES,
+} from "@/lib/mandarin-phonemes";
 
 describe("24-line build script pack shape", () => {
   for (const locale of ["zh-Hant", "en"] as const) {
@@ -35,14 +38,15 @@ describe("24-line build script pack shape", () => {
     });
   }
 
-  it("zh-Hant pack broadens coverage across every analyzer feature", () => {
-    const seen = new Set<string>();
-    for (const line of BUILD_SCRIPT_PACK["zh-Hant"]) {
-      for (const f of detectVoiceProfileCoverageFeatures(line.text)) seen.add(f);
-    }
-    for (const feature of COVERAGE_FEATURES) {
-      expect(seen.has(feature)).toBe(true);
-    }
+  it("the 24 zh-Hant lines cover the FULL Mandarin phoneme inventory", () => {
+    const cov = coverageFromTexts(BUILD_SCRIPT_PACK["zh-Hant"].map((l) => l.text));
+    // Every initial, every final, all tones — completing the 24 lines yields
+    // full text-derived phoneme coverage.
+    expect(cov.missing.initials).toEqual([]);
+    expect(cov.missing.finals).toEqual([]);
+    expect(cov.missing.tones).toEqual([]);
+    expect(cov.covered).toBe(cov.total);
+    expect(cov.total).toBe(INITIALS.length + FINALS.length + TONES.length);
   });
 
   it("includes the required polyphones in the zh-Hant pack", () => {
@@ -67,32 +71,30 @@ describe("line-status mapping from analyzer grade", () => {
   });
 });
 
-describe("coverage derivation from recorded transcripts", () => {
-  it("returns one bucket per feature, all uncovered for an empty set", () => {
-    const cov = deriveCoverage([]);
-    expect(cov).toHaveLength(COVERAGE_FEATURES.length);
-    expect(cov.every((b) => b.count === 0 && !b.covered)).toBe(true);
+describe("phoneme coverage derivation from recorded transcripts", () => {
+  it("covers nothing for an empty set", () => {
+    const cov = coverageFromTexts([]);
+    expect(cov.covered).toBe(0);
+    expect(cov.initials).toEqual([]);
+    expect(cov.finals).toEqual([]);
+    expect(cov.tones).toEqual([]);
   });
 
-  it("marks features covered and counts hits across recorded lines", () => {
-    const cov = deriveCoverage([
-      "今天是二零二六年五月二十日，我們在重慶。", // numbers_dates + polyphones + zh_hant + punctuation
-      "她在 Google 工作。", // latin_terms + punctuation
-    ]);
-    const byFeature = Object.fromEntries(cov.map((b) => [b.feature, b]));
-    expect(byFeature.numbers_dates.covered).toBe(true);
-    expect(byFeature.polyphones.covered).toBe(true);
-    expect(byFeature.latin_terms.covered).toBe(true);
-    // count is per recorded line that hits the feature (line 1 has ≥2 marks).
-    expect(byFeature.punctuation_rhythm.count).toBeGreaterThanOrEqual(1);
+  it("grows monotonically as more lines are added (incremental union)", () => {
+    const a = coverageFromTexts(["你好"]);
+    const ab = coverageFromTexts(["你好", "重慶銀行"]);
+    expect(ab.covered).toBeGreaterThanOrEqual(a.covered);
+    // Every phoneme covered by the smaller set stays covered in the larger.
+    for (const i of a.initials) expect(ab.initials).toContain(i);
+    for (const f of a.finals) expect(ab.finals).toContain(f);
+    for (const tn of a.tones) expect(ab.tones).toContain(tn);
   });
 
-  it("agrees with the analyzer's own feature detection (single source of truth)", () => {
-    const text = BUILD_SCRIPT_PACK["zh-Hant"][5].text; // the date line
-    const cov = deriveCoverage([text]);
-    const expected = new Set(detectVoiceProfileCoverageFeatures(text));
-    for (const bucket of cov) {
-      expect(bucket.covered).toBe(expected.has(bucket.feature));
-    }
+  it("ignores Latin/punctuation and reports only Han-derived phonemes", () => {
+    const cov = coverageFromTexts(["Google Netflix 2026 !!! ??? 你"]);
+    // 你 = ni3 → initial n, final i, tone 3.
+    expect(cov.initials).toContain("n");
+    expect(cov.finals).toContain("i");
+    expect(cov.tones).toContain("3");
   });
 });
