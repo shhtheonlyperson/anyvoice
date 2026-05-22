@@ -47,6 +47,13 @@ interface VoiceProfilePayload {
   clips?: { transcriptRaw?: string }[];
 }
 
+interface VoiceProfileListItem {
+  id: string;
+  displayName: string;
+  status: "ready" | "needs_enrollment";
+  clipCount: number;
+}
+
 interface ReferenceQuality {
   grade: "A" | "B" | "C" | "D";
   durationSec: number;
@@ -226,6 +233,15 @@ type Copy = {
   youtubeNoCaptions: string;
   youtubeOk: string;
   youtubeFailed: string;
+  profileLabel: string;
+  profileCreate: string;
+  profileRename: string;
+  profileDelete: string;
+  profileDeleteConfirm: string;
+  profileNamePlaceholder: string;
+  profileSave: string;
+  profileCancel: string;
+  profileActive: (name: string) => string;
   micBlocked: string;
   micProcessing: string;
   listTitle: string;
@@ -312,6 +328,15 @@ const COPY: Record<Locale, Copy> = {
     youtubeNoCaptions: "這段沒有字幕，請改貼上有字幕的片段，或在下方自行輸入逐字稿。",
     youtubeOk: "匯入成功，聲音已建立。",
     youtubeFailed: "匯入失敗，請確認網址或稍後再試。",
+    profileLabel: "聲音",
+    profileCreate: "新增聲音",
+    profileRename: "重新命名",
+    profileDelete: "刪除",
+    profileDeleteConfirm: "確定要刪除這個聲音及其錄音嗎？",
+    profileNamePlaceholder: "幫這個聲音取個名字（例如：我的聲音、Sunny 財經）",
+    profileSave: "儲存",
+    profileCancel: "取消",
+    profileActive: (name) => `目前聲音：${name}`,
     micBlocked: "無法取得麥克風權限。",
     micProcessing: "偵測到麥克風仍開啟降噪或回音消除，請關閉後重試。",
     listTitle: "全部語句",
@@ -396,6 +421,15 @@ const COPY: Record<Locale, Copy> = {
     youtubeNoCaptions: "No captions in this window — pick a captioned section or type the transcript below.",
     youtubeOk: "Imported — your voice is built.",
     youtubeFailed: "Import failed. Check the URL or try again later.",
+    profileLabel: "Voice",
+    profileCreate: "New voice",
+    profileRename: "Rename",
+    profileDelete: "Delete",
+    profileDeleteConfirm: "Delete this voice and its recordings?",
+    profileNamePlaceholder: "Name this voice (e.g. My voice, Sunny finance)",
+    profileSave: "Save",
+    profileCancel: "Cancel",
+    profileActive: (name) => `Voice: ${name}`,
     micBlocked: "Couldn't get microphone permission.",
     micProcessing: "The mic still has noise suppression / echo cancellation on. Disable it and retry.",
     listTitle: "All lines",
@@ -535,6 +569,12 @@ export function VoiceCloneStudio() {
   // ---- profile state
   const [profile, setProfile] = useState<VoiceProfilePayload | null>(null);
   const profileReady = profile?.status === "ready";
+  // ---- multiple voice profiles
+  const [profiles, setProfiles] = useState<VoiceProfileListItem[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string>("local-default");
+  const [profileDraft, setProfileDraft] = useState("");
+  const [profileEditing, setProfileEditing] = useState<"create" | "rename" | null>(null);
+  const activeProfile = profiles.find((p) => p.id === activeProfileId);
 
   // ---- build state
   const [clips, setClips] = useState<ClipState[]>(() => SCRIPT_PACK["zh-Hant"].map(() => "idle"));
@@ -574,37 +614,65 @@ export function VoiceCloneStudio() {
     }
   }, []);
 
-  const loadVoiceProfile = useCallback(async () => {
+  const loadVoiceProfile = useCallback(async (profileId: string) => {
     try {
-      const response = await fetch("/api/voice-profile", { cache: "no-store" });
+      const response = await fetch(`/api/voice-profile?profileId=${encodeURIComponent(profileId)}`, {
+        cache: "no-store",
+      });
       if (!response.ok) return;
       const payload = (await response.json()) as { profile?: VoiceProfilePayload };
       if (!payload.profile) return;
       setProfile(payload.profile);
-      // Reflect already-enrolled clips in the build checklist so a returning user
-      // sees their recordings instead of an empty "待錄" list.
+      // Reflect this profile's enrolled clips in the build checklist (and clear
+      // ticks that belong to other profiles when switching).
       const enrolled = new Set(
         (payload.profile.clips ?? [])
           .map((c) => (c.transcriptRaw ?? "").trim())
           .filter(Boolean),
       );
-      if (enrolled.size > 0) {
-        setClips((cs) =>
-          SCRIPT_PACK["zh-Hant"].map((prompt, i) =>
-            enrolled.has(prompt.trim()) ? "ok" : cs[i],
-          ),
-        );
-      }
+      setClips(SCRIPT_PACK["zh-Hant"].map((prompt) => (enrolled.has(prompt.trim()) ? "ok" : "idle")));
+      setCur(0);
+    } catch {
+      /* offline / SSR */
+    }
+  }, []);
+
+  const loadProfiles = useCallback(async () => {
+    try {
+      const response = await fetch("/api/voice-profile/profiles", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = (await response.json()) as { profiles?: VoiceProfileListItem[] };
+      const list = payload.profiles ?? [];
+      setProfiles(list);
+      setActiveProfileId((current) => {
+        const stored =
+          typeof window !== "undefined" ? window.localStorage.getItem("anyvoice:activeProfile") : null;
+        if (stored && list.some((p) => p.id === stored)) return stored;
+        if (list.some((p) => p.id === current)) return current;
+        return list[0]?.id ?? "local-default";
+      });
     } catch {
       /* offline / SSR */
     }
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async profile load after mount
-    void loadVoiceProfile();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async profile/history load after mount
+    void loadProfiles();
     void loadHistory();
-  }, [loadVoiceProfile, loadHistory]);
+  }, [loadProfiles, loadHistory]);
+
+  // Load the active profile's summary whenever the selection changes, and
+  // persist the choice so it survives reloads.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("anyvoice:activeProfile", activeProfileId);
+    } catch {
+      /* storage unavailable */
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async summary load on profile switch
+    void loadVoiceProfile(activeProfileId);
+  }, [activeProfileId, loadVoiceProfile]);
 
   // Restore persisted playback speed after mount (localStorage is SSR-unsafe).
   useEffect(() => {
@@ -654,13 +722,64 @@ export function VoiceCloneStudio() {
     });
   }
 
+  /* ----------------------------- voice profile management */
+
+  function switchProfile(id: string) {
+    setProfileEditing(null);
+    setProfileDraft("");
+    setBuildMessage("");
+    setActiveProfileId(id); // effect reloads the summary + checklist for it
+  }
+
+  async function createProfileFromDraft() {
+    const displayName = profileDraft.trim();
+    if (!displayName) return;
+    try {
+      const res = await fetch("/api/voice-profile/profiles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName }),
+      });
+      const payload = (await res.json()) as { profile?: { id: string } };
+      if (res.ok && payload.profile) {
+        await loadProfiles();
+        setActiveProfileId(payload.profile.id);
+      }
+    } finally {
+      setProfileEditing(null);
+      setProfileDraft("");
+    }
+  }
+
+  async function renameProfileFromDraft() {
+    const displayName = profileDraft.trim();
+    if (!displayName) return;
+    try {
+      await fetch(`/api/voice-profile/profiles/${encodeURIComponent(activeProfileId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName }),
+      });
+      await loadProfiles();
+    } finally {
+      setProfileEditing(null);
+      setProfileDraft("");
+    }
+  }
+
+  async function deleteActiveProfile() {
+    if (typeof window !== "undefined" && !window.confirm(t.profileDeleteConfirm)) return;
+    await fetch(`/api/voice-profile/profiles/${encodeURIComponent(activeProfileId)}`, { method: "DELETE" });
+    await loadProfiles(); // current id is gone → loadProfiles falls back to the first profile
+  }
+
   const targetScriptBlocked = profileReady && isUnstableChineseScript(text);
   const generateDisabled = !text.trim() || gen === "busy" || !profileReady || targetScriptBlocked;
 
   /* ----------------------------- streaming parse (reused contract) */
 
   function handleTerminal(payload: ClonePayload, responseOk: boolean) {
-    void loadVoiceProfile();
+    void loadVoiceProfile(activeProfileId);
     if (!responseOk || payload.status === "error") {
       setGen("error");
       setGenMessage(payload.message || t.genError);
@@ -738,9 +857,10 @@ export function VoiceCloneStudio() {
     if (pronText.trim()) form.set("pronunciationOverrides", pronText);
 
     try {
-      // One voice: yours. The server resolves the best enrolled clip and clones
-      // it zero-shot — no upload, no transcript typing, no sample.
+      // Speak in the selected voice — the server resolves that profile's best
+      // enrolled clip and clones it zero-shot (no upload, no transcript typing).
       form.set("useVoiceProfile", "yes");
+      form.set("profileId", activeProfileId);
       void modelText; // model preview computed for parity; server re-derives
 
       const response = await fetch("/api/clone/stream", { method: "POST", body: form });
@@ -830,6 +950,7 @@ export function VoiceCloneStudio() {
     form.set("voice", file);
     form.set("promptTranscript", promptTranscript);
     form.set("sourceKind", "scripted" satisfies SourceKind);
+    form.set("voiceProfileId", activeProfileId);
     form.set("consent", "yes");
 
     try {
@@ -871,6 +992,7 @@ export function VoiceCloneStudio() {
         body: JSON.stringify({
           url: ytUrl.trim(),
           transcriptOverride: ytNeedTranscript ? ytTranscript.trim() || undefined : undefined,
+          profileId: activeProfileId,
           consent: "yes",
         }),
       });
@@ -998,13 +1120,18 @@ export function VoiceCloneStudio() {
       </nav>
 
       {screen === "book" ? (
-        <BookReader locale={locale} profileReady={Boolean(profileReady)} />
+        <BookReader locale={locale} profileReady={Boolean(profileReady)} profileId={activeProfileId} />
       ) : screen === "generate" ? (
         <div className="wrap">
           <div className="hero">
             <div className="eyebrow">{t.eyebrow}</div>
             <h1 className="display">{t.h1}</h1>
             <p className="lede">{t.lede}</p>
+            {activeProfile && (
+              <p className="muted small" style={{ marginTop: 6 }}>
+                {t.profileActive(activeProfile.displayName)}
+              </p>
+            )}
           </div>
 
           <div className="card card--cream" style={{ display: "grid", gap: 28 }}>
@@ -1112,6 +1239,13 @@ export function VoiceCloneStudio() {
               <div className="history">
                 {history.map((h) => (
                   <div className="history-row" key={h.id}>
+                    <code
+                      className="muted small"
+                      style={{ display: "block", marginBottom: 4, fontFamily: "var(--mono, ui-monospace, monospace)", letterSpacing: "0.02em" }}
+                      title={new Date(h.createdAt).toLocaleString()}
+                    >
+                      #{h.id}
+                    </code>
                     <p className="history-text">{h.targetText}</p>
                     {h.audioUrl && (
                       <>
@@ -1149,6 +1283,84 @@ export function VoiceCloneStudio() {
             <h1 className="display">{t.buildH1}</h1>
             <p className="lede">{t.buildLede}</p>
           </div>
+
+          {/* Voice profile switcher — build/manage several voices. */}
+          <div className="row between" style={{ marginBottom: 16, gap: 10, flexWrap: "wrap" }}>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <span className="label" style={{ margin: 0 }}>
+                {t.profileLabel}
+              </span>
+              <select
+                className="field"
+                style={{ width: "auto" }}
+                value={activeProfileId}
+                onChange={(e) => switchProfile(e.target.value)}
+                aria-label={t.profileLabel}
+              >
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.displayName}
+                    {p.status === "ready" ? " ✓" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                className="btn btn--ghost"
+                onClick={() => {
+                  setProfileEditing("create");
+                  setProfileDraft("");
+                }}
+              >
+                {t.profileCreate}
+              </button>
+              <button
+                className="btn btn--ghost"
+                onClick={() => {
+                  setProfileEditing("rename");
+                  setProfileDraft(activeProfile?.displayName ?? "");
+                }}
+              >
+                {t.profileRename}
+              </button>
+              <button className="btn btn--ghost" disabled={profiles.length <= 1} onClick={deleteActiveProfile}>
+                {t.profileDelete}
+              </button>
+            </div>
+          </div>
+          {profileEditing && (
+            <div className="row" style={{ gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+              <input
+                className="field"
+                style={{ flex: "1 1 240px" }}
+                autoFocus
+                placeholder={t.profileNamePlaceholder}
+                value={profileDraft}
+                onChange={(e) => setProfileDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")
+                    void (profileEditing === "create" ? createProfileFromDraft() : renameProfileFromDraft());
+                }}
+              />
+              <button
+                className="btn"
+                disabled={!profileDraft.trim()}
+                onClick={() => void (profileEditing === "create" ? createProfileFromDraft() : renameProfileFromDraft())}
+              >
+                {t.profileSave}
+              </button>
+              <button
+                className="btn btn--ghost"
+                onClick={() => {
+                  setProfileEditing(null);
+                  setProfileDraft("");
+                }}
+              >
+                {t.profileCancel}
+              </button>
+            </div>
+          )}
 
           {allDone ? (
             <div className="done-band">

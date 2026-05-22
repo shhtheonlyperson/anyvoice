@@ -16,6 +16,7 @@ vi.mock("node:child_process", async () => {
 
 import { spawn } from "node:child_process";
 import {
+  planTargetChunks,
   recordCloneError,
   recordWorkerMissingRun,
   runLocalClone,
@@ -111,6 +112,28 @@ afterEach(async () => {
   if (originalStabilitySeed === undefined) delete process.env.ANYVOICE_STABILITY_SEED;
   else process.env.ANYVOICE_STABILITY_SEED = originalStabilitySeed;
   vi.unstubAllGlobals();
+});
+
+describe("planTargetChunks", () => {
+  it("keeps short text as a single pass", () => {
+    expect(planTargetChunks("你好，這是一句短短的測試。")).toHaveLength(1);
+    expect(planTargetChunks("hello world")).toEqual(["hello world"]);
+  });
+
+  it("splits long text into multiple sentence-packed chunks", () => {
+    const sentence = "這是一段用來測試長文切分的句子，內容必須夠長才能超過單次合成的字數上限。";
+    const long = Array.from({ length: 8 }, () => sentence).join("");
+    const chunks = planTargetChunks(long);
+    expect(chunks.length).toBeGreaterThan(1);
+    // No chunk exceeds the single-pass ceiling (with a small packing margin).
+    expect(chunks.every((c) => c.length <= 220 * 1.5)).toBe(true);
+    // Nothing is dropped.
+    expect(chunks.join("").length).toBeGreaterThanOrEqual(long.length - chunks.length);
+  });
+
+  it("never returns an empty plan", () => {
+    expect(planTargetChunks("").length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe("workerMissingPayload", () => {

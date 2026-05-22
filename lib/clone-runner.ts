@@ -8,7 +8,25 @@ import {
   type CloneInput,
   type QualityPreset,
 } from "@/lib/clone-request";
+import { packSentences, splitSentences } from "@/lib/book-segment";
 import { safeRunDir } from "@/lib/run-paths";
+
+// Beyond this many characters, VoxCPM2's single-pass synthesis drifts (quality
+// degrades and background noise creeps in past ~1 minute of audio). We split
+// long text into sentence-packed chunks, synthesize each as its own stable
+// generation, then concatenate — the same principle as the audiobook pipeline.
+const MAX_SINGLE_PASS_CHARS = 220;
+
+/**
+ * Sentence-packed chunks for a target text. Short text (within the single-pass
+ * ceiling) is returned unchanged as one chunk; only genuinely long text is
+ * split, into fewer/larger chunks (bigger min) to minimize boundary seams.
+ */
+export function planTargetChunks(targetText: string): string[] {
+  if (targetText.trim().length <= MAX_SINGLE_PASS_CHARS) return [targetText];
+  const chunks = packSentences(splitSentences(targetText), { minChars: 120, maxChars: MAX_SINGLE_PASS_CHARS });
+  return chunks.length > 0 ? chunks : [targetText];
+}
 
 interface CommandResult {
   stdout: string;
@@ -528,6 +546,111 @@ export async function readMetadata(metadataPath: string): Promise<Record<string,
   }
 }
 
+/** Losslessly concatenate WAV chunks into one output file via ffmpeg. */
+async function concatWavs(wavPaths: string[], outputPath: string): Promise<void> {
+  const listPath = path.join(path.dirname(outputPath), "concat-list.txt");
+  const list = wavPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n");
+  await writeFile(listPath, `${list}\n`, "utf-8");
+  const ffmpeg = process.env.ANYVOICE_FFMPEG || "ffmpeg";
+  // Re-encode to PCM so the concat is robust to any minor per-chunk param drift.
+  await runCommand(ffmpeg, ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c:a", "pcm_s16le", outputPath], process.cwd());
+}
+
+/**
+ * Synthesize long text as multiple short, stable generations and concatenate
+ * them into files.outputPath. Each chunk's leading-artifact + silence trimming
+ * runs per generation, so the joined audio stays clean. Metadata from the first
+ * chunk (reference quality + effective params) is written to files.metadataPath.
+ */
+async function synthesizeChunkedToOutput(
+  jobId: string,
+  input: CloneInput,
+  files: CloneRunFiles,
+  chunks: string[],
+  currentModelId: string,
+  onProgress?: CloneProgressCallback,
+): Promise<void> {
+  const seed = stabilitySeed();
+  const loraPath = voxcpmLoraPath();
+  const base = hotWorkerUrl();
+  const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
+  const script = path.join(process.cwd(), "scripts", "synthesize_voxcpm_anyvoice.py");
+  const wavPaths: string[] = [];
+
+  for (let i = 0; i < chunks.length; i += 1) {
+    const stem = `chunk-${String(i).padStart(3, "0")}`;
+    const chunkWav = path.join(files.runDir, `${stem}.wav`);
+    const chunkText = path.join(files.runDir, `${stem}.txt`);
+    const chunkPrepPath = path.join(files.runDir, `${stem}.prep.json`);
+    // Only the first chunk's metadata is kept (reference quality is identical
+    // across chunks — same reference clip).
+    const chunkMeta = i === 0 ? files.metadataPath : path.join(files.runDir, `${stem}.meta.json`);
+
+    const prep = prepareVoiceText(chunks[i], {
+      pronunciationOverrides: input.pronunciationOverrides,
+      autoApplyPresetPronunciations: true,
+    });
+    await writeFile(chunkText, prep.model, "utf-8");
+    await writeFile(
+      chunkPrepPath,
+      JSON.stringify({ targetText: prep, promptTranscript: files.textPreparation.promptTranscript }),
+      "utf-8",
+    );
+
+    onProgress?.({
+      status: "progress",
+      jobId,
+      modelId: currentModelId,
+      phase: "synthesis_started",
+      message: `${i + 1}/${chunks.length}`,
+    });
+
+    if (base) {
+      const endpoint = hotWorkerCloneUrl(base);
+      if (!endpoint) throw new Error("ANYVOICE_HOT_WORKER_URL is invalid");
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          textFile: chunkText,
+          referenceAudio: files.referencePath,
+          promptTextFile: files.promptTranscriptPath,
+          output: chunkWav,
+          metadataOutput: chunkMeta,
+          textPrepFile: chunkPrepPath,
+          quality: input.quality,
+          stabilitySeed: seed,
+          modelId: currentModelId,
+          cloneMode: voxcpmCloneMode(),
+          ...(loraPath ? { loraPath } : {}),
+        }),
+      });
+      if (!response.ok) throw new Error(`hot worker returned ${response.status}`);
+      await response.text(); // drain ndjson; worker writes the wav before closing
+    } else {
+      const args = [
+        script,
+        "--text-file", chunkText,
+        "--reference-audio", files.referencePath,
+        "--model-id", currentModelId,
+        "--metadata-output", chunkMeta,
+        "--text-prep-file", chunkPrepPath,
+        "--output", chunkWav,
+        "--quality", input.quality,
+        "--clone-mode", voxcpmCloneMode(),
+        "--prompt-text-file", files.promptTranscriptPath,
+      ];
+      if (seed !== null) args.push("--seed", String(seed));
+      if (loraPath) args.push("--lora-path", loraPath);
+      await runCommand(python, args, process.cwd());
+    }
+    wavPaths.push(chunkWav);
+  }
+
+  await concatWavs(wavPaths, files.outputPath);
+}
+
 export async function runLocalCloneWithProgress(
   jobId: string,
   input: CloneInput,
@@ -547,6 +670,25 @@ export async function runLocalCloneWithProgress(
     modelId: currentModelId,
     phase: "input_saved",
   });
+
+  // Long text → chunked, stable synthesis + concatenation (avoids the quality
+  // drift / background noise of a single multi-minute generation).
+  const chunks = planTargetChunks(input.targetText);
+  if (chunks.length > 1) {
+    await synthesizeChunkedToOutput(jobId, input, files, chunks, currentModelId, onProgress);
+    onProgress?.({ status: "progress", jobId, modelId: currentModelId, phase: "finalizing" });
+    await transcodeToCompressed(files.runDir);
+    const metadata = await readMetadata(files.metadataPath);
+    return {
+      status: "ready",
+      jobId,
+      modelId: currentModelId,
+      audioUrl: `/api/runs/${jobId}/audio`,
+      referenceQuality: parseReferenceQuality(metadata?.referenceQuality),
+      targetLanguage: detectTargetLanguage(input.targetText),
+      effectiveParams: parseEffectiveParams(metadata?.effectiveParams, input.quality),
+    };
+  }
 
   if (hotWorkerUrl()) {
     await runHotClone(jobId, input, files, currentModelId, onProgress);

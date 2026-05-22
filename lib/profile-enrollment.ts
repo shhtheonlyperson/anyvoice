@@ -13,6 +13,8 @@ export interface VoiceProfileEnrollmentInput {
   voice: File;
   promptTranscript: string;
   sourceKind?: EnrollmentSourceKind;
+  /** Which voice profile this clip enrolls into (defaults to local-default). */
+  voiceProfileId?: string;
 }
 
 export interface VoiceProfileEnrollmentError {
@@ -71,6 +73,9 @@ export function parseVoiceProfileEnrollmentForm(
   const promptTranscript = normalizeTargetText(String(form.get("promptTranscript") || ""));
   const sourceKindRaw = form.get("sourceKind");
   const sourceKind = parseEnrollmentSourceKind(sourceKindRaw);
+  const voiceProfileIdRaw = form.get("voiceProfileId");
+  const voiceProfileId =
+    typeof voiceProfileIdRaw === "string" && voiceProfileIdRaw.trim() ? voiceProfileIdRaw.trim() : undefined;
 
   if (!(voice instanceof File)) return error(400, "voice file required");
   if (voice.size <= 0) return error(400, "voice file is empty");
@@ -91,7 +96,7 @@ export function parseVoiceProfileEnrollmentForm(
   }
   if (consent !== "yes") return error(400, "voice permission confirmation required");
 
-  return { voice, promptTranscript, sourceKind };
+  return { voice, promptTranscript, sourceKind, voiceProfileId };
 }
 
 function runCommand(command: string, args: string[], cwd: string): Promise<CommandResult> {
@@ -168,6 +173,7 @@ async function writeEnrollmentFiles(jobId: string, input: VoiceProfileEnrollment
         voiceSize: input.voice.size,
         sourceKind: input.sourceKind ?? "uploaded",
         referenceSource: { kind: input.sourceKind ?? "uploaded" },
+        voiceProfileId: input.voiceProfileId?.trim() || "local-default",
         createdAt: new Date().toISOString(),
         textPreparation: {
           promptTranscript: promptPreparation,

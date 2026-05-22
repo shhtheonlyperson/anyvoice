@@ -23,12 +23,6 @@ export async function POST(req: NextRequest) {
   const fail = (status: number, message: string) =>
     withAnyVoiceUserCookie(Response.json({ status: "error", message }, { status }), session);
 
-  // The book is read in your voice — require a ready profile first.
-  const profile = await buildVoiceProfileSummary();
-  if (profile.status !== "ready" || profile.clips.length === 0) {
-    return fail(409, "build your voice first: a ready voice profile is required to synthesize a book");
-  }
-
   let form: FormData;
   try {
     form = await req.formData();
@@ -37,6 +31,13 @@ export async function POST(req: NextRequest) {
   }
   const file = form.get("file");
   if (!(file instanceof File)) return fail(400, "upload an .epub or .pdf file");
+
+  // The book is read in the chosen voice — require that profile to be ready.
+  const profileId = String(form.get("profileId") || "").trim() || undefined;
+  const profile = await buildVoiceProfileSummary(profileId ? { profileId } : undefined);
+  if (profile.status !== "ready" || profile.clips.length === 0) {
+    return fail(409, "build your voice first: a ready voice profile is required to synthesize a book");
+  }
 
   let extracted;
   try {

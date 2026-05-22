@@ -21,8 +21,8 @@ export function isBookSynthesisRunning(id: string): boolean {
   return running.has(id);
 }
 
-async function resolveReference(): Promise<{ audioPath: string; transcript: string }> {
-  const profile = await buildVoiceProfileSummary();
+async function resolveReference(voiceProfileId?: string): Promise<{ audioPath: string; transcript: string }> {
+  const profile = await buildVoiceProfileSummary(voiceProfileId ? { profileId: voiceProfileId } : undefined);
   const clip = profile.clips[0];
   if (!clip) throw new Error("voice profile has no usable clip");
   return { audioPath: clip.audioPath, transcript: clip.transcriptRaw };
@@ -35,7 +35,7 @@ export async function runBookSynthesis(id: string): Promise<void> {
   try {
     const meta = await loadBookMeta(id);
     if (!meta) return;
-    const reference = await resolveReference();
+    const reference = await resolveReference(meta.voiceProfileId);
     const segments = await loadSegments(id);
     const workDir = path.join(bookDir(id), "tmp");
 

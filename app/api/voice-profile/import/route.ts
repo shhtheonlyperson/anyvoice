@@ -77,6 +77,9 @@ export async function POST(req: NextRequest) {
     return withAnyVoiceUserCookie(specsOrResponse, session);
   }
 
+  const profileIdRaw = form.get("profileId");
+  const voiceProfileId = typeof profileIdRaw === "string" && profileIdRaw.trim() ? profileIdRaw.trim() : undefined;
+
   const enrollments = [];
   try {
     for (let index = 0; index < specsOrResponse.length; index += 1) {
@@ -98,10 +101,11 @@ export async function POST(req: NextRequest) {
         voice,
         promptTranscript: spec.transcript!.trim(),
         sourceKind,
+        voiceProfileId,
       });
       enrollments.push({ ...enrollment, id: spec.id || fileField });
     }
-    const profile = await persistVoiceProfileManifest({ profileId: "local-default" });
+    const profile = await persistVoiceProfileManifest({ profileId: voiceProfileId ?? "local-default" });
     return withAnyVoiceUserCookie(json({ status: "imported", imported: enrollments.length, enrollments, profile }), session);
   } catch (err) {
     const message = err instanceof Error ? err.message : "voice profile import failed";

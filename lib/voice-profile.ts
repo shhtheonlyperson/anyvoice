@@ -25,6 +25,7 @@ export interface VoiceProfileRequirements {
 
 export interface VoiceProfileClip {
   sourceRunId: string;
+  voiceProfileId?: string;
   audioPath: string;
   transcriptRaw: string;
   targetText: string;
@@ -111,15 +112,38 @@ const DEFAULT_REQUIREMENTS: VoiceProfileRequirements = {
   requiredPronunciationPresetIds: [...REQUIRED_VOICE_PROFILE_PRONUNCIATION_PRESET_IDS],
 };
 
-function assertSafeProfileId(profileId: string): string {
-  const normalized = profileId.trim() || "local-default";
+// Imported/cloned voices (YouTube, uploads — any non-default profile) can't be
+// expected to recite the curated coverage script (specific polyphones, the
+// "AnyVoice" brand word, etc.). Zero-shot cloning only needs one solid A/B
+// reference clip, so imported profiles use this lighter bar.
+const IMPORTED_PROFILE_REQUIREMENTS: VoiceProfileRequirements = {
+  minClips: 1,
+  maxClips: 10,
+  minDurationSec: 6,
+  maxDurationSec: 20,
+  passingGrades: [...PASSING_GRADES].sort(),
+  requiredCoverageFeatures: [],
+  requiredPronunciationPresetIds: [],
+};
+
+/** Strict bar for the curated self-recorded default voice; lighter for imports. */
+export function requirementsForProfile(profileId: string): VoiceProfileRequirements {
+  const normalized = profileId.trim() || DEFAULT_VOICE_PROFILE_ID;
+  return normalized === DEFAULT_VOICE_PROFILE_ID ? DEFAULT_REQUIREMENTS : IMPORTED_PROFILE_REQUIREMENTS;
+}
+
+/** The default/legacy voice profile id used when none is specified. */
+export const DEFAULT_VOICE_PROFILE_ID = "local-default";
+
+export function assertSafeProfileId(profileId: string): string {
+  const normalized = profileId.trim() || DEFAULT_VOICE_PROFILE_ID;
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(normalized)) {
     throw new Error("profileId must contain only letters, numbers, dash, or underscore");
   }
   return normalized;
 }
 
-function voiceProfileRoot(env: CloneEnv = process.env): string {
+export function voiceProfileRoot(env: CloneEnv = process.env): string {
   const configured = env.ANYVOICE_VOICE_PROFILE_ROOT || ".anyvoice/voices";
   return path.isAbsolute(configured) ? configured : path.join(process.cwd(), configured);
 }
@@ -144,6 +168,13 @@ interface MetadataFile {
 interface RequestFile {
   sourceKind?: unknown;
   referenceSource?: unknown;
+  voiceProfileId?: unknown;
+}
+
+/** Which profile an enrollment run was recorded for (untagged → default). */
+function runProfileId(request: RequestFile | null): string {
+  const raw = request?.voiceProfileId;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : DEFAULT_VOICE_PROFILE_ID;
 }
 
 async function readOptionalText(filePath: string): Promise<string> {
@@ -348,6 +379,7 @@ async function scanRun(runDir: string, runId: string): Promise<VoiceProfileClip 
 
   return {
     sourceRunId: runId,
+    voiceProfileId: runProfileId(request),
     audioPath,
     transcriptRaw,
     transcriptScript: detectChineseScript(transcriptRaw),
@@ -522,7 +554,7 @@ function buildDiagnostics(
 export async function buildVoiceProfileSummary({
   env = process.env,
   profileId = "local-default",
-  requirements = DEFAULT_REQUIREMENTS,
+  requirements,
   maxRejections = 50,
 }: {
   env?: CloneEnv;
@@ -530,6 +562,8 @@ export async function buildVoiceProfileSummary({
   requirements?: VoiceProfileRequirements;
   maxRejections?: number;
 } = {}): Promise<VoiceProfileSummary> {
+  // Imported profiles get a lighter readiness bar than the curated default.
+  requirements = requirements ?? requirementsForProfile(profileId);
   const root = runsRoot(env);
   let entries: string[] = [];
   try {
@@ -541,10 +575,14 @@ export async function buildVoiceProfileSummary({
   const candidates: VoiceProfileClip[] = [];
   const rejected: RejectedVoiceProfileClip[] = [];
 
+  const wantedProfileId = profileId.trim() || DEFAULT_VOICE_PROFILE_ID;
   for (const entry of entries.sort()) {
     const runDir = path.join(root, entry);
     const clip = await scanRun(runDir, entry);
     if (!clip) continue;
+    // Only consider runs recorded for the requested profile (untagged runs
+    // belong to the default profile for backward compatibility).
+    if ((clip.voiceProfileId ?? DEFAULT_VOICE_PROFILE_ID) !== wantedProfileId) continue;
     const reasons = rejectionReasons(clip, requirements);
     if (reasons.length > 0) rejected.push({ ...clip, reasons });
     else candidates.push(clip);

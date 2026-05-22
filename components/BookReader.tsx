@@ -100,7 +100,15 @@ function formatEta(sec: number, locale: Locale): string {
   return locale === "en" ? `~${h}h ${m}m left` : `${h} 小時 ${m} 分`;
 }
 
-export function BookReader({ locale, profileReady }: { locale: Locale; profileReady: boolean }) {
+export function BookReader({
+  locale,
+  profileReady,
+  profileId,
+}: {
+  locale: Locale;
+  profileReady: boolean;
+  profileId: string;
+}) {
   const t = (k: string) => COPY[locale][k] ?? k;
   const [books, setBooks] = useState<BookListItem[]>([]);
   const [view, setView] = useState<"list" | "reader">("list");
@@ -220,6 +228,7 @@ export function BookReader({ locale, profileReady }: { locale: Locale; profileRe
     try {
       const form = new FormData();
       form.set("file", file);
+      form.set("profileId", profileId);
       const res = await fetch("/api/books", { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) {

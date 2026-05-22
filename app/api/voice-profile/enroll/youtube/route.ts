@@ -28,6 +28,7 @@ interface YoutubeImportBody {
   durationSeconds?: number;
   transcriptOverride?: string;
   consent?: string;
+  profileId?: string;
 }
 
 function json(data: unknown, init?: ResponseInit) {
@@ -115,12 +116,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const voiceProfileId = typeof body.profileId === "string" && body.profileId.trim() ? body.profileId.trim() : undefined;
     const buf = await readFile(wavPath);
     const voice = new File([buf], "youtube.wav", { type: "audio/wav" });
     const enrollment = await enrollVoiceProfileClip(jobId, {
       voice,
       promptTranscript: transcript,
       sourceKind: "uploaded",
+      voiceProfileId,
     });
 
     // Provenance sidecar (additive — does not affect profile selection).
@@ -144,7 +147,7 @@ export async function POST(req: NextRequest) {
       "utf-8",
     );
 
-    const profile = await persistVoiceProfileManifest({ profileId: "local-default" });
+    const profile = await persistVoiceProfileManifest({ profileId: voiceProfileId ?? "local-default" });
     return reply({ ...enrollment, profile });
   } catch (err) {
     if (err instanceof YoutubeImportError) {

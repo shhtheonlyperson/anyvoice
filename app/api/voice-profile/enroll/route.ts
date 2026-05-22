@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   const jobId = nanoid(10);
   try {
     const enrollment = await enrollVoiceProfileClip(jobId, input);
-    const profile = await persistVoiceProfileManifest({ profileId: "local-default" });
+    const profile = await persistVoiceProfileManifest({ profileId: input.voiceProfileId ?? "local-default" });
     return withAnyVoiceUserCookie(json({ ...enrollment, profile }), session);
   } catch (error) {
     const message = error instanceof Error ? error.message : "profile enrollment failed";
