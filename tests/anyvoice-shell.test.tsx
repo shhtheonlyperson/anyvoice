@@ -48,11 +48,43 @@ const EMPTY_PROFILE = {
   hash: 0x1111,
 };
 
+const BOOK_META = {
+  id: "bk_1",
+  title: "細胞之歌",
+  segmentCount: 6,
+  chapters: [
+    { index: 0, title: "前言", kind: "extra", firstSegment: 0, segmentCount: 1 },
+    { index: 1, title: "第一章 起源", kind: "chapter", firstSegment: 1, segmentCount: 3 },
+    { index: 2, title: "第二章 分裂", kind: "chapter", firstSegment: 4, segmentCount: 2 },
+  ],
+};
+const BOOK_PROGRESS = {
+  status: "synthesizing",
+  statuses: ["done", "done", "done", "pending", "pending", "pending"],
+  done: 3,
+  errors: 0,
+  focusChapter: 1,
+  autoResume: true,
+};
+
 function stubFetch(profiles: unknown[] = [READY_PROFILE]) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/voice-profile/profiles")) return Response.json({ profiles });
     if (url.includes("/api/runs")) return Response.json({ items: [] });
+    // Book endpoints
+    if (/\/api\/books\/[^/]+\/control/.test(url)) return Response.json({ progress: BOOK_PROGRESS, eta: 120 });
+    if (/\/api\/books\/[^/]+$/.test(url))
+      return Response.json({
+        book: BOOK_META,
+        progress: BOOK_PROGRESS,
+        eta: 120,
+        segments: BOOK_META.chapters.flatMap((c) =>
+          Array.from({ length: c.segmentCount }, (_, k) => ({ index: c.firstSegment + k, text: `段落 ${c.firstSegment + k}` })),
+        ),
+      });
+    if (url.includes("/api/books"))
+      return Response.json({ books: [{ ...BOOK_META, progress: BOOK_PROGRESS }] });
     return Response.json({ status: "ready", audioUrl: "/result.wav" });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -155,6 +187,62 @@ describe("Build tab — adaptive state from real summary", () => {
     expect(container.textContent).toContain("開始錄音");
     // Empty-zone three options present.
     expect(container.querySelector(".empty-zone")).not.toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+});
+
+describe("Audiobook tab — re-skinned reader", () => {
+  it("renders the library grid + upload card from /api/books", async () => {
+    const { container, root } = await mount();
+    await act(async () => clickTab(container, "有聲書"));
+    await flush();
+    // Library grid present with the book card + cover + progress.
+    expect(container.querySelector(".book-grid")).not.toBeNull();
+    expect(container.querySelector(".book-card")).not.toBeNull();
+    expect(container.querySelector(".book-cover")).not.toBeNull();
+    expect(container.querySelector(".progress-bar")).not.toBeNull();
+    // Upload affordance.
+    expect(container.querySelector(".book-upload-card")).not.toBeNull();
+    expect(container.textContent).toContain("細胞之歌");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("opens the reader with chapter rail, queue card, sticky player and core controls", async () => {
+    const { container, root } = await mount();
+    await act(async () => clickTab(container, "有聲書"));
+    await flush();
+    // Open the book by clicking its cover.
+    const cover = container.querySelector(".book-cover") as HTMLButtonElement;
+    await act(async () => cover.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    // Chapter rail (left).
+    expect(container.querySelector(".reader-shell")).not.toBeNull();
+    expect(container.querySelectorAll(".chapter-item").length).toBe(3);
+    // Dark generation-queue card with per-chapter status driven by real progress.
+    expect(container.querySelector(".queue-card")).not.toBeNull();
+    expect(container.querySelectorAll(".queue-row").length).toBe(3);
+    expect(container.querySelector(".queue-row .ok-dot")).not.toBeNull(); // chapter 0/1 done
+    expect(container.querySelector(".queue-row .queued-dot")).not.toBeNull(); // last chapter pending
+
+    // Now-playing waveform (140-bar StaticWaveform).
+    expect(container.querySelector(".waveform-strip")).not.toBeNull();
+
+    // Sticky bottom player with play/pause control.
+    expect(container.querySelector(".player-bar")).not.toBeNull();
+    expect(container.querySelector(".player-bar .play-btn")).not.toBeNull();
+
+    // Speed controls (1/1.25/1.5/2×).
+    const speeds = Array.from(container.querySelectorAll(".speed-group .speed-btn")).map((b) => b.textContent);
+    expect(speeds).toEqual(["1×", "1.25×", "1.5×", "2×"]);
+
+    // No emoji glyphs in the player controls (SVG icons only).
+    const playerText = container.querySelector(".card-cream")?.textContent ?? "";
+    expect(playerText).not.toContain("▶");
+    expect(playerText).not.toContain("⏸");
+
     await act(async () => root.unmount());
     container.remove();
   });

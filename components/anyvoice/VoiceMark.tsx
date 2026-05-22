@@ -40,10 +40,13 @@ export function VoiceMark({
         {amps.map((amp, i) => {
           const a = (i / bars) * Math.PI * 2;
           const len = inner + (outer - inner) * amp;
-          const x1 = cx + Math.cos(a) * inner;
-          const y1 = cy + Math.sin(a) * inner;
-          const x2 = cx + Math.cos(a) * len;
-          const y2 = cy + Math.sin(a) * len;
+          // Round to fixed precision so server and client render byte-identical
+          // coords (raw float formatting differs between them → hydration warning).
+          const r = (n: number) => Number(n.toFixed(3));
+          const x1 = r(cx + Math.cos(a) * inner);
+          const y1 = r(cy + Math.sin(a) * inner);
+          const x2 = r(cx + Math.cos(a) * len);
+          const y2 = r(cy + Math.sin(a) * len);
           return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={c} strokeWidth={1.5} strokeLinecap="round" />;
         })}
       </g>

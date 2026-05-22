@@ -936,16 +936,439 @@
   }
 }
 
-/* The Build / Book tabs mount existing components; give them breathing room. */
+/* The Book tab mounts the re-skinned BookReader, which renders its own
+   .page-inner; the slot is a pass-through. The locked empty-zone still needs
+   breathing room, so pad only when the slot is not the reskinned reader. */
 .av-root .legacy-tab-slot {
-  padding: 40px 48px 96px;
+  display: contents;
+}
+.av-root .legacy-tab-slot > .empty-zone {
+  display: flex;
+  margin: 40px auto;
   max-width: 1100px;
-  margin: 0 auto;
+}
+
+/* =================== Audiobook: library =================== */
+.av-root .section-label {
+  font-size: 11px;
+  font-family: var(--font-body);
+  font-weight: 500;
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+.av-root .book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px;
+}
+.av-root .book-card {
+  background: var(--color-surface-card);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: background-color 120ms;
+  position: relative;
+  overflow: hidden;
+}
+.av-root .book-card:hover {
+  background: var(--color-surface-cream-strong);
+}
+.av-root .book-cover {
+  aspect-ratio: 3 / 4;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-surface-dark);
+  color: var(--color-on-dark);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+}
+.av-root .book-cover .title-zh {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: -0.2px;
+  text-wrap: balance;
+}
+.av-root .book-cover-mark {
+  width: 18px;
+  height: 18px;
+  opacity: 0.5;
+  align-self: flex-end;
+}
+.av-root .book-title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: -0.2px;
+  color: var(--color-ink);
+}
+.av-root .book-delete {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.av-root .progress-bar {
+  height: 4px;
+  width: 100%;
+  background: var(--color-hairline);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.av-root .progress-bar .fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 2px;
+}
+.av-root .progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted);
+}
+.av-root .book-upload-card {
+  border: 2px dashed var(--color-hairline);
+  border-radius: 14px;
+  background: transparent;
+  padding: 28px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 120ms, background-color 120ms;
+  min-height: 280px;
+}
+.av-root .book-upload-card:hover {
+  border-color: var(--color-primary);
+  background: rgba(204, 120, 92, 0.04);
+}
+.av-root .book-upload-card svg {
+  color: var(--color-muted);
+}
+.av-root .book-upload-card:hover svg {
+  color: var(--color-primary);
+}
+.av-root .book-upload-card .bu-title {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+.av-root .book-upload-card .bu-sub {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+/* =================== Audiobook: reader =================== */
+.av-root .reader-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 32px;
+  align-items: start;
 }
 @media (max-width: 900px) {
-  .av-root .legacy-tab-slot {
-    padding: 28px 20px 80px;
+  .av-root .reader-shell {
+    grid-template-columns: 1fr;
   }
+  .av-root .reader-chapters {
+    position: static !important;
+  }
+}
+.av-root .reader-chapters {
+  position: sticky;
+  top: 0;
+}
+.av-root .reader-chapters .ch-head {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  margin-bottom: 12px;
+}
+.av-root .chapter-item {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  width: 100%;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--color-body);
+  text-align: left;
+}
+.av-root .chapter-item:hover {
+  background: var(--color-surface-soft);
+}
+.av-root .chapter-item.active {
+  background: var(--color-surface-cream-strong);
+  color: var(--color-ink);
+}
+.av-root .chapter-item .ch-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted);
+}
+.av-root .chapter-item .ch-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.av-root .chapter-item .ch-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.av-root .chapter-item .ch-status.ready {
+  background: var(--color-success);
+}
+.av-root .chapter-item .ch-status.gen {
+  background: var(--color-warning);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.av-root .chapter-item .ch-status.queued {
+  background: var(--color-hairline);
+}
+.av-root .reader-body {
+  min-width: 0;
+}
+.av-root .book-hero {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 28px;
+}
+.av-root .book-hero .book-cover {
+  aspect-ratio: 3 / 4;
+}
+.av-root .book-hero h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: -0.6px;
+  color: var(--color-ink);
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+
+/* card-cream + badges (ported from handoff app.css) */
+.av-root .card-cream {
+  background: var(--color-surface-card);
+  border-radius: 16px;
+}
+.av-root .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink);
+  background: var(--color-surface-cream-strong);
+  border-radius: 999px;
+  padding: 5px 12px;
+}
+.av-root .badge--cream {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  color: var(--color-muted);
+}
+.av-root .badge--btn {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.av-root .badge--btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-ink);
+}
+
+/* Generation queue */
+.av-root .queue-card {
+  background: var(--color-surface-dark);
+  color: var(--color-on-dark);
+  border-radius: 14px;
+  padding: 20px;
+}
+.av-root .queue-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.av-root .player-eyebrow {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--color-on-dark-soft);
+}
+.av-root .queue-row {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.av-root .queue-row + .queue-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.av-root .queue-row .q-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-on-dark-soft);
+}
+.av-root .queue-row .q-title {
+  color: var(--color-on-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.av-root .queue-row .q-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-on-dark-soft);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.av-root .queue-row .q-status .gen-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.av-root .queue-row .q-status .ok-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-success);
+}
+.av-root .queue-row .q-status .queued-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Light-surface speed group (now-playing card sits on cream) */
+.av-root .speed-group--light {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+}
+.av-root .speed-group--light .speed-btn {
+  color: var(--color-muted);
+}
+.av-root .speed-group--light .speed-btn:hover:not(.active) {
+  color: var(--color-ink);
+}
+.av-root .speed-group--light .speed-btn.active {
+  color: var(--color-on-primary);
+}
+
+/* Sticky bottom player */
+.av-root .player-bar {
+  position: sticky;
+  bottom: 24px;
+  background: var(--color-surface-dark);
+  color: var(--color-on-dark);
+  border-radius: 12px;
+  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
+  align-items: center;
+  box-shadow: var(--shadow-elevated);
+  margin-top: 32px;
+  z-index: 5;
+}
+.av-root .player-bar .pb-progress {
+  flex: 1;
+  min-width: 120px;
+}
+.av-root .player-bar .pb-title {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--color-on-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.av-root .player-bar .pb-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-on-dark-soft);
+  white-space: nowrap;
+}
+.av-root .player-bar .play-btn {
+  width: 36px;
+  height: 36px;
+}
+
+/* Utility additions used by the reskinned reader */
+.av-root .page-title.md {
+  font-size: 40px;
+  letter-spacing: -1px;
+}
+.av-root .gap-16 {
+  gap: 16px;
+}
+.av-root .between {
+  justify-content: space-between;
+}
+.av-root .mt-8 {
+  margin-top: 8px;
+}
+.av-root .mt-16 {
+  margin-top: 16px;
+}
+.av-root .serif {
+  font-family: var(--font-display);
+  color: var(--color-ink);
+}
+.av-root .muted {
+  color: var(--color-muted);
+}
+.av-root .small {
+  font-size: 13px;
+}
+.av-root .link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.av-root .link:hover {
+  text-decoration: underline;
 }
 
 /* =================== P1: Build states / Create modal =================== */
@@ -1134,3 +1557,155 @@
 .first-run-card .cv-option-time { font-size: 11px; font-family: var(--font-mono); color: var(--color-primary); margin-top: 4px; }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes av-ring { 0% { transform: scale(0.95); opacity: 0.7; } 100% { transform: scale(1.2); opacity: 0; } }
+
+/* ---------------- In-browser 24-line record-and-grade stage ------------- */
+
+/* Two-column on wide screens: recorder + line list | coverage sidecar. */
+.av-root .build-rec-grid {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 32px;
+  align-items: start;
+  margin-top: 32px;
+}
+@media (max-width: 900px) {
+  .av-root .build-rec-grid { grid-template-columns: 1fr; }
+}
+
+.av-root .rec-stage {
+  background: var(--color-surface-dark);
+  color: var(--color-on-dark);
+  border-radius: 16px;
+  padding: 32px;
+  position: relative;
+  overflow: hidden;
+}
+.av-root .rec-stage .eyebrow { color: var(--color-primary); }
+.av-root .rec-line {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.3;
+  letter-spacing: -0.4px;
+  color: var(--color-on-dark);
+  margin-bottom: 24px;
+  text-wrap: pretty;
+}
+.av-root .rec-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.av-root .rec-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+  transition: background-color 150ms;
+}
+.av-root .rec-btn:hover { background: var(--color-primary-active); }
+.av-root .rec-btn:disabled { opacity: 0.5; cursor: default; }
+.av-root .rec-btn.recording { background: #fff; color: var(--color-primary); }
+.av-root .rec-btn.recording::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 2px solid var(--color-primary);
+  opacity: 0.4;
+  animation: av-ring 1.6s ease-out infinite;
+}
+.av-root .rec-timer {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--color-on-dark-soft);
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Space" key chip */
+.av-root .kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--color-on-dark-soft);
+}
+
+/* Pronunciation cue chip (on the dark stage) */
+.av-root .rec-stage .chip {
+  font-family: var(--font-body);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--color-on-dark);
+}
+
+/* Lines list */
+.av-root .lines-list { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
+.av-root .line-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--color-hairline-soft);
+  cursor: pointer;
+}
+.av-root .line-row:hover { background: var(--color-surface-soft); }
+.av-root .line-row.active { background: var(--color-surface-soft); }
+.av-root .line-num { font-family: var(--font-mono); font-size: 12px; color: var(--color-muted); }
+.av-root .line-status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.av-root .line-status-dot.pass { background: var(--color-success); }
+.av-root .line-status-dot.retry { background: var(--color-warning); }
+.av-root .line-status-dot.fail { background: var(--color-error); }
+.av-root .line-status-dot.todo { background: var(--color-hairline); }
+.av-root .line-status-dot.recording { background: var(--color-primary); animation: pulse 1.4s ease-in-out infinite; }
+.av-root .line-text {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--color-body-strong);
+}
+.av-root .line-row.active .line-text { color: var(--color-ink); font-weight: 500; }
+.av-root .line-meta { font-family: var(--font-mono); font-size: 11px; color: var(--color-muted); white-space: nowrap; }
+.av-root .line-actions { display: flex; gap: 6px; align-items: center; }
+
+/* Coverage sidecar (honest approximation of the phoneme grid) */
+.av-root .coverage-sidecar { position: sticky; top: 24px; }
+.av-root .coverage-grid { display: flex; flex-direction: column; gap: 6px; }
+.av-root .coverage-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.av-root .coverage-cell.covered { background: rgba(93, 184, 166, 0.32); color: #fff; }
+.av-root .coverage-cell.recent { box-shadow: 0 0 0 2px var(--color-primary); }
+.av-root .coverage-cell-count { font-family: var(--font-mono); font-size: 12px; opacity: 0.85; }

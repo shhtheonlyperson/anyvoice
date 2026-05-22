@@ -204,6 +204,18 @@ export const IcTrash = makeIcon(
   </>,
 );
 export const IcChevronLeft = makeIcon(<polyline points="15 18 9 12 15 6" />);
+export const IcSkipBack = makeIcon(
+  <>
+    <polygon points="19 20 9 12 19 4 19 20" fill="currentColor" />
+    <line x1="5" y1="19" x2="5" y2="5" />
+  </>,
+);
+export const IcSkipForward = makeIcon(
+  <>
+    <polygon points="5 4 15 12 5 20 5 4" fill="currentColor" />
+    <line x1="19" y1="5" x2="19" y2="19" />
+  </>,
+);
 
 export const SpikeIcon = ({ size = 16, ...rest }: IconProps) => (
   <svg
