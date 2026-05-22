@@ -28,8 +28,11 @@ beforeAll(() => {
 import Home from "@/app/page";
 
 describe("app/page", () => {
-  it("renders the home page wrapping the studio", () => {
+  it("renders the home page wrapping the workspace shell", () => {
     const html = renderToString(React.createElement(Home));
     expect(html).toContain("AnyVoice");
+    // Workspace chrome present (rail + topbar).
+    expect(html).toContain("workspace");
+    expect(html).toContain("topbar");
   });
 });

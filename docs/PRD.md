@@ -1,130 +1,132 @@
-# AnyVoice PRD — First-Principles Revision
+# AnyVoice PRD — Handoff-Grounded Revision
 
-> Revision date 2026-05-21. This supersedes the original alpha PRD (archived below as "Legacy v1") and reframes the product around the single irreducible job. It is a **refactor of the working app**, not a rewrite — every shippable change protects the existing VoxCPM2 worker, profile gate, audiobook pipeline, and safety contract.
+> Revision date 2026-05-22. **This supersedes the prior first-principles PRD** (archived intent below as "Legacy intent"). The high-fidelity design handoff at `.handoff/design_handoff_anyvoice/` is now the **design source of truth**. This PRD describes the product the handoff specifies, maps each surface to the existing backend, and flags every gap between design and backend so engineering can scope it.
+>
+> Guiding constraint: this is a **refactor of the working app**, not a rewrite. The VoxCPM2 worker, the two-status profile model (`usable` / `studioGrade`), the audiobook pipeline, the consent gates, and run history are the working spine and must not be broken by the UI port.
 
 ---
 
 ## 1. Vision
 
-AnyVoice turns *your* voice into a keyboard. Record yourself once (or hand it a clip), then anything you type comes back spoken in your voice — a line, a script, or a whole book. The promise is **type → hear yourself**, delivered in a warm, editorial, single-surface tool that never feels like a research console. The model quality (hi-fi VoxCPM2, eval gates, per-speaker LoRA) is real and hard-won, but it lives *behind* the product, not in front of the user.
+AnyVoice turns *your* voice into a keyboard. Build a voice once (record 24 guided lines, paste a YouTube URL, or upload a clip), then anything you type comes back spoken in that voice — a line, a script, or a whole book. The promise is **type → hear yourself**, delivered in a warm, editorial, single-surface workspace that never feels like a research console. The hard-won model quality lives *behind* the product, not in front of the user.
+
+Positioning: a **playground for personal & research use**. Voices are device-local. YouTube import is allowed only with an explicit playground-use acknowledgement.
 
 ## 2. Target user & top jobs-to-be-done
 
-**Primary user:** a zh-Hant creator (podcaster, narrator, indie author, finance/news explainer) who wants narration in a specific voice — usually their own, sometimes a reference voice they have rights to — without a studio session every time.
+**Primary user:** a zh-Hant creator (podcaster, narrator, indie author, finance/news explainer) who wants narration in a specific voice — usually their own, sometimes a reference voice they hold rights to — without a studio session every time.
 
-Top 3 JTBD, in priority order:
+Top JTBD in priority order:
 
-1. **"Say this in my voice."** Type a line, hear it spoken in my voice, download/share it. (The 80% daily job.)
-2. **"Give my voice to a whole book."** Drop an EPUB/PDF, get a back-pressure-free audiobook I can start listening to from sentence one.
-3. **"Keep more than one voice."** Switch between "my voice", a co-host's voice, a reference YouTuber's voice — each named, each independently built.
+1. **"Say this in my voice."** Type a line, hear it in my voice, download/share. (The 80% daily job — the Generate tab.)
+2. **"Give my voice to a whole book."** Drop an EPUB/PDF, get a back-pressure-free audiobook playable from segment one. (The Audiobook tab.)
+3. **"Build / keep more than one voice."** Switch between "my voice", a co-host, a reference YouTuber — each named, each with its own fingerprint and build state. (The rail + Build tab.)
 
-## 3. First-principles rationale — keep / cut / merge
+## 3. Information architecture (per handoff README)
 
-The irreducible loop is **voice in → text in → audio out**. Everything else is scaffolding the user should feel as little as possible.
+**Decision: a persistent workspace shell — left rail (280px) + topbar (60px) — with three topbar tabs.** This replaces the prior "two surfaces + global picker" sketch and the current single-page `VoiceCloneStudio`.
 
-| Decision | What | Why |
+```
+┌─ Workspace shell ───────────────────────────────────────────────┐
+│  Left rail (280px)         │   Top bar (60px)                    │
+│   • Brand (spike + wordmark)│    Tabs: Build / Generate / Book   │
+│   • Voices section + (+)    │    Lang toggle · Theme · Help      │
+│     – VoiceMark fingerprint │                                    │
+│     – status dot + label    │   Page area (scroll)               │
+│     – source icon (YT/upload)│                                   │
+│   • Library section         │                                    │
+│     (Generations / Audiobooks / Datasets)                        │
+│   • User footer             │                                    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- The **active voice in the rail drives the Build tab**. In Generate and Audiobook the user picks a voice via a pill picker; the active rail voice is the default.
+- **Tabs:** `建立聲音 / Build voice`, `生成 / Generate`, `有聲書 / Audiobook`.
+- **Defaults:** locale **zh-Hant**, theme follows system preference (light/dark both shipped). Language is a topbar toggle (中 / EN); all visible strings flow through the i18n keyset.
+
+## 4. Screens
+
+### 4.1 Build voice — adaptive, five sub-states
+
+Single page; `activeVoice.status` selects one of five sub-states. Header is always present: eyebrow `聲音檔案 / voice profile`, Fraunces H1 (title varies by state), lede (≤560px), and right-side Rename / Export / Delete ghost buttons (hidden in `importing`).
+
+| State | Trigger | Visual |
 |---|---|---|
-| **KEEP** | VoxCPM2 hot-worker hi-fi clone path, streaming progress, audiobook background synthesis, multi-profile store, zh-Hant strict-script safety, consent gates, run history. | These are the working spine and the differentiators. Do not touch the inference or safety contracts. |
-| **KEEP, demote** | The 5/10-clip enrollment kit + strict eval/LoRA gates. | Necessary for a *durable* voice and the 10x quality claim — but it is the path to a **premium** voice, not the cost of entry. Today it is the only door. |
-| **CUT from the primary surface** | The "Advanced · Developer" CLI card, the strict-vs-lenient framing, raw analyzer jargon ("VAD", "SNR", "low_snr") surfaced as user copy. | Incidental complexity. Engineers use the CLI; users never should. Keep the panel, move it behind a single "Developer" disclosure in settings. |
-| **MERGE** | "Build my voice" + the voice switcher into one **Voices** surface. Upload-clone, YouTube import, and guided recording become three *ways to feed the same voice*, not separate mental models. | Today "upload + transcript = instant clone" is described in Generate copy but the Generate button is hard-gated on the multi-clip profile. That is the single biggest UX leak: the app promises instant and delivers a 5-step gate. |
-| **NEW (small)** | A **Quick clone** tier: one clean clip + its transcript → immediately usable voice (zero-shot, the path the README already supports). Generate unlocks here. The 5/10-clip kit becomes an optional **"Make it studio-grade"** upgrade on the same voice. | Restores the 60-second delight without weakening the durable-voice gate for users who want it. The strict gate still governs LoRA/quality-gate/audiobook-at-scale claims. |
+| `empty` | status `empty`, 0 lines | Cream status card, "Start recording" CTA, empty-zone with 3 options |
+| `importing` | new voice from YT/upload | Dark status card, live waveform, 3-step progress (capture → transcribe → build signature) |
+| `recording` | local `mode === recording` | Dark recording stage (live waveform, 64px record button, timer, coach copy) + phoneme-coverage sidecar (40 IPA cells) |
+| `reviewing` | 1–23 of 24 lines done | Cream status card with 64px ink donut + Continue/Pause CTAs |
+| `ready` | all 24 lines done | Coral hero card, white donut + check, Listen back / Start generating |
 
-### The core leak being fixed
-Generation is gated on `profileReady` (multi-clip strict profile). But the product's own headline copy says *"upload a clean recording and type exactly what it says — clones your voice instantly."* The user is promised instant and hits a wall. **P0 is to make that promise true:** a single consented clip + transcript yields a usable voice and unlocks Generate, with a clear, non-blocking "upgrade to studio-grade" path.
+Below the status panel (in `recording` / `reviewing` / `ready`): the **24-line list** — number + status dot (`pass`/`retry`/`fail`/`todo`/`recording`), line text, a 28-bar micro-waveform whose color matches quality, duration, Play and Re-record buttons. **Status dot color, waveform color and quality verdict are one source of truth** (`speechQuality()` in the handoff; the model's real assessment in production).
 
-## 4. Information architecture
+### 4.2 Generate
 
-**Decision: two surfaces, not three. Plus a global voice picker.**
+- **Composer:** cream wrapper around a borderless textarea; toolbar with the voice-picker pill (with VoiceMark), three draggable dials (**Pace** slow/natural/brisk · **Warmth** cool/even/warm · **Breaths** 0.00–0.80s), char/seconds counter, primary Generate button.
+- **Result player (dark):** eyebrow "Result" + voice fingerprint, time, full-width 120-bar speech waveform with played/cursor states, round play button, speed group (1× / 1.25× / 1.5× / 2×), Volume / Share / WAV / Regenerate.
+- **Recent list** with subtabs Recent / Favorites / Shared; rows show 2-line text clamp, fingerprint + name · timestamp · duration, mini-wave, share/copy/more.
 
-```
-┌─ AnyVoice ─────────────── [Voice ▾]  EN/中  ☾ ─┐
-│                                                │
-│   STUDIO            (Generate + Audiobook,     │
-│                      one continuous workspace)  │
-│   VOICES            (build / feed / manage      │
-│                      every voice profile)       │
-└────────────────────────────────────────────────┘
-```
+### 4.3 Audiobook
 
-- **Global voice picker** lives in the top bar, always visible, available on every screen (today it's buried inside Build). Switching voice is the most frequent multi-profile action and must be one tap from anywhere.
-- **Studio** = type-to-speak *and* book-to-audiobook in one place. Audiobook is not a separate top-level mode; it is "speak a whole book" — a second input affordance (text box vs. file drop) feeding the same engine and player. This collapses today's 3 nav items to 2.
-- **Voices** = everything about *making* a voice exist: quick clone (clip + transcript), guided recording kit, YouTube import, rename/delete, and the optional studio-grade upgrade with its readiness checklist.
+- **Library:** wide 60/40 split — 3-column book grid (tall dark cover with Chinese title in Fraunces + spike accent, title/author, coral progress bar + mono segment counter, trailing `+` upload card) and a "How it works" cream card (01/02/03 steps).
+- **Reader:** `240px chapter rail | reader body`. Rail = chapter list with status dots (`ready`/`gen`/`queued`) + a dark **generation-queue card** with live percentages. Body = book hero, **Now playing** card (cream, with a dark inset 140-bar waveform + Prev/Play/Next + speed), and a line-numbered transcript with the current segment highlighted.
+- **Sticky player bar:** dark, `position: sticky; bottom: 24px`, with play / chapter·book·voice·time / progress bar.
 
-Why not keep 3 screens: "Generate" and "Audiobook" are the same job at two lengths. Splitting them doubles the nav cost and hides the audiobook behind a gate the user already passed. Why not collapse to 1: building a voice is a genuinely different mode (mic, scripts, consent) and deserves its own room.
+### 4.4 Create voice modal
 
-## 5. Core flows
+`+` in the rail opens a modal. Step 1 = 3 chooser cards (Record ~12 min · YouTube ~15 s · Upload ~30 s) + device-local disclaimer. Step 2 branches:
+- **Record:** name + language chips (繁中/EN/日) + guide card → Start recording (creates `empty` voice, routes to Build).
+- **YouTube:** amber playground-only warning, URL input, auto-parsed preview card (channel/title/timestamp), name (auto-fills channel), **required** acknowledgement checkbox → Build voice clone (creates `importing` voice).
+- **Upload:** name + drag-drop area → Continue (creates `importing` voice).
 
-### Flow A — Quick clone → first generation (the 60-second flow, P0)
-1. First run lands on **Voices**, empty state: "Make your first voice." Two equal cards: **Record a clip** / **Upload a clip**. (YouTube import is a third, secondary option.)
-2. User uploads or records one clean clip → types the verbatim transcript → ticks consent. *State: analyzing → ok / re-record (one honest reason).*
-3. Voice becomes **Usable** (not yet Studio-grade). Toast: "Sunny is ready. Try saying something →" routes to **Studio**.
-4. Studio: type a line → **Generate** (streaming progress: queued → preparing → synthesizing → ready) → autoplay + speed + download. *State: idle / busy(streamed phases) / done / needs_worker / error.*
-5. Persistent, dismissible nudge on the voice: "Add 9 more lines to make this studio-grade." (optional, never blocking).
+### 4.5 First-run modal
 
-### Flow B — Studio-grade upgrade (today's strict path, demoted to opt-in)
-1. From a Usable voice, user taps **Make it studio-grade**.
-2. Guided 5-line (standard) or 10-line (extended) kit, one card at a time: prompt + pronunciation cues + record button with the 6–20s live meter (existing, good). *State per line: pending / recording(meter) / processing / passed / re-record.*
-3. Progress ticks fill; on completion the voice flips to **Studio-grade ✓** and unlocks high-confidence audiobook-at-scale + (developer) LoRA/quality-gate paths.
-4. All eval/LoRA/quality-gate work stays in the CLI, surfaced read-only behind a single **Developer** disclosure.
+Translucent backdrop, 540px card, "Three minutes from here to a voice that's yours", 3 numbered steps, Later / Start.
 
-### Flow C — Audiobook (keep pipeline, re-home under Studio)
-1. In **Studio**, switch input from "a line" to "a book" (tab/segmented control). Drop EPUB/PDF. *Requires at least a Usable voice; recommends Studio-grade for length.*
-2. Extract → segment → background synth starts; reader plays from sentence one, waits on pending, skips errored. Chapter list, ETA, auto-resume, pause/resume — all existing BookReader behavior, unchanged.
+## 5. Backend mapping & gaps
 
-### Flow D — Multi-profile
-1. Top-bar **Voice ▾** lists every voice with status dot (Usable / Studio-grade). Switch is instant and global.
-2. "+ New voice" opens Voices in create mode. Rename/delete live in Voices, not in a row of ghost buttons.
+Legend: **Real** = backend supports it today · **Adapt** = backend exists, shape/contract differs · **Gap** = design-only, needs new backend or graceful fake.
 
-## 6. UX principles
+| Design surface | Backend today | Status | Notes |
+|---|---|---|---|
+| Rail voice list (name, status, source, fingerprint) | `GET /api/voice-profile/profiles` → `{id, displayName, status, usable, studioGrade, clipCount}`; per-voice `GET /api/voice-profile?profileId=` | **Adapt** | List has `usable`/`studioGrade`, **not** the design's 4-state `empty/importing/building/ready` enum, nor `source`, `hash`, `lang`, `lineCount`. Map: `studioGrade→ready`, `usable&&!studioGrade→building`, `clipCount===0→empty`. `importing` is a transient client/job state. |
+| VoiceMark fingerprint (16-bit `hash`) | none | **Gap** | Persist a stable `hash` per profile in `meta.json` (e.g. hash of `id`). Backend-cheap; do it for real so the mark survives serialization. |
+| Build — recording 24 guided lines | recording-kit: `recording-kit` (cue sheet), `recording-kit/preflight`, `…/check`, `…/normalize`, `…/microphone-smoke-test`, `…/cue-sheet`; prompt sets `standard` / `extended` | **Adapt** | Kit is **CLI/file-oriented** (records to local files via a Python script, returns cue-sheet HTML + shell commands). It is **not** a browser recorder of 24 lines with per-line dots. The "24 guided lines" pack is a **design construct**; backend has prompt sets but not a per-line in-browser record/grade loop. Largest Build-tab gap. |
+| Build — enroll a recorded clip | `POST /api/voice-profile/enroll` (multipart) | **Real** | Enroll persists a clip+transcript into the profile and recomputes status. |
+| Build — line quality dots (`pass/retry/fail`) | `recording-kit/check`, `reanalyze`, `verify`, `transcript-validation`, clip `quality.grade` (A/B…) | **Adapt** | Backend grades whole clips (A/B grade, SNR, VAD, coverage), not 24 named lines. Map grade→dot, or fake per-line until a per-line record loop exists. |
+| Build — phoneme coverage sidecar (40 IPA cells) | `text-prep` coverage features + pronunciation presets (`detectVoiceProfileCoverageFeatures`) | **Adapt** | Backend tracks *coverage features* and *pronunciation presets*, not IPA-phoneme counts. Render the sidecar from coverage features, or keep the deterministic `buildCoverage()` fake for v1. |
+| Build — importing (YT/upload) 3-step progress | `POST /api/voice-profile/enroll/youtube` (consent-gated), `POST /api/voice-profile/import` | **Adapt** | Endpoints exist and YouTube is consent-gated to match the design's acknowledgement. The handoff's fixed **4.2 s auto-promote** is a mock; wire real job progress (poll/stream) for the 3 steps. |
+| Build — Rename / Export / Delete | `PATCH`/`DELETE /api/voice-profile/profiles/[id]` (rename via displayName, delete) | **Adapt / Gap** | Rename + delete are real. **Export** (download the voice profile/clips) has no endpoint → Gap. |
+| Generate — composer + Generate | `POST /api/clone` (+ `…/stream`) multipart: `voice`, `targetText`, `promptTranscript`, `quality`, `consent`, `sourceKind`, `profileReference` | **Adapt** | Real synthesis with streaming progress. Today it takes a profile reference + transcript, **not** a simple `{profileId, text}`. UI resolves the active voice → profile reference (the server already does clip selection via `selectVoiceProfileClipForTarget`). |
+| Generate — Pace / Warmth / Breaths dials | `quality` preset only (`speed`/`balanced`/`quality`) | **Gap** | No pace/warmth/breath params on the worker. Recommend: ship the dials visually, persist intent, treat as **no-op with honest tooltip** until the worker exposes controls (or map Pace→a real speed param if/when added). |
+| Generate — Recent / Favorites / Shared | `GET /api/runs`, `GET /api/runs/[jobId]/audio` | **Adapt** | Run history backs "Recent". **Favorites** and **Shared** have no backing → Gap (local-only flag / share to defer). |
+| Generate — WAV download / Share | run audio endpoint exists | **Adapt** | WAV = real download of run audio. Share link = Gap (defer to copy-of-local-URL). |
+| Audiobook — library + upload | `GET /api/books`, `POST /api/books` (multipart EPUB/PDF) | **Real** | Returns book meta with chapters + segmentation. |
+| Audiobook — reader, segments, queue, progress | `GET /api/books/[id]` (meta+progress+segments+eta), `…/segments/[index]`, `…/control` (play/pause/resume synthesis) | **Real** | Background synthesis, ETA, per-segment audio, chapter statuses all real. **Reuse the existing `BookReader.tsx` inside the Book tab** rather than rebuilding. |
+| Create voice modal → create | `POST /api/voice-profile/profiles` `{displayName}` | **Adapt** | Creates an empty named profile. Record path → create then route to Build. YT/Upload path → create then call enroll/youtube or import. Modal's `lang`/`source` fields are ignored by the API → store client-side or extend `meta.json`. |
+| Sticky player / Now-playing waveform (140 bars) | per-segment audio | **Adapt** | Waveform is currently math; plumb real RMS later, keep speech-shaped fallback for loading. |
 
-1. **Type → hear yourself.** Optimize ruthlessly for the loop; everything else is a disclosure.
-2. **Usable before perfect.** One clip unlocks the product; quality is an upgrade, never a toll gate.
-3. **Honest single-reason states.** Every rejection says exactly one thing the user can act on ("Only 4.2s — read for at least 6s"). Never surface raw analyzer codes.
-4. **The model is invisible.** No CFG/timesteps/LoRA/eval vocabulary on the primary surface. Developer truth lives behind one disclosure.
-5. **Editorial calm.** Cream canvas, serif headlines, coral used scarcely. Dark surfaces only for runtime/output truth (the player, progress). No emoji icons, no gradients.
-6. **zh-Hant first, English a tap away.** System theme by default.
-7. **Consent is close to the action and unambiguous**, on every voice-ingest path.
+### Top gaps (engineering must scope)
+1. **24-line in-browser record-and-grade loop** — the backbone of the Build tab — does not exist; today's kit is CLI/file-based. Biggest gap.
+2. **Pace / Warmth / Breaths** generation controls — no worker params.
+3. **Per-voice `hash` fingerprint** — must be persisted for VoiceMark.
+4. **Status enum mismatch** — backend `usable`/`studioGrade` vs design `empty/importing/building/ready`.
+5. **Export voice, Favorites, Shared, share links** — no backing.
+6. **Phoneme/IPA coverage** — backend tracks coverage *features*, not IPA cells.
 
-## 7. Success signals
+## 6. Success signals
+- Time-to-first-generation for a new user (record/import → first heard line) under a few minutes.
+- A user keeps ≥2 named voices and switches between them.
+- A book reaches "playable from segment one" without waiting on full synthesis.
+- zh-Hant users never see raw analyzer jargon (VAD/SNR/grade) in primary UI.
 
-- **Time-to-first-audio (TTFA):** < 90s from first load to first played clip via Quick clone. (Today: effectively unbounded — blocked by the 5-clip gate.)
-- **Quick-clone → generation conversion:** % of new voices that produce ≥1 generation within the session.
-- **Upgrade rate:** % of Usable voices that voluntarily become Studio-grade (signals the upgrade framing works without forcing it).
-- **Audiobook start latency:** time from upload to first playable segment.
-- **Re-record loops per enrolled line:** lower = clearer rejection copy.
-
-## 8. Non-goals
-
-- No impersonation workflows, no hidden-consent bypass, no public gallery of cloned voices. (Unchanged.)
-- No serverless-only VoxCPM2 promise; inference stays on the GPU/Mac Studio worker.
-- No surfacing of LoRA/quality-gate/backend-shootout tooling as user-facing features — they remain CLI + a read-only Developer disclosure.
-- No auto-transcription as the source of truth for enrollment transcripts (the strict-transcript contract stays; YouTube caption capture is the only assisted path and is correctable).
-- No removal of the strict zh-Hant script safety gate.
-
-## 9. Prioritized change list
-
-### P0 — make the promise true (highest leverage, smallest blast radius)
-- **P0.1 Quick-clone unlock.** Treat a single consented clip + verbatim transcript as a *Usable* voice that unlocks Generate, exactly as the headline copy already promises. The strict multi-clip profile becomes the *Studio-grade* tier, not the entry gate. (Server already supports zero-shot from one clip; this is primarily a gating + state change.)
-- **P0.2 Two-status model.** Replace binary `profileReady` with `Usable` / `Studio-grade`. Generate + single-line Studio require Usable; audiobook-at-length + LoRA require Studio-grade.
-- **P0.3 Global voice picker.** Move the profile switcher into the top bar, visible on every screen.
-- **P0.4 Hide developer surface.** Move the "Advanced · Developer" CLI card behind a single collapsed **Developer** disclosure in Voices; never on Studio.
-
-### P1 — IA consolidation
-- **P1.1 Merge to two surfaces:** **Studio** (Generate + Audiobook as one workspace with a line/book input toggle) and **Voices** (build/feed/manage). Drop the third top-level nav item.
-- **P1.2 First-run empty state** on Voices: "Make your first voice" with Record / Upload as equal cards, YouTube secondary.
-- **P1.3 Upgrade nudge** on Usable voices: non-blocking "Make it studio-grade (+9 lines)".
-- **P1.4 Unify ingest copy.** One mental model: recording, upload, YouTube are three ways to *feed a voice*, shown together in Voices.
-
-### P2 — polish & trust
-- **P2.1 Single-reason rejection copy** audit across enroll/upload/YouTube; kill raw analyzer codes in UI.
-- **P2.2 Voice status dots** (Usable / Studio-grade) in the picker and Voices list.
-- **P2.3 Progress phase labels** humanized in zh-Hant (queued/preparing/synthesizing/ready) with an honest ETA on long generations and audiobooks.
-- **P2.4 Consent affordance** consistency across all three ingest paths (same component, same placement).
-- **P2.5 Studio-grade benefits** copy: state plainly what the upgrade buys (stability, long-form, downloadable studio quality) so the opt-in is informed.
+## 7. Non-goals
+- Not a commercial impersonation tool. Playground / personal / research only.
+- No account system or cloud voice storage in scope — voices stay device-local.
+- No public sharing marketplace (Shared subtab is local-only for now).
+- Do not surface developer/CLI affordances on the primary surface.
 
 ---
 
-## Appendix — Legacy v1 (archived)
-
-The original alpha PRD framed AnyVoice as a Vercel-hosted UI + separate GPU VoxCPM2 worker with a single record/upload → target-text → consent → playback flow, reference-only and "ultimate" (prompt+reference+transcript) modes, `ANYVOICE_STUB` worker-missing state, and a hard consent checkbox. That contract is intact and is the foundation this revision builds on; see README.md for the full runtime/worker/eval surface.
+## Legacy intent (archived)
+The prior revision proposed a two-surface IA (Studio + Voices) with a global voice picker, and a "Quick clone" tier to fix the instant-clone leak. The handoff instead specifies a three-tab shell (Build / Generate / Book) with a voice rail. The underlying fix still holds: a single consented clip + transcript yields a `usable` voice that unlocks Generate, with studio-grade as a non-blocking upgrade. That `usable` vs `studioGrade` model is preserved and mapped to the design's `building` vs `ready` states.

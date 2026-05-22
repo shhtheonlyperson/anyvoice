@@ -23,6 +23,12 @@ export interface VoiceProfileMeta {
   displayName: string;
   userId?: string;
   createdAt: string;
+  /**
+   * Stable 16-bit fingerprint seed for the generative VoiceMark. Persisted on
+   * create; deterministically derived from the id for legacy profiles that
+   * predate this field so the mark survives reloads either way.
+   */
+  hash: number;
 }
 
 export interface VoiceProfileListItem extends VoiceProfileMeta {
@@ -32,6 +38,20 @@ export interface VoiceProfileListItem extends VoiceProfileMeta {
   /** Meets the full strict curated bar. */
   studioGrade: boolean;
   clipCount: number;
+}
+
+/**
+ * Deterministic 16-bit fingerprint seed derived from a profile id. Stable across
+ * processes/reloads so the VoiceMark for a legacy profile (no persisted hash)
+ * always renders identically. FNV-1a folded to 16 bits.
+ */
+export function voiceProfileHashFromId(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 16) ^ h) & 0xffff || 0x4a7d;
 }
 
 /** Default display name for the legacy/default profile (zh-Hant default app locale). */
@@ -60,6 +80,10 @@ export async function loadVoiceProfileMeta(
       displayName: parsed.displayName,
       userId: typeof parsed.userId === "string" ? parsed.userId : undefined,
       createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : new Date(0).toISOString(),
+      hash:
+        typeof parsed.hash === "number" && Number.isFinite(parsed.hash)
+          ? parsed.hash & 0xffff
+          : voiceProfileHashFromId(parsed.id),
     };
   } catch {
     return null;
@@ -136,6 +160,7 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
       displayName: meta?.displayName ?? (id === DEFAULT_VOICE_PROFILE_ID ? DEFAULT_DISPLAY_NAME : id),
       userId: meta?.userId,
       createdAt: meta?.createdAt ?? new Date(0).toISOString(),
+      hash: meta?.hash ?? voiceProfileHashFromId(id),
       status: manifest?.status ?? "needs_enrollment",
       usable: manifest?.usable ?? false,
       studioGrade: manifest?.studioGrade ?? false,
@@ -149,6 +174,7 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
       id: DEFAULT_VOICE_PROFILE_ID,
       displayName: DEFAULT_DISPLAY_NAME,
       createdAt: new Date(0).toISOString(),
+      hash: voiceProfileHashFromId(DEFAULT_VOICE_PROFILE_ID),
       status: "needs_enrollment",
       usable: false,
       studioGrade: false,
@@ -171,7 +197,10 @@ export async function createVoiceProfile(
 ): Promise<VoiceProfileMeta> {
   const name = displayName.trim() || DEFAULT_DISPLAY_NAME;
   const id = `vp_${nanoid(8)}`;
-  return writeVoiceProfileMeta({ id, displayName: name, userId, createdAt: new Date().toISOString() }, env);
+  return writeVoiceProfileMeta(
+    { id, displayName: name, userId, createdAt: new Date().toISOString(), hash: voiceProfileHashFromId(id) },
+    env,
+  );
 }
 
 export async function renameVoiceProfile(
@@ -189,6 +218,7 @@ export async function renameVoiceProfile(
       displayName: name,
       userId: existing?.userId ?? userId,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
+      hash: existing?.hash ?? voiceProfileHashFromId(safeId),
     },
     env,
   );

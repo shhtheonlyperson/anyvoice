@@ -14,3 +14,6 @@ generated/
 __pycache__/
 *.pyc
 my-voice-*.wav
+
+# unzipped design handoff reference (source kept as handoff.zip)
+.handoff/

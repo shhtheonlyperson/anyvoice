@@ -3,7 +3,8 @@ import nextTs from "eslint-config-next/typescript";
 
 const config = [
   // design/ holds hi-fi mockups and throwaway Playwright scratch scripts, not app code.
-  { ignores: ["design/**"] },
+  // .handoff/ holds the read-only design handoff (in-browser Babel JSX), not app code.
+  { ignores: ["design/**", ".handoff/**"] },
   ...nextVitals,
   ...nextTs,
 ];

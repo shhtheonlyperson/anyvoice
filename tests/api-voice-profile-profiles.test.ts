@@ -36,8 +36,8 @@ beforeEach(() => vi.clearAllMocks());
 describe("/api/voice-profile/profiles", () => {
   it("GET lists profiles and sets the user cookie", async () => {
     listMock.mockResolvedValue([
-      { id: "local-default", displayName: "我的聲音", status: "ready", usable: true, studioGrade: true, clipCount: 5, createdAt: "1970-01-01T00:00:00.000Z" },
-      { id: "vp_a", displayName: "Sunny", status: "needs_enrollment", usable: false, studioGrade: false, clipCount: 0, createdAt: "2026-05-21T00:00:00.000Z" },
+      { id: "local-default", displayName: "我的聲音", status: "ready", usable: true, studioGrade: true, clipCount: 5, createdAt: "1970-01-01T00:00:00.000Z", hash: 0x4a7d },
+      { id: "vp_a", displayName: "Sunny", status: "needs_enrollment", usable: false, studioGrade: false, clipCount: 0, createdAt: "2026-05-21T00:00:00.000Z", hash: 0x2b5e },
     ]);
     const res = await GET(jsonReq("GET"));
     expect(res.status).toBe(200);
@@ -48,7 +48,7 @@ describe("/api/voice-profile/profiles", () => {
   });
 
   it("POST creates a named profile", async () => {
-    createMock.mockResolvedValue({ id: "vp_new", displayName: "新聲音", userId: "u", createdAt: "now" });
+    createMock.mockResolvedValue({ id: "vp_new", displayName: "新聲音", userId: "u", createdAt: "now", hash: 0x1234 });
     const res = await POST(jsonReq("POST", { displayName: "新聲音" }));
     expect(res.status).toBe(201);
     expect((await res.json()).profile.id).toBe("vp_new");
@@ -62,7 +62,7 @@ describe("/api/voice-profile/profiles", () => {
   });
 
   it("PATCH renames; 404 when not found", async () => {
-    renameMock.mockResolvedValueOnce({ id: "vp_a", displayName: "X", userId: "u", createdAt: "now" });
+    renameMock.mockResolvedValueOnce({ id: "vp_a", displayName: "X", userId: "u", createdAt: "now", hash: 0x1234 });
     const ok = await PATCH(jsonReq("PATCH", { displayName: "X" }), { params: Promise.resolve({ id: "vp_a" }) });
     expect(ok.status).toBe(200);
 
