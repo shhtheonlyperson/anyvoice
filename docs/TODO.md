@@ -21,13 +21,36 @@ The working URL is the local Mac Studio server **`localhost:3001`** (served by
 the launchd agent `com.shh.anyvoice-worker` → `.anyvoice/start-worker.sh` →
 `next start -p 3001`).
 
+**DNS finding (2026-05-22):** `voice.theonlyperson.com` currently CNAMEs to
+`cname.vercel-dns.com`. The zone `theonlyperson.com` is on **Google Cloud DNS**
+(`ns-cloud-*.googledomains.com`), **not Cloudflare**. This constrains the tunnel
+options below.
+
 **Fix (when we circle back):** repoint `voice.theonlyperson.com` away from
 Vercel and at the Mac Studio's `:3001` via an HTTPS tunnel (the mic's
-`getUserMedia` requires a secure context):
-- **Cloudflare Tunnel** (`cloudflared`): map the domain → `http://localhost:3001`.
-  Run `cloudflared tunnel login` (interactive), create a tunnel, route the
-  hostname, and run it (ideally as its own launchd agent alongside the worker).
-- Or **Tailscale Funnel** if we prefer the tailnet.
+`getUserMedia` requires a secure context). Each option needs an interactive
+account login, so it can't be automated:
+
+- **Cloudflare Tunnel (custom domain).** Requires moving the zone to Cloudflare
+  first (Cloudflare's `<uuid>.cfargotunnel.com` routing only works for
+  Cloudflare-managed zones; partial-CNAME setup is Enterprise-only): add
+  `theonlyperson.com` to a Cloudflare account → change NS at the registrar to
+  Cloudflare's → `brew install cloudflared` → `cloudflared tunnel login` →
+  `cloudflared tunnel create anyvoice` →
+  `cloudflared tunnel route dns anyvoice voice.theonlyperson.com` → run
+  `cloudflared tunnel run --url http://localhost:3001 anyvoice` (as a launchd
+  agent alongside the worker).
+- **Keep DNS on Google Cloud, expose via a public reverse proxy.** Stand up a
+  tiny VPS (or Cloudflare-fronted Worker) and point an A/CNAME record at it; it
+  reverse-proxies to the Mac over a tunnel/VPN. More moving parts.
+- **Tailscale Serve (private, no custom domain).** Both users join the tailnet;
+  access the app over HTTPS at the machine's `*.ts.net` name. Zero public
+  exposure and no DNS change, but drops the `voice.theonlyperson.com` vanity URL.
+  Tailscale is already installed on this machine.
+
+**Ordering:** whichever tunnel path, the Google OAuth client (above) must exist
+and `AUTH_URL` must be set to the final HTTPS origin, or the gated site just
+loops on a broken sign-in.
 
 **Not viable:** keeping Vercel as the frontend. Generation *could* be proxied to
 the Mac Studio via `ANYVOICE_WORKER_URL` + `ANYVOICE_WORKER_TOKEN`, but
