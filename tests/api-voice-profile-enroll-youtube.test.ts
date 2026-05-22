@@ -14,18 +14,19 @@ vi.mock("nanoid", () => ({ nanoid: () => "yt-job-id" }));
 // Keep the pure helpers real; only stub the network/yt-dlp orchestrator.
 vi.mock("@/lib/youtube-import", async () => {
   const actual = await vi.importActual<typeof import("@/lib/youtube-import")>("@/lib/youtube-import");
-  return { ...actual, downloadYoutubeReference: vi.fn() };
+  return { ...actual, downloadYoutubeReference: vi.fn(), transcribeAudioFile: vi.fn() };
 });
 
 import { POST } from "@/app/api/voice-profile/enroll/youtube/route";
 import { enrollVoiceProfileClip } from "@/lib/profile-enrollment";
 import { ANYVOICE_USER_COOKIE } from "@/lib/user-session";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
-import { downloadYoutubeReference } from "@/lib/youtube-import";
+import { downloadYoutubeReference, transcribeAudioFile } from "@/lib/youtube-import";
 
 const enrollMock = vi.mocked(enrollVoiceProfileClip);
 const profileMock = vi.mocked(persistVoiceProfileManifest);
 const downloadMock = vi.mocked(downloadYoutubeReference);
+const transcribeMock = vi.mocked(transcribeAudioFile);
 const originalEnv = { ...process.env };
 let tmp: string;
 
@@ -60,6 +61,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   tmp = await mkdtemp(path.join(os.tmpdir(), "anyvoice-yt-"));
   process.env.ANYVOICE_RUNS_DIR = tmp;
+  transcribeMock.mockResolvedValue(""); // ASR off by default; tests opt in
   enrollMock.mockResolvedValue({
     status: "enrolled",
     jobId: "yt-job-id",
@@ -130,8 +132,20 @@ describe("POST /api/voice-profile/enroll/youtube", () => {
     expect(transcript).not.toContain("这");
   });
 
-  it("returns 422 when no captions and no override", async () => {
+  it("falls back to automatic transcription when there are no captions", async () => {
     stubDownload({ withCaptions: false });
+    transcribeMock.mockResolvedValue("这是自动语音识别的文字。"); // Simplified — should be converted
+    const res = await POST(makeReq({ url: "https://youtu.be/dQw4w9WgXcQ", consent: "yes" }));
+    expect(res.status).toBe(200);
+    expect(transcribeMock).toHaveBeenCalledTimes(1);
+    const transcript = enrollMock.mock.calls[0][1].promptTranscript;
+    expect(transcript).toContain("這");
+    expect(transcript).not.toContain("这");
+  });
+
+  it("returns 422 only when captions AND transcription both fail", async () => {
+    stubDownload({ withCaptions: false });
+    transcribeMock.mockResolvedValue("");
     const res = await POST(makeReq({ url: "https://youtu.be/dQw4w9WgXcQ", consent: "yes" }));
     expect(res.status).toBe(422);
     expect((await res.json()).code).toBe("no_captions");

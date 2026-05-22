@@ -186,6 +186,37 @@ export function simplifiedToTraditional(text: string): string {
   return s2tConverter(text);
 }
 
+/**
+ * Transcribe an audio file to text via the local Whisper backend
+ * (scripts/transcribe_audio_anyvoice.py). Used as an automatic fallback when a
+ * video has no usable captions. Returns "" if ASR is unavailable or fails so
+ * the caller can degrade gracefully (e.g. ask for a typed transcript).
+ */
+export async function transcribeAudioFile(audioPath: string, language = "zh"): Promise<string> {
+  const python =
+    process.env.ANYVOICE_ASR_PYTHON || process.env.ANYVOICE_VOXCPM_PYTHON || process.env.PYTHON || "python3";
+  const script = path.join(process.cwd(), "scripts", "transcribe_audio_anyvoice.py");
+  const model = process.env.ANYVOICE_ASR_MODEL || "large-v3";
+  const args = [script, "--audio", audioPath, "--language", language, "--model", model];
+  const result = await new Promise<RunResult>((resolve) => {
+    const child = spawn(python, args, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let spawnError: Error | null = null;
+    child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf-8")));
+    child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf-8")));
+    child.on("error", (err) => (spawnError = err));
+    child.on("close", (code) => resolve({ code, stdout, stderr, spawnError }));
+  });
+  if (result.code !== 0 || !result.stdout.trim()) return "";
+  try {
+    const parsed = JSON.parse(result.stdout.trim()) as { transcript?: string };
+    return (parsed.transcript || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export class YoutubeImportError extends Error {
   statusCode: number;
   constructor(message: string, statusCode = 502) {

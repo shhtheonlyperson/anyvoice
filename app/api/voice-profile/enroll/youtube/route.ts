@@ -15,6 +15,7 @@ import {
   pickSubtitleFile,
   selectCuesText,
   simplifiedToTraditional,
+  transcribeAudioFile,
   YoutubeImportError,
 } from "@/lib/youtube-import";
 
@@ -70,8 +71,9 @@ export async function POST(req: NextRequest) {
       runDir,
     });
 
-    // Transcript: explicit override wins, otherwise build it from captions.
+    // Transcript: explicit override wins, otherwise captions, otherwise ASR.
     let transcriptRaw = String(body.transcriptOverride || "").trim();
+    let transcriptSource: "override" | "captions" | "asr" | null = transcriptRaw ? "override" : null;
     let subtitleLang: string | null = null;
     if (!transcriptRaw) {
       const picked = pickSubtitleFile(subtitleFiles);
@@ -79,7 +81,13 @@ export async function POST(req: NextRequest) {
         subtitleLang = picked.lang;
         const cues = parseVtt(await readFile(picked.path, "utf-8"));
         transcriptRaw = selectCuesText(cues, start, end);
+        if (transcriptRaw) transcriptSource = "captions";
       }
+    }
+    if (!transcriptRaw) {
+      // No usable captions — transcribe the downloaded slice automatically.
+      transcriptRaw = await transcribeAudioFile(wavPath);
+      if (transcriptRaw) transcriptSource = "asr";
     }
 
     const transcript = simplifiedToTraditional(transcriptRaw);
@@ -88,7 +96,8 @@ export async function POST(req: NextRequest) {
         {
           status: "error",
           code: "no_captions",
-          message: "no captions found in this window; type the transcript and import again",
+          message:
+            "could not capture text for this window (no captions and transcription failed); type the transcript and import again",
         },
         { status: 422 },
       );
@@ -123,6 +132,7 @@ export async function POST(req: NextRequest) {
           videoId: parsed.videoId,
           startSeconds: start,
           endSeconds: end,
+          transcriptSource,
           subtitleLang,
           transcriptRaw,
           transcriptConverted: transcript,
