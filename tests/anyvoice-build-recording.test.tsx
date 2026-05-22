@@ -63,6 +63,7 @@ const EMPTY_PROFILE: ProfileListItem = {
   status: "needs_enrollment",
   usable: false,
   studioGrade: false,
+  meetsRequirements: false,
   clipCount: 0,
   hash: 0x1234,
 };

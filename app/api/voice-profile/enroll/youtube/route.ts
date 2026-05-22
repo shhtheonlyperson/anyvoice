@@ -8,19 +8,27 @@ import { detectChineseScript, simplifiedOrMixedChineseScriptErrors } from "@/lib
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import {
-  clampWindow,
+  clampScanWindow,
   downloadYoutubeReference,
   parseVtt,
   parseYoutubeUrl,
   pickSubtitleFile,
-  selectCuesText,
+  planFixedSlices,
+  planSegments,
+  sliceAudioSegment,
   simplifiedToTraditional,
   transcribeAudioFile,
   YoutubeImportError,
+  type PlannedSegment,
 } from "@/lib/youtube-import";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
+
+/** Cap clips per import so enroll time stays bounded. */
+const MAX_CLIPS = 8;
+/** Highest grade wins when reporting the headline referenceQuality. */
+const GRADE_RANK: Record<string, number> = { A: 4, B: 3, C: 2, D: 1 };
 
 interface YoutubeImportBody {
   url?: string;
@@ -58,41 +66,65 @@ export async function POST(req: NextRequest) {
 
   const startSeconds =
     typeof body.startSeconds === "number" && body.startSeconds >= 0 ? body.startSeconds : parsed.startSeconds;
-  const { start, end } = clampWindow(startSeconds, body.durationSeconds);
+  const { start, end } = clampScanWindow(startSeconds, body.durationSeconds);
+  const voiceProfileId = typeof body.profileId === "string" && body.profileId.trim() ? body.profileId.trim() : undefined;
 
-  const jobId = nanoid(10);
-  const runDir = safeRunDir(jobId);
-  await mkdir(runDir, { recursive: true });
+  const baseJobId = nanoid(10);
+  const baseRunDir = safeRunDir(baseJobId);
+  await mkdir(baseRunDir, { recursive: true });
 
   try {
     const { wavPath, subtitleFiles } = await downloadYoutubeReference({
       videoId: parsed.videoId,
       start,
       end,
-      runDir,
+      runDir: baseRunDir,
     });
 
-    // Transcript: explicit override wins, otherwise captions, otherwise ASR.
-    let transcriptRaw = String(body.transcriptOverride || "").trim();
-    let transcriptSource: "override" | "captions" | "asr" | null = transcriptRaw ? "override" : null;
+    // Plan the clips. Explicit override → one clip from the head of the window.
+    // Captions → chunk into caption-aligned clips. Otherwise → fixed slices,
+    // each transcribed by ASR.
+    type Clip = { relStart: number; duration: number; transcriptRaw: string };
+    let clips: Clip[] = [];
+    let transcriptSource: "override" | "captions" | "asr" | null = null;
     let subtitleLang: string | null = null;
-    if (!transcriptRaw) {
+    let plannedSegments: PlannedSegment[] = [];
+
+    const override = String(body.transcriptOverride || "").trim();
+    if (override) {
+      transcriptSource = "override";
+      clips = [{ relStart: 0, duration: Math.min(18, end - start), transcriptRaw: override }];
+    } else {
       const picked = pickSubtitleFile(subtitleFiles);
       if (picked) {
         subtitleLang = picked.lang;
         const cues = parseVtt(await readFile(picked.path, "utf-8"));
-        transcriptRaw = selectCuesText(cues, start, end);
-        if (transcriptRaw) transcriptSource = "captions";
+        plannedSegments = planSegments(cues, start, end);
+        if (plannedSegments.length > 0) {
+          transcriptSource = "captions";
+          clips = plannedSegments.map((seg) => ({
+            relStart: seg.start - start,
+            duration: seg.end - seg.start,
+            transcriptRaw: seg.text,
+          }));
+        }
+      }
+      if (clips.length === 0) {
+        // No captions — slice and ASR-transcribe each piece.
+        const slices = planFixedSlices(end - start);
+        for (const slice of slices.slice(0, MAX_CLIPS)) {
+          const slicePath = path.join(baseRunDir, `asr-slice-${slice.relStart}.wav`);
+          await sliceAudioSegment({ srcWav: wavPath, ...slice, outPath: slicePath });
+          const text = await transcribeAudioFile(slicePath);
+          if (text.trim()) {
+            clips.push({ relStart: slice.relStart, duration: slice.duration, transcriptRaw: text.trim() });
+          }
+        }
+        if (clips.length > 0) transcriptSource = "asr";
       }
     }
-    if (!transcriptRaw) {
-      // No usable captions — transcribe the downloaded slice automatically.
-      transcriptRaw = await transcribeAudioFile(wavPath);
-      if (transcriptRaw) transcriptSource = "asr";
-    }
 
-    const transcript = simplifiedToTraditional(transcriptRaw);
-    if (!transcript) {
+    if (clips.length === 0) {
       return reply(
         {
           status: "error",
@@ -104,31 +136,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const transcriptScript = detectChineseScript(transcript);
-    const scriptErrors = simplifiedOrMixedChineseScriptErrors(transcript);
-    if (scriptErrors.length > 0) {
-      return reply(
-        {
-          status: "error",
-          message: `profile transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
-        },
-        { status: 400 },
-      );
-    }
+    clips = clips.slice(0, MAX_CLIPS);
 
-    const voiceProfileId = typeof body.profileId === "string" && body.profileId.trim() ? body.profileId.trim() : undefined;
-    const buf = await readFile(wavPath);
-    const voice = new File([buf], "youtube.wav", { type: "audio/wav" });
-    const enrollment = await enrollVoiceProfileClip(jobId, {
-      voice,
-      promptTranscript: transcript,
-      sourceKind: "uploaded",
-      voiceProfileId,
-    });
+    // Enroll each clip as its own run, tagged with the target profile.
+    type EnrolledClip = {
+      jobId: string;
+      grade?: string;
+      durationSec?: number;
+      transcript: string;
+      relStart: number;
+    };
+    const enrolledClips: EnrolledClip[] = [];
+    const skipped: { reason: string; transcript: string }[] = [];
+    let lastEnrollment: Awaited<ReturnType<typeof enrollVoiceProfileClip>> | null = null;
+
+    for (const clip of clips) {
+      const transcript = simplifiedToTraditional(clip.transcriptRaw);
+      if (!transcript) {
+        skipped.push({ reason: "empty", transcript: clip.transcriptRaw });
+        continue;
+      }
+      if (simplifiedOrMixedChineseScriptErrors(transcript).length > 0) {
+        skipped.push({ reason: "simplified_or_mixed", transcript });
+        continue;
+      }
+      const clipJobId = nanoid(10);
+      const slicePath = path.join(safeRunDir(clipJobId), "youtube-clip.wav");
+      await mkdir(path.dirname(slicePath), { recursive: true });
+      await sliceAudioSegment({ srcWav: wavPath, relStart: clip.relStart, duration: clip.duration, outPath: slicePath });
+      const buf = await readFile(slicePath);
+      const voice = new File([buf], "youtube.wav", { type: "audio/wav" });
+      const enrollment = await enrollVoiceProfileClip(clipJobId, {
+        voice,
+        promptTranscript: transcript,
+        sourceKind: "uploaded",
+        voiceProfileId,
+      });
+      lastEnrollment = enrollment;
+      enrolledClips.push({
+        jobId: clipJobId,
+        grade: enrollment.referenceQuality?.grade,
+        durationSec: enrollment.referenceQuality?.durationSec,
+        transcript,
+        relStart: clip.relStart,
+      });
+    }
 
     // Provenance sidecar (additive — does not affect profile selection).
     await writeFile(
-      path.join(runDir, "youtube-import.json"),
+      path.join(baseRunDir, "youtube-import.json"),
       `${JSON.stringify(
         {
           url: `https://www.youtube.com/watch?v=${parsed.videoId}`,
@@ -137,8 +193,8 @@ export async function POST(req: NextRequest) {
           endSeconds: end,
           transcriptSource,
           subtitleLang,
-          transcriptRaw,
-          transcriptConverted: transcript,
+          clips: enrolledClips,
+          skipped,
           importedAt: new Date().toISOString(),
         },
         null,
@@ -147,13 +203,41 @@ export async function POST(req: NextRequest) {
       "utf-8",
     );
 
+    if (enrolledClips.length === 0) {
+      // Every candidate clip failed the Traditional-Chinese gate.
+      const sample = skipped.find((s) => s.reason === "simplified_or_mixed")?.transcript ?? "";
+      return reply(
+        {
+          status: "error",
+          message: `profile transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${detectChineseScript(sample)})`,
+        },
+        { status: 400 },
+      );
+    }
+
     const profile = await persistVoiceProfileManifest({ profileId: voiceProfileId ?? "local-default" });
-    return reply({ ...enrollment, profile });
+
+    // Headline quality = the best clip we enrolled (so the UI shows the strongest grade).
+    const best = enrolledClips
+      .slice()
+      .sort((a, b) => (GRADE_RANK[b.grade ?? ""] ?? 0) - (GRADE_RANK[a.grade ?? ""] ?? 0))[0];
+
+    return reply({
+      ...(lastEnrollment ?? {}),
+      status: "enrolled",
+      referenceQuality: best?.grade
+        ? { ...(lastEnrollment?.referenceQuality ?? {}), grade: best.grade, durationSec: best.durationSec }
+        : lastEnrollment?.referenceQuality,
+      clipsEnrolled: enrolledClips.length,
+      clipsSkipped: skipped.length,
+      clips: enrolledClips,
+      profile,
+    });
   } catch (err) {
     if (err instanceof YoutubeImportError) {
-      return reply({ status: "error", jobId, message: err.message }, { status: err.statusCode });
+      return reply({ status: "error", jobId: baseJobId, message: err.message }, { status: err.statusCode });
     }
     const message = err instanceof Error ? err.message : "youtube import failed";
-    return reply({ status: "error", jobId, message }, { status: 500 });
+    return reply({ status: "error", jobId: baseJobId, message }, { status: 500 });
   }
 }

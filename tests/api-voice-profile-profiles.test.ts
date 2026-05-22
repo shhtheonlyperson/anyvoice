@@ -36,8 +36,8 @@ beforeEach(() => vi.clearAllMocks());
 describe("/api/voice-profile/profiles", () => {
   it("GET lists profiles and sets the user cookie", async () => {
     listMock.mockResolvedValue([
-      { id: "local-default", displayName: "我的聲音", status: "ready", usable: true, studioGrade: true, clipCount: 5, createdAt: "1970-01-01T00:00:00.000Z", hash: 0x4a7d },
-      { id: "vp_a", displayName: "Sunny", status: "needs_enrollment", usable: false, studioGrade: false, clipCount: 0, createdAt: "2026-05-21T00:00:00.000Z", hash: 0x2b5e },
+      { id: "local-default", displayName: "我的聲音", status: "ready", usable: true, studioGrade: true, meetsRequirements: true, clipCount: 5, createdAt: "1970-01-01T00:00:00.000Z", hash: 0x4a7d },
+      { id: "vp_a", displayName: "Sunny", status: "needs_enrollment", usable: false, studioGrade: false, meetsRequirements: false, clipCount: 0, createdAt: "2026-05-21T00:00:00.000Z", hash: 0x2b5e },
     ]);
     const res = await GET(jsonReq("GET"));
     expect(res.status).toBe(200);

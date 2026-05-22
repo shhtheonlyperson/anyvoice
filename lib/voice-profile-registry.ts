@@ -37,6 +37,13 @@ export interface VoiceProfileListItem extends VoiceProfileMeta {
   usable: boolean;
   /** Meets the full strict curated bar. */
   studioGrade: boolean;
+  /**
+   * Meets *this* profile's own requirement tier (strict for local-default,
+   * lenient minClips:1 for imports) — i.e. no more clips are needed. The Build
+   * UI uses this for the "ready/done" state so an imported voice that has met
+   * its lighter bar isn't nagged for studio-grade coverage it will never reach.
+   */
+  meetsRequirements: boolean;
   clipCount: number;
 }
 
@@ -104,6 +111,7 @@ async function readManifestStatus(
   status: "ready" | "needs_enrollment";
   usable: boolean;
   studioGrade: boolean;
+  meetsRequirements: boolean;
   clipCount: number;
 } | null> {
   // Return null only when no manifest file exists, so manifest-less created
@@ -122,6 +130,8 @@ async function readManifestStatus(
     status: summary.status,
     usable: summary.usable,
     studioGrade: summary.studioGrade,
+    // No outstanding clips against this profile's own requirement tier.
+    meetsRequirements: summary.summary.remainingClipsNeeded === 0,
     clipCount: summary.clips.length,
   };
 }
@@ -164,6 +174,7 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
       status: manifest?.status ?? "needs_enrollment",
       usable: manifest?.usable ?? false,
       studioGrade: manifest?.studioGrade ?? false,
+      meetsRequirements: manifest?.meetsRequirements ?? false,
       clipCount: manifest?.clipCount ?? 0,
     });
   }
@@ -178,6 +189,7 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
       status: "needs_enrollment",
       usable: false,
       studioGrade: false,
+      meetsRequirements: false,
       clipCount: 0,
     });
   }

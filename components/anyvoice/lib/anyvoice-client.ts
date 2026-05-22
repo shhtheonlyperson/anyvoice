@@ -7,6 +7,8 @@ export interface ProfileListItem {
   status: "ready" | "needs_enrollment";
   usable: boolean;
   studioGrade: boolean;
+  /** Meets this profile's own requirement tier (lenient for imports) — done. */
+  meetsRequirements: boolean;
   clipCount: number;
   hash: number;
 }
