@@ -78,6 +78,17 @@ export interface VoiceProfileSummary {
   version: 1;
   voiceProfileId: string;
   status: VoiceProfileStatus;
+  /**
+   * True when the voice has at least one passing (A/B) reference clip — enough
+   * to clone zero-shot and unlock Generate. Computed independent of the
+   * requirement tier for ALL profiles (incl. local-default).
+   */
+  usable: boolean;
+  /**
+   * True when the voice meets the full strict curated requirements
+   * (today's "ready"). Always evaluated against DEFAULT_REQUIREMENTS.
+   */
+  studioGrade: boolean;
   createdAt?: string;
   requirements: VoiceProfileRequirements;
   summary: {
@@ -348,6 +359,33 @@ function selectProfileClips(
   return selected.sort(compareEligibleClips);
 }
 
+/**
+ * True when the eligible clip set (already grade/duration-filtered) meets the
+ * full strict curated requirements: enough clips plus complete coverage and
+ * pronunciation-preset coverage. Used to compute `studioGrade` for ALL profiles
+ * regardless of the (possibly lenient) requirement tier they were scanned with.
+ *
+ * Note: DEFAULT_REQUIREMENTS shares the same A/B passing grades and 6–20s
+ * duration band as the imported tier, so the `eligible` set is identical and
+ * can be reused directly here.
+ */
+function meetsStrictRequirements(eligible: VoiceProfileClip[]): boolean {
+  const strictPresetIds = DEFAULT_REQUIREMENTS.requiredPronunciationPresetIds ?? [
+    ...REQUIRED_VOICE_PROFILE_PRONUNCIATION_PRESET_IDS,
+  ];
+  const clips = selectProfileClips(
+    eligible,
+    DEFAULT_REQUIREMENTS.requiredCoverageFeatures,
+    strictPresetIds,
+    DEFAULT_REQUIREMENTS.maxClips,
+  );
+  if (clips.length < DEFAULT_REQUIREMENTS.minClips) return false;
+  const coveredFeatures = new Set(clips.flatMap((clip) => clip.coverageFeatures));
+  if (DEFAULT_REQUIREMENTS.requiredCoverageFeatures.some((feature) => !coveredFeatures.has(feature))) return false;
+  const coveredPresetIds = new Set(clips.flatMap((clip) => pronunciationPresetIdsForClip(clip)));
+  return !strictPresetIds.some((presetId) => !coveredPresetIds.has(presetId));
+}
+
 async function scanRun(runDir: string, runId: string): Promise<VoiceProfileClip | null> {
   const request = await readRequestJson(path.join(runDir, "request.json"));
   const referenceSource = request?.referenceSource;
@@ -442,7 +480,11 @@ export function selectVoiceProfileClipForTarget(
   profile: VoiceProfileSummary,
   targetText: string,
 ): VoiceProfileClipSelection | null {
-  if (profile.status !== "ready" || profile.clips.length === 0) return null;
+  // Clip selection only needs a usable voice (≥1 passing clip) — not the strict
+  // studio-grade bar. `usable` may be absent on older persisted manifests, so
+  // fall back to status/clip presence for backward compatibility.
+  const isUsable = profile.usable ?? profile.status === "ready";
+  if (!isUsable || profile.clips.length === 0) return null;
   const targetScript = detectChineseScript(targetText);
   const targetCoverageFeatures = detectVoiceProfileCoverageFeatures(targetText);
   const targetPronunciationPresetIds = detectPronunciationPresetIds(targetText);
@@ -607,22 +649,36 @@ export async function buildVoiceProfileSummary({
   const missingPronunciationPresetIds = requiredPronunciationPresetIds.filter(
     (presetId) => !coveredPronunciationPresetIds.has(presetId),
   );
-  const status: VoiceProfileStatus =
-    clips.length >= requirements.minClips && missingCoverageFeatures.length === 0 && missingPronunciationPresetIds.length === 0
-      ? "ready"
-      : "needs_enrollment";
+  const meetsRequestedTier =
+    clips.length >= requirements.minClips &&
+    missingCoverageFeatures.length === 0 &&
+    missingPronunciationPresetIds.length === 0;
+
+  // Two-status model (PRD P0.1/P0.2):
+  // - `usable`: ≥1 passing (A/B) reference clip survives — enough to clone
+  //   zero-shot and unlock Generate. Tier-independent for ALL profiles.
+  // - `studioGrade`: meets the full strict curated bar (DEFAULT_REQUIREMENTS),
+  //   always evaluated against the strict tier regardless of how this profile
+  //   was scanned (imports use a lighter requirement set for their own status).
+  const usable = eligible.some((clip) => PASSING_GRADES.has(clip.quality.grade));
+  const studioGrade = meetsStrictRequirements(eligible);
+
+  // `status` stays binary for backward compatibility: "ready" iff studio-grade.
+  const status: VoiceProfileStatus = studioGrade ? "ready" : "needs_enrollment";
 
   return {
     version: 1,
     voiceProfileId: profileId,
     status,
+    usable,
+    studioGrade,
     requirements,
     summary: {
       eligibleClips: eligible.length,
       selectedClips: clips.length,
       rejectedClips: rejected.length,
       remainingClipsNeeded:
-        status === "ready"
+        meetsRequestedTier
           ? 0
           : Math.max(
               0,
@@ -652,7 +708,13 @@ function parsePersistedProfile(raw: string): VoiceProfileSummary {
   ) {
     throw new Error("voice profile manifest is invalid");
   }
-  return parsed as VoiceProfileSummary;
+  // Backfill the two-status booleans for manifests persisted before P0:
+  // a "ready" manifest is studio-grade (and therefore usable); any manifest
+  // with at least one selected clip is usable.
+  const studioGrade = typeof parsed.studioGrade === "boolean" ? parsed.studioGrade : parsed.status === "ready";
+  const usable =
+    typeof parsed.usable === "boolean" ? parsed.usable : studioGrade || (parsed.clips?.length ?? 0) > 0;
+  return { ...parsed, usable, studioGrade } as VoiceProfileSummary;
 }
 
 export async function loadVoiceProfileManifest(profileJson: string): Promise<VoiceProfileSummary> {

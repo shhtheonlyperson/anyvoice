@@ -72,6 +72,8 @@ beforeEach(async () => {
     version: 1,
     voiceProfileId: "local-default",
     status: "ready",
+    usable: true,
+    studioGrade: true,
     requirements: {
       minClips: 1,
       maxClips: 10,

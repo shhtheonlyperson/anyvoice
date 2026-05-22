@@ -70,6 +70,8 @@ beforeEach(() => {
     version: 1,
     voiceProfileId: "local-default",
     status: "ready",
+    usable: true,
+    studioGrade: true,
     requirements: {
       minClips: 5,
       maxClips: 10,
@@ -173,7 +175,7 @@ describe("POST /api/voice-profile/import", () => {
     expect(enrollMock).not.toHaveBeenCalled();
   });
 
-  it("rejects Chinese transcripts without clear Traditional marker evidence before analyzer work", async () => {
+  it("accepts short shared-form Chinese transcripts (zh_unknown) at ingest", async () => {
     const form = makeForm();
     form.set(
       "clips",
@@ -182,16 +184,16 @@ describe("POST /api/voice-profile/import", () => {
           id: "profile-clip-01",
           fileField: "voice-0",
           expectedStem: "profile-clip-01",
-          transcript: "中文音色自然。",
+          transcript: "早安你好",
           sourceKind: "uploaded",
         },
       ]),
     );
 
     const res = await POST(makeReq(form));
-    expect(res.status).toBe(400);
-    expect((await res.json()).message).toMatch(/unproven|zh-Hant|Traditional Chinese/);
-    expect(enrollMock).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect((await res.json())).toMatchObject({ status: "imported", imported: 1 });
+    expect(enrollMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects files that do not match the declared profile clip slot", async () => {

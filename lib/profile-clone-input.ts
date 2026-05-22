@@ -9,7 +9,7 @@ import {
 } from "@/lib/clone-request";
 import { detectChineseScript } from "@/lib/text-prep";
 import { buildVoiceProfileSummary, loadVoiceProfileManifest, selectVoiceProfileClipForTarget } from "@/lib/voice-profile";
-import { verifyVoiceProfileReadiness, type VoiceProfileReadinessReport } from "@/lib/voice-profile-verify";
+import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 
 export type ParsedCloneInput = CloneInput | CloneInputError;
 
@@ -41,20 +41,16 @@ function contentTypeForAudio(filePath: string): string {
   }
 }
 
-function firstFailedCheck(report: VoiceProfileReadinessReport): string {
-  return report.checks.find((check) => !check.ok)?.message || "strict voice-profile check has not passed";
-}
-
 export async function parseCloneFormWithProfile(form: FormData): Promise<ParsedCloneInput> {
   if (!wantsVoiceProfile(form)) return parseCloneForm(form);
 
   const targetText = normalizeTargetText(String(form.get("targetText") || ""));
   if (!targetText) return error(400, "target text required");
   const targetScript = detectChineseScript(targetText);
-  if (targetScript === "zh_hans" || targetScript === "mixed_zh" || targetScript === "zh_unknown") {
+  if (targetScript === "zh_hans" || targetScript === "mixed_zh") {
     return error(
       400,
-      "voice profile target text must use clear Traditional Chinese; Simplified, mixed, or unproven Chinese can destabilize Mandarin pronunciation",
+      "voice profile target text must not use Simplified or mixed Chinese — it can destabilize Mandarin pronunciation",
     );
   }
   if (form.get("consent") !== "yes") {
@@ -63,35 +59,33 @@ export async function parseCloneFormWithProfile(form: FormData): Promise<ParsedC
 
   const profileId = String(form.get("profileId") || "").trim() || undefined;
   const summary = await buildVoiceProfileSummary(profileId ? { profileId } : undefined);
-  if (summary.status !== "ready") {
+  // P0.1/P0.2 — Generation only requires a *usable* voice (≥1 passing A/B clip,
+  // the zero-shot path the headline copy promises). The strict studio-grade bar
+  // governs LoRA/quality-gate/audiobook-at-scale, never routine "speak in my
+  // voice". A single-clip local-default profile is enough to generate.
+  if (!summary.usable) {
     return error(
       409,
-      `voice profile is not ready: ${summary.summary.remainingClipsNeeded} more qualified reference clips needed`,
+      `voice profile is not usable yet: record at least one clean reference clip to generate`,
     );
   }
 
-  // Everyday generation uses the ready profile's best clip zero-shot. The full
-  // ASR transcript-validation hard gate is reserved for the 10x / LoRA proof
-  // path (verify route, quality gate), not for routine "speak in my voice".
-  //
-  // The strict coverage verifier (specific polyphones, latin terms, etc.) only
-  // makes sense for the curated self-recorded default voice. Imported/cloned
-  // voices (YouTube, uploads) can't recite that script, so we trust the
-  // (lenient) buildVoiceProfileSummary "ready" status for them.
+  // Optional studio-grade enrichment (NEVER blocking): for the curated default
+  // voice, if it already passes the strict verifier we prefer that verified
+  // manifest (it may carry a curated clip selection). If the strict check fails,
+  // we still generate from the usable summary — usability is the only gate.
   let profile = summary;
-  if (summary.voiceProfileId === "local-default") {
+  if (summary.voiceProfileId === "local-default" && summary.studioGrade) {
     try {
       const verification = await verifyVoiceProfileReadiness({
         profileId: summary.voiceProfileId,
         requireTranscriptValidation: false,
       });
-      if (verification.status !== "ready") {
-        return error(409, `voice profile is not ready yet: ${firstFailedCheck(verification)}`);
+      if (verification.status === "ready") {
+        profile = await loadVoiceProfileManifest(verification.profile);
       }
-      profile = await loadVoiceProfileManifest(verification.profile);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "voice-profile check failed";
-      return error(409, `voice profile needs a passing readiness check before generation: ${message}`);
+    } catch {
+      /* studio-grade verification is best-effort; a usable voice still generates */
     }
   }
 

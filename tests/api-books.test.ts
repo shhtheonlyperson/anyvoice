@@ -8,6 +8,8 @@ vi.mock("@/lib/book-synthesizer", () => ({ startBookSynthesis: vi.fn() }));
 vi.mock("@/lib/voice-profile", () => ({
   buildVoiceProfileSummary: vi.fn(async () => ({
     status: "ready",
+    usable: true,
+    studioGrade: true,
     voiceProfileId: "local-default",
     clips: [{ audioPath: "/ref.wav", transcriptRaw: "你好。" }],
   })),

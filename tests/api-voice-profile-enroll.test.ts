@@ -47,6 +47,8 @@ beforeEach(() => {
     version: 1,
     voiceProfileId: "local-default",
     status: "needs_enrollment",
+    usable: false,
+    studioGrade: false,
     requirements: {
       minClips: 5,
       maxClips: 10,

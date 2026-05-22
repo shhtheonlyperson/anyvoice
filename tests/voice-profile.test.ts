@@ -83,6 +83,33 @@ describe("buildVoiceProfileSummary", () => {
     expect(profile.diagnostics.missingCoverageFeatures).toEqual([]);
   });
 
+  it("marks a single A/B clip usable but not studio-grade (quick-clone unlock)", async () => {
+    await writeRun("solo", { grade: "A", durationSec: 8 }, { transcript: "請錄製真實聲音樣本。" });
+
+    const profile = await buildVoiceProfileSummary({ env: { ANYVOICE_RUNS_DIR: tmpRoot } });
+
+    expect(profile.usable).toBe(true);
+    expect(profile.studioGrade).toBe(false);
+    expect(profile.status).toBe("needs_enrollment");
+    expect(profile.summary.eligibleClips).toBe(1);
+  });
+
+  it("marks the full curated set studio-grade (and usable)", async () => {
+    await Promise.all([
+      writeRun("clip1", { grade: "A", durationSec: 8 }),
+      writeRun("clip2", { grade: "A", durationSec: 9 }),
+      writeRun("clip3", { grade: "B", durationSec: 10 }),
+      writeRun("clip4", { grade: "B", durationSec: 11 }),
+      writeRun("clip5", { grade: "A", durationSec: 12 }),
+    ]);
+
+    const profile = await buildVoiceProfileSummary({ env: { ANYVOICE_RUNS_DIR: tmpRoot } });
+
+    expect(profile.studioGrade).toBe(true);
+    expect(profile.usable).toBe(true);
+    expect(profile.status).toBe("ready");
+  });
+
   it("rejects short or low-grade clips and reports remaining enrollment need", async () => {
     await Promise.all([
       writeRun("short", { grade: "A", durationSec: 2, warnings: ["short_clip"] }),

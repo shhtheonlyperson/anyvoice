@@ -32,11 +32,12 @@ export async function POST(req: NextRequest) {
   const file = form.get("file");
   if (!(file instanceof File)) return fail(400, "upload an .epub or .pdf file");
 
-  // The book is read in the chosen voice — require that profile to be ready.
+  // The book is read in the chosen voice — require at least a *usable* voice to
+  // start (studio-grade is recommended for long-form but not hard-required).
   const profileId = String(form.get("profileId") || "").trim() || undefined;
   const profile = await buildVoiceProfileSummary(profileId ? { profileId } : undefined);
-  if (profile.status !== "ready" || profile.clips.length === 0) {
-    return fail(409, "build your voice first: a ready voice profile is required to synthesize a book");
+  if (!profile.usable || profile.clips.length === 0) {
+    return fail(409, "build your voice first: a usable voice profile is required to synthesize a book");
   }
 
   let extracted;

@@ -30,6 +30,8 @@ interface ClonePayload {
 
 interface VoiceProfilePayload {
   status: "ready" | "needs_enrollment";
+  usable?: boolean;
+  studioGrade?: boolean;
   summary: {
     eligibleClips: number;
     selectedClips: number;
@@ -51,6 +53,8 @@ interface VoiceProfileListItem {
   id: string;
   displayName: string;
   status: "ready" | "needs_enrollment";
+  usable?: boolean;
+  studioGrade?: boolean;
   clipCount: number;
 }
 
@@ -235,6 +239,7 @@ type Copy = {
   youtubeFailed: string;
   profileLabel: string;
   profileCreate: string;
+  profileManage: string;
   profileRename: string;
   profileDelete: string;
   profileDeleteConfirm: string;
@@ -242,6 +247,9 @@ type Copy = {
   profileSave: string;
   profileCancel: string;
   profileActive: (name: string) => string;
+  statusUsable: string;
+  statusStudio: string;
+  statusNeedsClip: string;
   micBlocked: string;
   micProcessing: string;
   listTitle: string;
@@ -330,6 +338,7 @@ const COPY: Record<Locale, Copy> = {
     youtubeFailed: "匯入失敗，請確認網址或稍後再試。",
     profileLabel: "聲音",
     profileCreate: "新增聲音",
+    profileManage: "管理",
     profileRename: "重新命名",
     profileDelete: "刪除",
     profileDeleteConfirm: "確定要刪除這個聲音及其錄音嗎？",
@@ -337,6 +346,9 @@ const COPY: Record<Locale, Copy> = {
     profileSave: "儲存",
     profileCancel: "取消",
     profileActive: (name) => `目前聲音：${name}`,
+    statusUsable: "可使用",
+    statusStudio: "錄音室等級",
+    statusNeedsClip: "尚未建立",
     micBlocked: "無法取得麥克風權限。",
     micProcessing: "偵測到麥克風仍開啟降噪或回音消除，請關閉後重試。",
     listTitle: "全部語句",
@@ -346,7 +358,7 @@ const COPY: Record<Locale, Copy> = {
     doneH1: "你的聲音已就緒",
     doneLede: "所有語句都通過了，現在可以用你的聲音生成任何文字。",
     doneCta: "開始產生聲音",
-    advTitle: "進階 · 開發者選項",
+    advTitle: "開發者",
     advHint: "品質驗證、proof、LoRA 訓練等在指令列執行。",
     adv1: "嚴格 profile 驗證",
     adv2: "prompt vs hi-fi 品質閘門",
@@ -423,6 +435,7 @@ const COPY: Record<Locale, Copy> = {
     youtubeFailed: "Import failed. Check the URL or try again later.",
     profileLabel: "Voice",
     profileCreate: "New voice",
+    profileManage: "Manage",
     profileRename: "Rename",
     profileDelete: "Delete",
     profileDeleteConfirm: "Delete this voice and its recordings?",
@@ -430,6 +443,9 @@ const COPY: Record<Locale, Copy> = {
     profileSave: "Save",
     profileCancel: "Cancel",
     profileActive: (name) => `Voice: ${name}`,
+    statusUsable: "Usable",
+    statusStudio: "Studio-grade",
+    statusNeedsClip: "Not built",
     micBlocked: "Couldn't get microphone permission.",
     micProcessing: "The mic still has noise suppression / echo cancellation on. Disable it and retry.",
     listTitle: "All lines",
@@ -439,7 +455,7 @@ const COPY: Record<Locale, Copy> = {
     doneH1: "Your voice is ready",
     doneLede: "All lines passed. You can now generate any text in your voice.",
     doneCta: "Start generating",
-    advTitle: "Advanced · Developer",
+    advTitle: "Developer",
     advHint: "Quality gate, proof, LoRA training run in the CLI.",
     adv1: "Strict profile verify",
     adv2: "prompt vs hi-fi quality gate",
@@ -568,13 +584,25 @@ export function VoiceCloneStudio() {
 
   // ---- profile state
   const [profile, setProfile] = useState<VoiceProfilePayload | null>(null);
-  const profileReady = profile?.status === "ready";
+  // Two-status model (P0.1/P0.2): a *usable* voice (≥1 passing clip) unlocks
+  // Generate + Audiobook; *studio-grade* is the strict curated bar.
+  const profileUsable = profile?.usable ?? profile?.status === "ready";
+  const profileReady = profile?.status === "ready"; // studio-grade (kept for the build done-band)
   // ---- multiple voice profiles
   const [profiles, setProfiles] = useState<VoiceProfileListItem[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("local-default");
   const [profileDraft, setProfileDraft] = useState("");
   const [profileEditing, setProfileEditing] = useState<"create" | "rename" | null>(null);
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
+  // Top-bar picker can expand to reach create/rename/delete on every screen.
+  const [profileManageOpen, setProfileManageOpen] = useState(false);
+
+  // Per-voice status indicator for the picker (Studio-grade ✓ / Usable / Not built).
+  function statusLabelFor(p: Pick<VoiceProfileListItem, "studioGrade" | "usable" | "status">): string {
+    if (p.studioGrade ?? p.status === "ready") return t.statusStudio;
+    if (p.usable) return t.statusUsable;
+    return t.statusNeedsClip;
+  }
 
   // ---- build state
   const [clips, setClips] = useState<ClipState[]>(() => SCRIPT_PACK["zh-Hant"].map(() => "idle"));
@@ -773,8 +801,8 @@ export function VoiceCloneStudio() {
     await loadProfiles(); // current id is gone → loadProfiles falls back to the first profile
   }
 
-  const targetScriptBlocked = profileReady && isUnstableChineseScript(text);
-  const generateDisabled = !text.trim() || gen === "busy" || !profileReady || targetScriptBlocked;
+  const targetScriptBlocked = profileUsable && isUnstableChineseScript(text);
+  const generateDisabled = !text.trim() || gen === "busy" || !profileUsable || targetScriptBlocked;
 
   /* ----------------------------- streaming parse (reused contract) */
 
@@ -1082,24 +1110,55 @@ export function VoiceCloneStudio() {
           <Spike /> AnyVoice
         </div>
         <div className="nav-right">
+          {/* Global voice picker (P0.3): visible + active on every screen. */}
+          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+            <span className="muted small" style={{ margin: 0 }}>
+              {t.profileLabel}
+            </span>
+            <select
+              className="field"
+              style={{ width: "auto" }}
+              value={activeProfileId}
+              onChange={(e) => switchProfile(e.target.value)}
+              aria-label={t.profileLabel}
+            >
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.displayName} · {statusLabelFor(p)}
+                </option>
+              ))}
+            </select>
+            <button
+              className="pillbtn"
+              aria-pressed={profileManageOpen}
+              aria-label={t.profileManage}
+              onClick={() => {
+                setProfileEditing(null);
+                setProfileDraft("");
+                setProfileManageOpen((open) => !open);
+              }}
+            >
+              {t.profileManage}
+            </button>
+          </div>
           <button className="pillbtn" aria-pressed={screen === "build"} onClick={() => setScreen("build")}>
             {t.navBuild}
           </button>
           <button
             className="pillbtn"
             aria-pressed={screen === "generate"}
-            disabled={!profileReady}
-            title={!profileReady ? t.voiceMineHint : undefined}
-            onClick={() => profileReady && setScreen("generate")}
+            disabled={!profileUsable}
+            title={!profileUsable ? t.voiceMineHint : undefined}
+            onClick={() => profileUsable && setScreen("generate")}
           >
             {t.navGenerate}
           </button>
           <button
             className="pillbtn"
             aria-pressed={screen === "book"}
-            disabled={!profileReady}
-            title={!profileReady ? t.voiceMineHint : undefined}
-            onClick={() => profileReady && setScreen("book")}
+            disabled={!profileUsable}
+            title={!profileUsable ? t.voiceMineHint : undefined}
+            onClick={() => profileUsable && setScreen("book")}
           >
             {t.navBook}
           </button>
@@ -1119,8 +1178,77 @@ export function VoiceCloneStudio() {
         </div>
       </nav>
 
+      {/* Voice management (create / rename / delete) — reachable from the global
+          picker on every screen. Expands inline under the nav. */}
+      {profileManageOpen && (
+        <div className="wrap" style={{ paddingTop: 16, paddingBottom: 0 }}>
+          <div className="card card--cream" style={{ display: "grid", gap: 12 }}>
+            <div className="row between" style={{ gap: 10, flexWrap: "wrap" }}>
+              <span className="muted small" style={{ margin: 0 }}>
+                {activeProfile ? t.profileActive(activeProfile.displayName) : t.profileLabel}
+              </span>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn btn--ghost"
+                  onClick={() => {
+                    setProfileEditing("create");
+                    setProfileDraft("");
+                  }}
+                >
+                  {t.profileCreate}
+                </button>
+                <button
+                  className="btn btn--ghost"
+                  onClick={() => {
+                    setProfileEditing("rename");
+                    setProfileDraft(activeProfile?.displayName ?? "");
+                  }}
+                >
+                  {t.profileRename}
+                </button>
+                <button className="btn btn--ghost" disabled={profiles.length <= 1} onClick={deleteActiveProfile}>
+                  {t.profileDelete}
+                </button>
+              </div>
+            </div>
+            {profileEditing && (
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <input
+                  className="field"
+                  style={{ flex: "1 1 240px" }}
+                  autoFocus
+                  placeholder={t.profileNamePlaceholder}
+                  value={profileDraft}
+                  onChange={(e) => setProfileDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter")
+                      void (profileEditing === "create" ? createProfileFromDraft() : renameProfileFromDraft());
+                  }}
+                />
+                <button
+                  className="btn"
+                  disabled={!profileDraft.trim()}
+                  onClick={() => void (profileEditing === "create" ? createProfileFromDraft() : renameProfileFromDraft())}
+                >
+                  {t.profileSave}
+                </button>
+                <button
+                  className="btn btn--ghost"
+                  onClick={() => {
+                    setProfileEditing(null);
+                    setProfileDraft("");
+                  }}
+                >
+                  {t.profileCancel}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {screen === "book" ? (
-        <BookReader locale={locale} profileReady={Boolean(profileReady)} profileId={activeProfileId} />
+        <BookReader locale={locale} profileReady={Boolean(profileUsable)} profileId={activeProfileId} />
       ) : screen === "generate" ? (
         <div className="wrap">
           <div className="hero">
@@ -1135,7 +1263,7 @@ export function VoiceCloneStudio() {
           </div>
 
           <div className="card card--cream" style={{ display: "grid", gap: 28 }}>
-            {!profileReady && (
+            {!profileUsable && (
               <div className="row between" style={{ gap: 16 }}>
                 <span className="muted small" style={{ margin: 0 }}>
                   {t.voiceMineHint}
@@ -1283,84 +1411,6 @@ export function VoiceCloneStudio() {
             <h1 className="display">{t.buildH1}</h1>
             <p className="lede">{t.buildLede}</p>
           </div>
-
-          {/* Voice profile switcher — build/manage several voices. */}
-          <div className="row between" style={{ marginBottom: 16, gap: 10, flexWrap: "wrap" }}>
-            <div className="row" style={{ gap: 8, alignItems: "center" }}>
-              <span className="label" style={{ margin: 0 }}>
-                {t.profileLabel}
-              </span>
-              <select
-                className="field"
-                style={{ width: "auto" }}
-                value={activeProfileId}
-                onChange={(e) => switchProfile(e.target.value)}
-                aria-label={t.profileLabel}
-              >
-                {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.displayName}
-                    {p.status === "ready" ? " ✓" : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="row" style={{ gap: 8 }}>
-              <button
-                className="btn btn--ghost"
-                onClick={() => {
-                  setProfileEditing("create");
-                  setProfileDraft("");
-                }}
-              >
-                {t.profileCreate}
-              </button>
-              <button
-                className="btn btn--ghost"
-                onClick={() => {
-                  setProfileEditing("rename");
-                  setProfileDraft(activeProfile?.displayName ?? "");
-                }}
-              >
-                {t.profileRename}
-              </button>
-              <button className="btn btn--ghost" disabled={profiles.length <= 1} onClick={deleteActiveProfile}>
-                {t.profileDelete}
-              </button>
-            </div>
-          </div>
-          {profileEditing && (
-            <div className="row" style={{ gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
-              <input
-                className="field"
-                style={{ flex: "1 1 240px" }}
-                autoFocus
-                placeholder={t.profileNamePlaceholder}
-                value={profileDraft}
-                onChange={(e) => setProfileDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter")
-                    void (profileEditing === "create" ? createProfileFromDraft() : renameProfileFromDraft());
-                }}
-              />
-              <button
-                className="btn"
-                disabled={!profileDraft.trim()}
-                onClick={() => void (profileEditing === "create" ? createProfileFromDraft() : renameProfileFromDraft())}
-              >
-                {t.profileSave}
-              </button>
-              <button
-                className="btn btn--ghost"
-                onClick={() => {
-                  setProfileEditing(null);
-                  setProfileDraft("");
-                }}
-              >
-                {t.profileCancel}
-              </button>
-            </div>
-          )}
 
           {allDone ? (
             <div className="done-band">

@@ -5,7 +5,7 @@ import { maxUploadBytes, modelId, normalizeTargetText } from "@/lib/clone-config
 import { fileExtension, parseReferenceQuality, type ReferenceQuality } from "@/lib/clone-runner";
 import type { SourceKind } from "@/lib/clone-request";
 import { safeRunDir } from "@/lib/run-paths";
-import { detectChineseScript, prepareVoiceText, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
+import { detectChineseScript, prepareVoiceText, simplifiedOrMixedChineseScriptErrors } from "@/lib/text-prep";
 
 type EnrollmentSourceKind = Exclude<SourceKind, "profile" | "sample">;
 
@@ -84,11 +84,11 @@ export function parseVoiceProfileEnrollmentForm(
     return error(400, "reference transcript required: type exactly what the reference clip says");
   }
   const transcriptScript = detectChineseScript(promptTranscript);
-  const scriptErrors = strictTraditionalChineseScriptErrors(promptTranscript);
+  const scriptErrors = simplifiedOrMixedChineseScriptErrors(promptTranscript);
   if (scriptErrors.length > 0) {
     return error(
       400,
-      `profile transcript must use Traditional Chinese with clear zh-Hant evidence; Simplified, mixed, or unproven Chinese clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
+      `profile transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
     );
   }
   if (sourceKindRaw !== null && sourceKind === undefined) {

@@ -1,11 +1,11 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import type { CloneEnv } from "@/lib/clone-config";
 import {
   assertSafeProfileId,
+  buildVoiceProfileSummary,
   DEFAULT_VOICE_PROFILE_ID,
-  loadVoiceProfileManifest,
   voiceProfileManifestPath,
   voiceProfileRoot,
 } from "@/lib/voice-profile";
@@ -27,6 +27,10 @@ export interface VoiceProfileMeta {
 
 export interface VoiceProfileListItem extends VoiceProfileMeta {
   status: "ready" | "needs_enrollment";
+  /** ≥1 passing clip — enough to generate. */
+  usable: boolean;
+  /** Meets the full strict curated bar. */
+  studioGrade: boolean;
   clipCount: number;
 }
 
@@ -72,13 +76,30 @@ async function writeVoiceProfileMeta(meta: VoiceProfileMeta, env: CloneEnv = pro
 async function readManifestStatus(
   profileId: string,
   env: CloneEnv = process.env,
-): Promise<{ status: "ready" | "needs_enrollment"; clipCount: number } | null> {
+): Promise<{
+  status: "ready" | "needs_enrollment";
+  usable: boolean;
+  studioGrade: boolean;
+  clipCount: number;
+} | null> {
+  // Return null only when no manifest file exists, so manifest-less created
+  // profiles stay needs-clip. When a manifest exists, recompute usable/
+  // studioGrade/status/clip-count authoritatively from the same source of truth
+  // as the detail route (buildVoiceProfileSummary) instead of trusting the
+  // persisted/back-filled manifest fields. This keeps list==detail for legacy
+  // manifests written before the two-status model.
   try {
-    const manifest = await loadVoiceProfileManifest(voiceProfileManifestPath(profileId, env));
-    return { status: manifest.status, clipCount: manifest.clips.length };
+    await access(voiceProfileManifestPath(profileId, env));
   } catch {
     return null;
   }
+  const summary = await buildVoiceProfileSummary({ env, profileId });
+  return {
+    status: summary.status,
+    usable: summary.usable,
+    studioGrade: summary.studioGrade,
+    clipCount: summary.clips.length,
+  };
 }
 
 /** True when this user may see/use the profile (its own, or a legacy shared one). */
@@ -104,10 +125,11 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
   for (const id of dirs.sort()) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) continue;
     const meta = await loadVoiceProfileMeta(id, env);
+    // Cheap ownership check before the (run-scanning) status recompute.
+    if (!ownsProfile(meta, userId)) continue;
     const manifest = await readManifestStatus(id, env);
     // A real profile has either a meta.json or a built manifest. Skip junk dirs.
     if (!meta && !manifest && id !== DEFAULT_VOICE_PROFILE_ID) continue;
-    if (!ownsProfile(meta, userId)) continue;
     if (id === DEFAULT_VOICE_PROFILE_ID) sawDefault = true;
     items.push({
       id,
@@ -115,6 +137,8 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
       userId: meta?.userId,
       createdAt: meta?.createdAt ?? new Date(0).toISOString(),
       status: manifest?.status ?? "needs_enrollment",
+      usable: manifest?.usable ?? false,
+      studioGrade: manifest?.studioGrade ?? false,
       clipCount: manifest?.clipCount ?? 0,
     });
   }
@@ -126,6 +150,8 @@ export async function listVoiceProfiles(userId: string, env: CloneEnv = process.
       displayName: DEFAULT_DISPLAY_NAME,
       createdAt: new Date(0).toISOString(),
       status: "needs_enrollment",
+      usable: false,
+      studioGrade: false,
       clipCount: 0,
     });
   }

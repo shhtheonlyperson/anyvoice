@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { enrollVoiceProfileClip } from "@/lib/profile-enrollment";
 import { safeRunDir } from "@/lib/run-paths";
-import { detectChineseScript, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
+import { detectChineseScript, simplifiedOrMixedChineseScriptErrors } from "@/lib/text-prep";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import {
@@ -105,12 +105,12 @@ export async function POST(req: NextRequest) {
     }
 
     const transcriptScript = detectChineseScript(transcript);
-    const scriptErrors = strictTraditionalChineseScriptErrors(transcript);
+    const scriptErrors = simplifiedOrMixedChineseScriptErrors(transcript);
     if (scriptErrors.length > 0) {
       return reply(
         {
           status: "error",
-          message: `profile transcript must use Traditional Chinese with clear zh-Hant evidence; Simplified, mixed, or unproven Chinese clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
+          message: `profile transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
         },
         { status: 400 },
       );

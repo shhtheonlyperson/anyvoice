@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { enrollVoiceProfileClip, type VoiceProfileEnrollmentInput } from "@/lib/profile-enrollment";
-import { detectChineseScript, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
+import { detectChineseScript, simplifiedOrMixedChineseScriptErrors } from "@/lib/text-prep";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 
@@ -40,10 +40,10 @@ function parseClipSpecs(raw: FormDataEntryValue | null): ClipSpec[] | Response {
         throw new Error(`clip ${index + 1} is missing transcript`);
       }
       const transcriptScript = detectChineseScript(row.transcript);
-      const scriptErrors = strictTraditionalChineseScriptErrors(row.transcript);
+      const scriptErrors = simplifiedOrMixedChineseScriptErrors(row.transcript);
       if (scriptErrors.length > 0) {
         throw new Error(
-          `clip ${index + 1} transcript must use Traditional Chinese with clear zh-Hant evidence; Simplified, mixed, or unproven Chinese clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
+          `clip ${index + 1} transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
         );
       }
       if (row.sourceKind !== undefined && !SOURCE_KINDS.has(String(row.sourceKind))) {

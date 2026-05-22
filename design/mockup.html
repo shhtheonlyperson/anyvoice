@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="light" data-locale="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AnyVoice — 高保真設計稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --primary:#cc785c; --primary-active:#a9583e; --primary-disabled:#e6dfd8;
+    --ink:#141413; --body:#3d3d3a; --body-strong:#252523; --muted:#6c6a64; --muted-soft:#8e8b82;
+    --hairline:#e6dfd8; --hairline-soft:#ebe6df;
+    --canvas:#faf9f5; --surface-soft:#f5f0e8; --surface-card:#efe9de; --surface-cream-strong:#e8e0d2;
+    --surface-dark:#181715; --surface-dark-elevated:#252320; --surface-dark-soft:#1f1e1b;
+    --on-primary:#fff; --on-dark:#faf9f5; --on-dark-soft:#a09d96;
+    --teal:#5db8a6; --amber:#e8a55a; --success:#5db872; --warning:#d4a017; --error:#c64545;
+    --serif:"Cormorant Garamond",Tiempos Headline,Garamond,"Times New Roman",serif;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,monospace;
+  }
+  [data-theme="dark"]{
+    --canvas:#181715; --surface-soft:#1f1e1b; --surface-card:#252320; --surface-cream-strong:#2b2926;
+    --ink:#faf9f5; --body:#d9d6cf; --body-strong:#f0ede6; --muted:#a09d96; --muted-soft:#8e8b82;
+    --hairline:#2f2d29; --hairline-soft:#26241f; --surface-dark:#0f0e0d; --surface-dark-elevated:#26241f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--canvas);color:var(--body);font-family:var(--sans);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;transition:background .2s,color .2s}
+  .serif{font-family:var(--serif);font-weight:500;letter-spacing:-.01em;color:var(--ink)}
+  h1.display{font-family:var(--serif);font-weight:500;font-size:44px;line-height:1.08;letter-spacing:-.02em;color:var(--ink)}
+  .eyebrow{font-size:12px;font-weight:500;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
+  .lede{font-size:18px;color:var(--body);max-width:46ch;margin-top:12px}
+  .muted{color:var(--muted)} .small{font-size:13px} .strong{color:var(--ink);font-weight:500}
+
+  /* nav */
+  .nav{position:sticky;top:0;z-index:20;height:64px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 28px;background:var(--canvas);border-bottom:1px solid var(--hairline)}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;color:var(--ink);font-size:17px}
+  .spike{width:18px;height:18px}
+  .nav-mid{display:flex;gap:6px}
+  .nav-right{display:flex;gap:8px;align-items:center}
+  .tab{font-size:14px;font-weight:500;color:var(--muted);background:transparent;border:0;padding:8px 14px;border-radius:8px;cursor:pointer}
+  .tab[aria-current="true"]{background:var(--surface-card);color:var(--ink)}
+  .ghost{font-size:13px;font-weight:500;color:var(--ink);background:transparent;border:1px solid var(--hairline);padding:7px 12px;border-radius:8px;cursor:pointer}
+  .ghost:hover{background:var(--surface-soft)}
+
+  /* voice picker */
+  .vpick{position:relative}
+  .vpick-btn{display:flex;align-items:center;gap:8px;background:var(--surface-card);border:1px solid var(--hairline);
+    border-radius:9999px;padding:6px 12px 6px 8px;cursor:pointer;font-size:14px;font-weight:500;color:var(--ink)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .dot--studio{background:var(--success)} .dot--usable{background:var(--amber)}
+  .vmenu{position:absolute;top:46px;right:0;width:268px;background:var(--canvas);border:1px solid var(--hairline);
+    border-radius:12px;padding:6px;box-shadow:0 8px 30px rgba(20,20,19,.10);display:none}
+  .vpick.open .vmenu{display:block}
+  .vitem{display:flex;align-items:center;gap:10px;padding:10px 10px;border-radius:8px;cursor:pointer}
+  .vitem:hover{background:var(--surface-soft)}
+  .vitem[aria-current="true"]{background:var(--surface-cream-strong)}
+  .vitem .name{font-size:14px;color:var(--ink);font-weight:500}
+  .vitem .meta{font-size:12px;color:var(--muted)}
+  .vmenu hr{border:0;border-top:1px solid var(--hairline-soft);margin:6px 4px}
+  .vnew{display:flex;align-items:center;gap:8px;padding:9px 10px;color:var(--primary);font-size:14px;font-weight:500;cursor:pointer;border-radius:8px}
+  .vnew:hover{background:var(--surface-soft)}
+
+  /* layout */
+  .wrap{max-width:760px;margin:0 auto;padding:48px 24px 96px}
+  .hero{margin-bottom:32px}
+  .card{border-radius:12px;padding:32px}
+  .card--cream{background:var(--surface-card)}
+  .card--dark{background:var(--surface-dark);color:var(--on-dark)}
+  .row{display:flex;align-items:center;gap:12px}
+  .between{justify-content:space-between}
+  .label{font-size:13px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+
+  /* input toggle */
+  .seg{display:inline-flex;background:var(--surface-soft);border:1px solid var(--hairline);border-radius:9999px;padding:4px}
+  .seg button{border:0;background:transparent;font-size:13px;font-weight:500;color:var(--muted);padding:7px 16px;border-radius:9999px;cursor:pointer}
+  .seg button[aria-pressed="true"]{background:var(--canvas);color:var(--ink);box-shadow:0 1px 2px rgba(20,20,19,.06)}
+
+  textarea.target{width:100%;min-height:132px;resize:vertical;background:var(--canvas);border:1px solid var(--hairline);
+    border-radius:8px;padding:14px 16px;font-family:var(--sans);font-size:16px;color:var(--ink);line-height:1.55;margin-top:10px}
+  textarea.target:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(204,120,92,.15)}
+
+  .btn{font-size:14px;font-weight:500;border-radius:8px;border:1px solid transparent;padding:12px 20px;cursor:pointer;font-family:var(--sans)}
+  .btn--primary{background:var(--primary);color:var(--on-primary)}
+  .btn--primary:hover{background:var(--primary-active)}
+  .btn--lg{font-size:15px;padding:14px 26px}
+  .btn--secondary{background:var(--canvas);color:var(--ink);border-color:var(--hairline)}
+  .btn--secondary:hover{background:var(--surface-soft)}
+  .btn--on-dark{background:var(--surface-dark-elevated);color:var(--on-dark);border-color:transparent}
+
+  .pron{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .chip{font-size:13px;font-weight:500;background:var(--surface-cream-strong);color:var(--ink);border:0;border-radius:9999px;padding:5px 13px;cursor:pointer}
+  .chip--dark{background:var(--surface-dark-elevated);color:var(--on-dark)}
+
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;letter-spacing:1.2px;text-transform:uppercase;
+    border-radius:9999px;padding:4px 12px}
+  .badge--usable{background:var(--surface-card);color:var(--body-strong)}
+  .badge--studio{background:var(--primary);color:var(--on-primary)}
+
+  /* output player */
+  .player{display:flex;align-items:center;gap:14px;background:var(--surface-dark-soft);border-radius:10px;padding:14px 16px;margin-top:14px}
+  .play{width:42px;height:42px;border-radius:50%;background:var(--primary);border:0;color:#fff;font-size:15px;cursor:pointer;flex:none}
+  .wave{flex:1;display:flex;align-items:center;gap:3px;height:34px}
+  .wave i{flex:1;background:var(--on-dark-soft);border-radius:2px;opacity:.55}
+  .out-controls{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+  .speedgrp{display:inline-flex;background:var(--surface-dark-soft);border-radius:8px;padding:3px}
+  .speedgrp button{border:0;background:transparent;color:var(--on-dark-soft);font-size:13px;padding:6px 11px;border-radius:6px;cursor:pointer}
+  .speedgrp button[aria-pressed="true"]{background:var(--surface-dark-elevated);color:var(--on-dark)}
+
+  .nudge{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--surface-soft);
+    border:1px dashed var(--hairline);border-radius:12px;padding:16px 20px;margin-top:18px}
+
+  /* build screen */
+  .ticks{display:flex;gap:8px;margin:8px 0 22px}
+  .ticks i{flex:1;height:5px;border-radius:9999px;background:var(--hairline)}
+  .ticks i.done{background:var(--primary)} .ticks i.cur{background:var(--amber)}
+  .prompt-card{background:var(--surface-dark);color:var(--on-dark);border-radius:12px;padding:36px 32px;text-align:center}
+  .prompt-card .meta{font-size:13px;color:var(--on-dark-soft);margin-bottom:14px}
+  .prompt-card .line{font-family:var(--serif);font-weight:500;font-size:25px;line-height:1.5;max-width:32ch;margin:0 auto 20px}
+  .rec{width:64px;height:64px;border-radius:50%;background:var(--primary);border:0;color:#fff;font-size:22px;cursor:pointer;margin:0 auto;display:block}
+  .timer{font-family:var(--serif);font-size:30px;margin-top:14px;font-variant-numeric:tabular-nums;color:var(--on-dark)}
+  .timer span{font-size:15px;color:var(--on-dark-soft)}
+  .checklist{margin-top:14px;border:1px solid var(--hairline);border-radius:12px;overflow:hidden}
+  .clip{display:flex;align-items:center;gap:14px;padding:13px 16px;border-bottom:1px solid var(--hairline-soft);background:var(--canvas)}
+  .clip:last-child{border-bottom:0}
+  .clip .idx{font-family:var(--mono);font-size:12px;color:var(--muted-soft);width:22px}
+  .clip .txt{flex:1;font-size:14px;color:var(--body)}
+  .st{font-size:12px;font-weight:600;padding:3px 10px;border-radius:9999px}
+  .st--ok{background:rgba(93,184,114,.16);color:#3f8a52}
+  .st--idle{background:var(--surface-card);color:var(--muted)}
+
+  /* voices grid / empty */
+  .ingest{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px}
+  .ingest .opt{border:1px solid var(--hairline);border-radius:12px;padding:28px 24px;text-align:center;background:var(--canvas);cursor:pointer}
+  .ingest .opt:hover{border-color:var(--primary);background:var(--surface-soft)}
+  .ingest .opt .ic{width:40px;height:40px;margin:0 auto 14px;color:var(--primary)}
+  .ingest .opt h3{font-family:var(--serif);font-weight:600;font-size:21px;color:var(--ink)}
+  .ingest .opt p{font-size:13px;color:var(--muted);margin-top:6px}
+  .secondary-ingest{text-align:center;margin-top:18px}
+  .secondary-ingest a{color:var(--primary);font-size:14px;font-weight:500;text-decoration:none}
+
+  details.dev{margin-top:28px;border:1px solid var(--hairline);border-radius:12px;padding:0 18px}
+  details.dev summary{cursor:pointer;list-style:none;padding:16px 0;font-size:14px;font-weight:500;color:var(--muted)}
+  details.dev summary::-webkit-details-marker{display:none}
+  .advgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 0 18px}
+  .advcard{background:var(--surface-soft);border-radius:8px;padding:12px 14px}
+  .advcard strong{display:block;font-size:13px;color:var(--ink);margin-bottom:4px}
+  .advcard code{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+  .notice{border-radius:8px;padding:12px 14px;font-size:14px;margin-top:14px}
+  .notice--warn{background:rgba(232,165,90,.14);color:#9a6a1f}
+
+  .screen{display:none} .screen.on{display:block}
+  .frame-label{max-width:760px;margin:40px auto 0;padding:0 24px}
+  .frame-label .eyebrow{color:var(--muted-soft)}
+  .en [data-zh]{display:none} html:not(.en) [data-en]{display:none}
+
+  @media(max-width:680px){
+    .nav-mid{display:none} .ingest,.advgrid{grid-template-columns:1fr} h1.display{font-size:34px}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ NAV (shared) ============ -->
+<nav class="nav">
+  <div class="brand">
+    <svg class="spike" viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="var(--primary)"><rect x="11" y="2" width="2" height="20" rx="1"/>
+      <rect x="11" y="2" width="2" height="20" rx="1" transform="rotate(45 12 12)"/>
+      <rect x="11" y="2" width="2" height="20" rx="1" transform="rotate(90 12 12)"/>
+      <rect x="11" y="2" width="2" height="20" rx="1" transform="rotate(135 12 12)"/></g>
+    </svg>
+    AnyVoice
+  </div>
+  <div class="nav-mid">
+    <button class="tab" aria-current="true" onclick="go('studio',this)"><span data-zh>工作室</span><span data-en>Studio</span></button>
+    <button class="tab" onclick="go('voices',this)"><span data-zh>我的聲音</span><span data-en>Voices</span></button>
+  </div>
+  <div class="nav-right">
+    <div class="vpick" id="vpick">
+      <button class="vpick-btn" onclick="document.getElementById('vpick').classList.toggle('open')">
+        <span class="dot dot--studio"></span><span id="vname">Sunny 財經</span> ▾
+      </button>
+      <div class="vmenu">
+        <div class="vitem" aria-current="true" onclick="pick('Sunny 財經','studio',this)">
+          <span class="dot dot--studio"></span>
+          <div><div class="name">Sunny 財經</div><div class="meta" data-zh>錄音室等級 · 10 段</div><div class="meta" data-en>Studio-grade · 10 lines</div></div>
+        </div>
+        <div class="vitem" onclick="pick('我的聲音','usable',this)">
+          <span class="dot dot--usable"></span>
+          <div><div class="name" data-zh>我的聲音</div><div class="name" data-en>My voice</div><div class="meta" data-zh>可用 · 1 段</div><div class="meta" data-en>Usable · 1 line</div></div>
+        </div>
+        <div class="vitem" onclick="pick('阿哲（YT）','usable',this)">
+          <span class="dot dot--usable"></span>
+          <div><div class="name">阿哲（YT）</div><div class="meta" data-zh>可用 · YouTube 匯入</div><div class="meta" data-en>Usable · from YouTube</div></div>
+        </div>
+        <hr/>
+        <div class="vnew" onclick="go('voices');document.getElementById('vpick').classList.remove('open')">＋ <span data-zh>新增聲音</span><span data-en>New voice</span></div>
+      </div>
+    </div>
+    <button class="ghost" onclick="document.documentElement.classList.toggle('en')">中 / EN</button>
+    <button class="ghost" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">☾</button>
+  </div>
+</nav>
+
+<!-- ============ STUDIO (Generate + Audiobook) ============ -->
+<section class="screen on" id="studio">
+  <div class="wrap">
+    <div class="hero">
+      <div class="eyebrow"><span data-zh>數位聲音</span><span data-en>Digital voice</span></div>
+      <h1 class="display"><span data-zh>讓你的聲音說任何話</span><span data-en>Make your voice say anything</span></h1>
+      <p class="lede"><span data-zh>用 <span class="strong">Sunny 財經</span> 的聲音，輸入文字就能生成自然語音。</span><span data-en>Type anything and hear it spoken in the <span class="strong">Sunny finance</span> voice.</span></p>
+    </div>
+
+    <div class="row between" style="margin-bottom:18px">
+      <div class="seg" role="group">
+        <button aria-pressed="true"><span data-zh>一句話</span><span data-en>A line</span></button>
+        <button aria-pressed="false"><span data-zh>一本書</span><span data-en>A book</span></button>
+      </div>
+      <span class="badge badge--studio"><span data-zh>錄音室等級</span><span data-en>Studio-grade</span></span>
+    </div>
+
+    <div class="card card--cream">
+      <div class="row between">
+        <span class="label"><span data-zh>想說的內容</span><span data-en>What to say</span></span>
+        <span class="muted small">63 <span data-zh>字</span><span data-en>chars</span></span>
+      </div>
+      <textarea class="target">各位早安，歡迎收聽今天的財經早報。重慶銀行公布了最新的季度報告，市場反應正面。</textarea>
+
+      <div style="margin-top:16px">
+        <span class="label small"><span data-zh>建議的發音替換</span><span data-en>Suggested pronunciation fixes</span></span>
+        <div class="pron">
+          <button class="chip">重慶 → ㄔㄨㄥˊ ㄑㄧㄥˋ</button>
+          <button class="chip">銀行 → ㄧㄣˊ ㄏㄤˊ</button>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:24px">
+        <button class="btn btn--primary btn--lg"><span data-zh>產生聲音</span><span data-en>Generate voice</span></button>
+        <span class="muted small"><span data-zh>串流進度：準備中 → 合成中 → 完成</span><span data-en>Streamed: preparing → synthesizing → ready</span></span>
+      </div>
+    </div>
+
+    <!-- result -->
+    <div class="card card--dark" style="margin-top:16px">
+      <span class="label" style="color:var(--on-dark-soft)"><span data-zh>生成結果</span><span data-en>Result</span></span>
+      <div class="player">
+        <button class="play">▶</button>
+        <div class="wave" id="wave"></div>
+        <span class="small" style="color:var(--on-dark-soft);font-variant-numeric:tabular-nums">0:11</span>
+      </div>
+      <div class="out-controls">
+        <div class="speedgrp">
+          <button aria-pressed="true">1×</button><button>1.25×</button><button>1.5×</button><button>2×</button>
+        </div>
+        <button class="btn btn--on-dark"><span data-zh>下載 WAV</span><span data-en>Download WAV</span></button>
+        <button class="btn btn--on-dark"><span data-zh>重新生成</span><span data-en>Regenerate</span></button>
+      </div>
+    </div>
+
+    <div class="nudge">
+      <span class="small"><span data-zh>已用「我的聲音」生成？升級成錄音室等級可獲得更穩定的長篇朗讀與下載品質。</span><span data-en>Want steadier long-form narration and studio download quality? Upgrade this voice.</span></span>
+      <button class="ghost" onclick="go('voices')"><span data-zh>升級 →</span><span data-en>Upgrade →</span></button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ VOICES (Build / feed / manage) ============ -->
+<section class="screen" id="voices">
+  <div class="wrap">
+    <div class="hero">
+      <div class="eyebrow"><span data-zh>聲音檔案</span><span data-en>Voice profile</span></div>
+      <h1 class="display"><span data-zh>建立你的數位聲音</span><span data-en>Build your digital voice</span></h1>
+      <p class="lede"><span data-zh>一段乾淨錄音就能立刻使用。想要更穩定的成果，再錄滿引導語句升級成錄音室等級。</span><span data-en>One clean clip makes a voice usable. Read the guided lines to upgrade to studio-grade.</span></p>
+    </div>
+
+    <div class="row between" style="margin-bottom:18px">
+      <span class="label" style="margin:0">Sunny 財經</span>
+      <span class="row" style="gap:18px">
+        <span class="badge badge--studio"><span data-zh>錄音室等級 ✓</span><span data-en>Studio-grade ✓</span></span>
+        <span class="muted small" style="cursor:pointer"><span data-zh>重新命名</span><span data-en>Rename</span></span>
+        <span class="muted small" style="cursor:pointer"><span data-zh>刪除</span><span data-en>Delete</span></span>
+      </span>
+    </div>
+
+    <div class="row between" style="margin-bottom:6px">
+      <span class="label" style="margin:0"><span data-zh>升級進度</span><span data-en>Upgrade progress</span></span>
+      <span class="muted small"><span data-zh>已完成 10 / 10 段</span><span data-en>10 of 10 done</span></span>
+    </div>
+    <div class="ticks">
+      <i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i>
+      <i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="cur"></i>
+    </div>
+
+    <div class="prompt-card">
+      <div class="meta"><span data-zh>第 10 段 · 共 10 段</span><span data-en>Line 10 of 10</span></div>
+      <p class="line">如果遇到重要名字，例如 Brenda、AnyVoice、台北、重慶、銀行、長樂，我會保持穩定的音量與節奏。</p>
+      <div class="row" style="justify-content:center;gap:8px;margin-bottom:22px;flex-wrap:wrap">
+        <span class="small" style="color:var(--on-dark-soft)"><span data-zh>發音提示：</span><span data-en>Pronunciation:</span></span>
+        <span class="chip chip--dark">Brenda</span><span class="chip chip--dark">AnyVoice</span><span class="chip chip--dark">重慶</span><span class="chip chip--dark">長樂</span>
+      </div>
+      <button class="rec">●</button>
+      <div class="timer">8<span> / 6–20s</span></div>
+      <div class="small" style="color:var(--on-dark-soft);margin-top:8px"><span data-zh>已達標，點擊停止並儲存</span><span data-en>Long enough — tap to stop &amp; save</span></div>
+    </div>
+
+    <div style="margin-top:26px">
+      <span class="label"><span data-zh>全部語句</span><span data-en>All lines</span></span>
+      <div class="checklist">
+        <div class="clip"><span class="idx">01</span><span class="txt">你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上…</span><span class="st st--ok"><span data-zh>已通過</span><span data-en>Passed</span></span></div>
+        <div class="clip"><span class="idx">02</span><span class="txt">日期範例是二零二六年五月二十日，我會用自然的速度…</span><span class="st st--ok"><span data-zh>已通過</span><span data-en>Passed</span></span></div>
+        <div class="clip"><span class="idx">03</span><span class="txt">這段錄音包含高低起伏、停頓和短句…</span><span class="st st--ok"><span data-zh>已通過</span><span data-en>Passed</span></span></div>
+        <div class="clip"><span class="idx">10</span><span class="txt">如果遇到重要名字，例如 Brenda、AnyVoice…</span><span class="st st--idle"><span data-zh>待錄</span><span data-en>Pending</span></span></div>
+      </div>
+    </div>
+
+    <details class="dev">
+      <summary>▸ <span data-zh>開發者選項</span><span data-en>Developer</span></summary>
+      <p class="muted small" style="padding-bottom:12px"><span data-zh>品質驗證、proof、LoRA 訓練在指令列執行。</span><span data-en>Quality gate, proof, and LoRA training run in the CLI.</span></p>
+      <div class="advgrid">
+        <div class="advcard"><strong><span data-zh>嚴格 profile 驗證</span><span data-en>Strict profile verify</span></strong><code>verify_voice_profile_ready.py</code></div>
+        <div class="advcard"><strong><span data-zh>品質閘門</span><span data-en>Quality gate</span></strong><code>run_voice_quality_gate.py</code></div>
+        <div class="advcard"><strong><span data-zh>匯出 LoRA 資料</span><span data-en>Export LoRA dataset</span></strong><code>prepare_voice_lora_dataset.py</code></div>
+        <div class="advcard"><strong><span data-zh>後端 shootout</span><span data-en>Backend shootout</span></strong><code>prepare_voice_backend_shootout.py</code></div>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ FIRST-RUN EMPTY ============ -->
+<section class="screen" id="first">
+  <div class="wrap" style="padding-top:72px">
+    <div class="hero" style="text-align:center">
+      <div class="eyebrow"><span data-zh>第一次使用</span><span data-en>First run</span></div>
+      <h1 class="display" style="margin-top:6px"><span data-zh>先做一個聲音</span><span data-en>Make your first voice</span></h1>
+      <p class="lede" style="margin:12px auto 0"><span data-zh>錄一段或上傳一段乾淨的錄音，打上逐字內容，馬上就能用它說話。</span><span data-en>Record or upload one clean clip, type what it says, and start speaking with it right away.</span></p>
+    </div>
+    <div class="ingest">
+      <div class="opt">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        <h3><span data-zh>錄一段</span><span data-en>Record a clip</span></h3>
+        <p><span data-zh>照著引導語句唸 6–20 秒</span><span data-en>Read a guided line, 6–20s</span></p>
+      </div>
+      <div class="opt">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>
+        <h3><span data-zh>上傳一段</span><span data-en>Upload a clip</span></h3>
+        <p><span data-zh>mp3 / wav / m4a，附逐字稿</span><span data-en>mp3 / wav / m4a, with transcript</span></p>
+      </div>
+    </div>
+    <div class="secondary-ingest">
+      <a href="#">＋ <span data-zh>從 YouTube 匯入聲音</span><span data-en>Import a voice from YouTube</span></a>
+    </div>
+    <p class="notice notice--warn" style="text-align:center"><span data-zh>僅供個人與研究用途。請確認你有權使用這段聲音。</span><span data-en>Personal &amp; research use only. Confirm you have the right to use this voice.</span></p>
+
+    <div class="frame-label" style="text-align:center;margin-top:34px">
+      <button class="ghost" onclick="go('studio')"><span data-zh>← 看其他畫面</span><span data-en>← See other screens</span></button>
+    </div>
+  </div>
+</section>
+
+<!-- screen switcher for review -->
+<div class="frame-label" style="text-align:center;padding-bottom:48px">
+  <span class="eyebrow" style="display:block;margin-bottom:10px">Screens</span>
+  <button class="ghost" onclick="go('studio')">Studio</button>
+  <button class="ghost" onclick="go('voices')">Voices / Build</button>
+  <button class="ghost" onclick="go('first')">First-run empty</button>
+</div>
+
+<script>
+  // build a static waveform
+  var w=document.getElementById('wave'),h=[6,11,18,9,22,28,16,24,30,20,12,26,33,18,10,24,29,15,21,8,14,27,31,19,11,23,30,16,9,20];
+  h.forEach(function(v){var i=document.createElement('i');i.style.height=v+'px';w.appendChild(i)});
+
+  function go(id,el){
+    document.querySelectorAll('.screen').forEach(function(s){s.classList.toggle('on',s.id===id)});
+    document.querySelectorAll('.nav-mid .tab').forEach(function(t){t.setAttribute('aria-current','false')});
+    if(el&&el.classList.contains('tab')){el.setAttribute('aria-current','true')}
+    else{ // sync nav tab when navigating programmatically
+      var map={studio:0,voices:1}; var tabs=document.querySelectorAll('.nav-mid .tab');
+      if(id in map)tabs[map[id]].setAttribute('aria-current','true');
+    }
+    window.scrollTo(0,0);
+  }
+  function pick(name,grade,el){
+    document.getElementById('vname').textContent=name;
+    var btnDot=document.querySelector('.vpick-btn .dot');
+    btnDot.className='dot '+(grade==='studio'?'dot--studio':'dot--usable');
+    document.querySelectorAll('.vitem').forEach(function(v){v.setAttribute('aria-current','false')});
+    el.setAttribute('aria-current','true');
+    document.getElementById('vpick').classList.remove('open');
+  }
+  document.addEventListener('click',function(e){
+    var p=document.getElementById('vpick'); if(!p.contains(e.target))p.classList.remove('open');
+  });
+</script>
+</body>
+</html>

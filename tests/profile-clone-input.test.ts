@@ -229,7 +229,7 @@ describe("parseCloneFormWithProfile", () => {
     expect(isCloneInputError(input)).toBe(true);
     if (!isCloneInputError(input)) throw new Error("expected error");
     expect(input.statusCode).toBe(400);
-    expect(input.body.message).toMatch(/Traditional Chinese/);
+    expect(input.body.message).toMatch(/Simplified or mixed/);
   });
 
   it("rejects common Simplified-only target phrasing before profile lookup", async () => {
@@ -237,15 +237,15 @@ describe("parseCloneFormWithProfile", () => {
     expect(isCloneInputError(input)).toBe(true);
     if (!isCloneInputError(input)) throw new Error("expected error");
     expect(input.statusCode).toBe(400);
-    expect(input.body.message).toMatch(/Traditional Chinese/);
+    expect(input.body.message).toMatch(/Simplified or mixed/);
   });
 
-  it("rejects unproven Chinese target text for profile generation", async () => {
-    const input = await parseCloneFormWithProfile(profileForm({ targetText: "中文音色自然。" }));
-    expect(isCloneInputError(input)).toBe(true);
-    if (!isCloneInputError(input)) throw new Error("expected error");
-    expect(input.statusCode).toBe(400);
-    expect(input.body.message).toMatch(/unproven Chinese/);
+  it("accepts short shared-form Chinese target text (zh_unknown) for profile generation", async () => {
+    await writeRun("only-one");
+    const input = await parseCloneFormWithProfile(profileForm({ targetText: "我愛你" }));
+    expect(isCloneInputError(input)).toBe(false);
+    if (isCloneInputError(input)) throw new Error("expected clone input");
+    expect(input.sourceKind).toBe("profile");
   });
 
   it("resolves a ready profile for everyday generation without a transcript-validation report", async () => {
@@ -281,12 +281,22 @@ describe("parseCloneFormWithProfile", () => {
     expect(input.sourceKind).toBe("profile");
   });
 
-  it("rejects profile use until enough eligible clips exist", async () => {
+  it("unlocks everyday generation from a single usable clip (quick-clone)", async () => {
+    // P0.1/P0.2: one clean A/B clip is a *usable* voice and must generate
+    // zero-shot, even though it is not yet studio-grade.
     await writeRun("only-one");
+    const input = await parseCloneFormWithProfile(profileForm());
+    expect(isCloneInputError(input)).toBe(false);
+    if (isCloneInputError(input)) throw new Error("expected clone input");
+    expect(input.sourceKind).toBe("profile");
+  });
+
+  it("rejects profile use when no usable clip exists", async () => {
+    await writeRun("too-short", { durationSec: 2, grade: "A" });
     const input = await parseCloneFormWithProfile(profileForm());
     expect(isCloneInputError(input)).toBe(true);
     if (!isCloneInputError(input)) throw new Error("expected error");
     expect(input.statusCode).toBe(409);
-    expect(input.body.message).toMatch(/not ready/);
+    expect(input.body.message).toMatch(/not usable/);
   });
 });

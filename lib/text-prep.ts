@@ -220,6 +220,21 @@ export function strictTraditionalChineseScriptErrors(text: string): string[] {
   return ["missing_chinese_script"];
 }
 
+/**
+ * Ingest-tier gate: block only Simplified / mixed scripts (the real Mandarin
+ * safety hazard). Unlike {@link strictTraditionalChineseScriptErrors}, this
+ * ALLOWS `zh_unknown` (CJK with no Simplified markers and no distinctive
+ * Traditional markers, e.g. 早安你好) so short clean Traditional clips can
+ * enroll to a Usable voice. The studio-grade tier still requires proven
+ * Traditional via the `zh_hant` coverage feature, so this does not let a voice
+ * reach studio-grade on shared-form text.
+ */
+export function simplifiedOrMixedChineseScriptErrors(text: string): string[] {
+  const script = detectChineseScript(text);
+  if (script === "zh_hans" || script === "mixed_zh") return ["invalid_chinese_script"];
+  return [];
+}
+
 function countMarkers(
   text: string,
   script: "traditional" | "simplified",

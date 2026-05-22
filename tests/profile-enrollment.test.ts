@@ -99,12 +99,9 @@ describe("profile enrollment", () => {
     expect(result.body.message).toMatch(/Traditional Chinese|mixed Chinese/);
   });
 
-  it("rejects Chinese transcripts without clear Traditional marker evidence before analyzer work", () => {
-    const result = parseVoiceProfileEnrollmentForm(form({ promptTranscript: "中文音色自然。" }));
-    expect(isVoiceProfileEnrollmentError(result)).toBe(true);
-    if (!isVoiceProfileEnrollmentError(result)) throw new Error("expected error");
-    expect(result.statusCode).toBe(400);
-    expect(result.body.message).toMatch(/unproven|zh-Hant|Traditional Chinese/);
+  it("accepts short shared-form Chinese transcripts (zh_unknown) at ingest", () => {
+    const result = parseVoiceProfileEnrollmentForm(form({ promptTranscript: "早安你好" }));
+    expect(isVoiceProfileEnrollmentError(result)).toBe(false);
   });
 
   it("writes enrollment run files and parses analyzer quality", async () => {
