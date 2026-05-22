@@ -220,7 +220,6 @@ type Copy = {
   youtubeHint: string;
   youtubeNotice: string;
   youtubeUrlPlaceholder: string;
-  youtubeStartPlaceholder: string;
   youtubeConsent: string;
   youtubeImport: string;
   youtubeImporting: string;
@@ -307,7 +306,6 @@ const COPY: Record<Locale, Copy> = {
     youtubeHint: "貼上 YouTube 影片網址即可擷取一段聲音來複製。網址含 &t=（例如 &t=300 代表從 5:00 開始）就會從該時間點取約 12 秒。逐字稿會自動從字幕或語音辨識取得；下方欄位選填，只在想修正時才需填寫。",
     youtubeNotice: "僅供個人與研究用途。請確認你有權使用這段聲音。",
     youtubeUrlPlaceholder: "https://www.youtube.com/watch?v=…&t=300",
-    youtubeStartPlaceholder: "起始時間（選填，如 5:00）",
     youtubeConsent: "我確認此匯入僅供個人／研究用途，且我有權使用這段聲音。",
     youtubeImport: "匯入",
     youtubeImporting: "匯入中…（下載與分析需要一點時間）",
@@ -392,7 +390,6 @@ const COPY: Record<Locale, Copy> = {
     youtubeHint: "Paste a YouTube URL to grab a clip to clone. A URL with &t= (e.g. &t=300 = start at 5:00) takes ~12s from that point. The transcript is captured automatically from captions or speech recognition; the field below is optional, for corrections only.",
     youtubeNotice: "Personal & research use only. Confirm you have the right to use this voice.",
     youtubeUrlPlaceholder: "https://www.youtube.com/watch?v=…&t=300",
-    youtubeStartPlaceholder: "Start time (optional, e.g. 5:00)",
     youtubeConsent: "I confirm this import is for personal/research use and I have the right to use this voice.",
     youtubeImport: "Import",
     youtubeImporting: "Importing… (download + analysis takes a moment)",
@@ -548,8 +545,8 @@ export function VoiceCloneStudio() {
   const [elapsed, setElapsed] = useState(0);
   // ---- YouTube import (build screen disclosure)
   const [ytUrl, setYtUrl] = useState("");
-  const [ytStart, setYtStart] = useState("");
   const [ytTranscript, setYtTranscript] = useState("");
+  const [ytNeedTranscript, setYtNeedTranscript] = useState(false);
   const [ytConsent, setYtConsent] = useState(false);
   const [ytBusy, setYtBusy] = useState(false);
   const [ytMessage, setYtMessage] = useState("");
@@ -858,43 +855,37 @@ export function VoiceCloneStudio() {
     }
   }
 
-  // Parse a "5:00" / "300" / "1h2m3s" start time into seconds (client-side).
-  function parseStartSeconds(value: string): number | undefined {
-    const raw = value.trim().toLowerCase();
-    if (!raw) return undefined;
-    if (/^\d+$/.test(raw)) return Number(raw);
-    if (raw.includes(":")) {
-      const parts = raw.split(":");
-      if (parts.length > 3 || parts.some((p) => !/^\d+$/.test(p))) return undefined;
-      return parts.reduce((acc, p) => acc * 60 + Number(p), 0);
-    }
-    const m = raw.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
-    if (!m || (!m[1] && !m[2] && !m[3])) return undefined;
-    return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
-  }
-
   async function importFromYoutube() {
     if (!ytUrl.trim() || !ytConsent || ytBusy) return;
+    if (ytNeedTranscript && !ytTranscript.trim()) return;
     setYtBusy(true);
     setYtError(false);
     setYtMessage(t.youtubeImporting);
     try {
+      // Start time comes from the URL's &t= param; the transcript is captured
+      // automatically (captions → speech recognition). Only send a typed
+      // transcript when an earlier import asked for one.
       const response = await fetch("/api/voice-profile/enroll/youtube", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           url: ytUrl.trim(),
-          startSeconds: parseStartSeconds(ytStart),
-          transcriptOverride: ytTranscript.trim() || undefined,
+          transcriptOverride: ytNeedTranscript ? ytTranscript.trim() || undefined : undefined,
           consent: "yes",
         }),
       });
       const payload = (await response.json()) as VoiceProfileEnrollmentPayload & { code?: string };
       if (!response.ok || payload.status !== "enrolled") {
         setYtError(true);
-        setYtMessage(payload.code === "no_captions" ? t.youtubeNoCaptions : payload.message || t.youtubeFailed);
+        if (payload.code === "no_captions") {
+          setYtNeedTranscript(true);
+          setYtMessage(t.youtubeNoCaptions);
+        } else {
+          setYtMessage(payload.message || t.youtubeFailed);
+        }
         return;
       }
+      setYtNeedTranscript(false);
       if (payload.profile) setProfile(payload.profile);
       const quality = payload.referenceQuality;
       const passing = new Set(payload.profile?.requirements?.passingGrades ?? ["A", "B"]);
@@ -1281,22 +1272,18 @@ export function VoiceCloneStudio() {
                 onChange={(e) => setYtUrl(e.target.value)}
                 disabled={ytBusy}
               />
-              <input
-                type="text"
-                className="field"
-                placeholder={t.youtubeStartPlaceholder}
-                value={ytStart}
-                onChange={(e) => setYtStart(e.target.value)}
-                disabled={ytBusy}
-              />
-              <textarea
-                className="field"
-                rows={2}
-                placeholder={t.uploadTranscriptPlaceholder}
-                value={ytTranscript}
-                onChange={(e) => setYtTranscript(e.target.value)}
-                disabled={ytBusy}
-              />
+              {/* Transcript is captured automatically; this only appears when
+                  both captions and speech recognition came up empty. */}
+              {ytNeedTranscript && (
+                <textarea
+                  className="field"
+                  rows={2}
+                  placeholder={t.uploadTranscriptPlaceholder}
+                  value={ytTranscript}
+                  onChange={(e) => setYtTranscript(e.target.value)}
+                  disabled={ytBusy}
+                />
+              )}
               <label className="row small" style={{ gap: 8, alignItems: "flex-start" }}>
                 <input
                   type="checkbox"
@@ -1309,7 +1296,7 @@ export function VoiceCloneStudio() {
               <button
                 className="btn"
                 onClick={importFromYoutube}
-                disabled={ytBusy || !ytUrl.trim() || !ytConsent}
+                disabled={ytBusy || !ytUrl.trim() || !ytConsent || (ytNeedTranscript && !ytTranscript.trim())}
               >
                 {ytBusy ? t.youtubeImporting : t.youtubeImport}
               </button>
