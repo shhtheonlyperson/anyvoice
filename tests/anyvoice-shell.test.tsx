@@ -38,15 +38,32 @@ const READY_PROFILE = {
   hash: 0x4a7d,
 };
 
-function stubFetch() {
+const EMPTY_PROFILE = {
+  id: "vp_empty",
+  displayName: "新的聲音",
+  status: "needs_enrollment",
+  usable: false,
+  studioGrade: false,
+  clipCount: 0,
+  hash: 0x1111,
+};
+
+function stubFetch(profiles: unknown[] = [READY_PROFILE]) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes("/api/voice-profile/profiles")) return Response.json({ profiles: [READY_PROFILE] });
+    if (url.includes("/api/voice-profile/profiles")) return Response.json({ profiles });
     if (url.includes("/api/runs")) return Response.json({ items: [] });
     return Response.json({ status: "ready", audioUrl: "/result.wav" });
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function clickTab(container: HTMLElement, label: string) {
+  const tab = Array.from(container.querySelectorAll(".tabs .tab")).find((b) =>
+    (b.textContent || "").includes(label),
+  ) as HTMLButtonElement;
+  tab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
 async function flush() {
@@ -109,6 +126,77 @@ describe("AnyVoice workspace shell", () => {
       (b.textContent || "").includes("生成"),
     ) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
+    await act(async () => root.unmount());
+    container.remove();
+  });
+});
+
+describe("Build tab — adaptive state from real summary", () => {
+  it("renders the ready hero with a Start generating CTA for a studio-grade voice", async () => {
+    const { container, root } = await mount();
+    await act(async () => clickTab(container, "建立聲音"));
+    await flush();
+    // Ready state: coral hero status panel + "開始生成" CTA.
+    expect(container.querySelector(".build-status.ready")).not.toBeNull();
+    expect(container.textContent).toContain("你的聲音已準備好");
+    expect(container.textContent).toContain("開始生成");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("renders the empty state with a Start recording CTA when clipCount is 0", async () => {
+    stubFetch([EMPTY_PROFILE]);
+    const { container, root } = await mount();
+    await act(async () => clickTab(container, "建立聲音"));
+    await flush();
+    const panel = container.querySelector(".build-status") as HTMLElement;
+    expect(panel).not.toBeNull();
+    expect(panel.classList.contains("ready")).toBe(false);
+    expect(container.textContent).toContain("開始錄音");
+    // Empty-zone three options present.
+    expect(container.querySelector(".empty-zone")).not.toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+});
+
+describe("CreateVoiceModal — consent gating", () => {
+  it("opens from the rail + and gates the YouTube Build button on URL + consent", async () => {
+    const { container, root } = await mount();
+    // Open the modal via the rail "+".
+    const plus = container.querySelector(".rail-section-action") as HTMLButtonElement;
+    await act(async () => plus.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    // Choose the YouTube path.
+    const ytOption = Array.from(document.querySelectorAll(".cv-option")).find((b) =>
+      (b.textContent || "").includes("YouTube"),
+    ) as HTMLButtonElement;
+    await act(async () => ytOption.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    const buildBtn = Array.from(document.querySelectorAll("button.btn--primary")).find((b) =>
+      (b.textContent || "").includes("建立聲音複製"),
+    ) as HTMLButtonElement;
+    // Gated: no URL, no consent.
+    expect(buildBtn.disabled).toBe(true);
+
+    // Type a URL — still gated without consent.
+    const urlInput = document.querySelector(".first-run-card input.input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(urlInput, "https://www.youtube.com/watch?v=abc&t=300");
+      urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    expect(buildBtn.disabled).toBe(true);
+
+    // Tick consent → enabled.
+    const consent = document.querySelector('.first-run-card input[type="checkbox"]') as HTMLInputElement;
+    act(() => consent.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    expect(buildBtn.disabled).toBe(false);
+
     await act(async () => root.unmount());
     container.remove();
   });

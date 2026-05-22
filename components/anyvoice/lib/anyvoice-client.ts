@@ -36,6 +36,86 @@ export async function fetchRuns(limit = 12): Promise<RunItem[]> {
   return (payload.items ?? []).filter((it) => it.status === "ready" && it.audioUrl);
 }
 
+/** POST /api/voice-profile/profiles — create an empty named profile. */
+export async function createProfile(displayName: string): Promise<{ id: string } | null> {
+  const res = await fetch("/api/voice-profile/profiles", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ displayName }),
+  });
+  if (!res.ok) return null;
+  const payload = (await res.json()) as { profile?: { id: string } };
+  return payload.profile ?? null;
+}
+
+/** PATCH /api/voice-profile/profiles/[id] — rename a profile. */
+export async function renameProfile(id: string, displayName: string): Promise<boolean> {
+  const res = await fetch(`/api/voice-profile/profiles/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ displayName }),
+  });
+  return res.ok;
+}
+
+/** DELETE /api/voice-profile/profiles/[id]. */
+export async function deleteProfile(id: string): Promise<boolean> {
+  const res = await fetch(`/api/voice-profile/profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return res.ok;
+}
+
+export interface EnrollResult {
+  ok: boolean;
+  message?: string;
+  code?: string;
+}
+
+/**
+ * POST /api/voice-profile/enroll/youtube — synchronous import: resolves when
+ * the backend has captured + analysed + built the signature. The caller binds
+ * an in-flight "importing" UI to this promise's lifecycle (no fake timer).
+ */
+export async function enrollFromYoutube(args: {
+  url: string;
+  profileId: string;
+}): Promise<EnrollResult> {
+  const res = await fetch("/api/voice-profile/enroll/youtube", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: args.url, profileId: args.profileId, consent: "yes" }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as {
+    status?: string;
+    message?: string;
+    code?: string;
+  };
+  return {
+    ok: res.ok && payload.status === "enrolled",
+    message: payload.message,
+    code: payload.code,
+  };
+}
+
+/**
+ * POST /api/voice-profile/enroll — upload a clip with a typed transcript and
+ * consent. Synchronous: resolves when the clip is enrolled or rejected.
+ */
+export async function enrollFromUpload(args: {
+  file: File;
+  transcript: string;
+  profileId: string;
+}): Promise<EnrollResult> {
+  const form = new FormData();
+  form.set("voice", args.file);
+  form.set("promptTranscript", args.transcript);
+  form.set("sourceKind", "upload");
+  form.set("voiceProfileId", args.profileId);
+  form.set("consent", "yes");
+  const res = await fetch("/api/voice-profile/enroll", { method: "POST", body: form });
+  const payload = (await res.json().catch(() => ({}))) as { status?: string; message?: string };
+  return { ok: res.ok && payload.status === "enrolled", message: payload.message };
+}
+
 export interface GenerateResult {
   status: "ready" | "needs_worker" | "error";
   audioUrl?: string;

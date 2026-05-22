@@ -1,12 +1,13 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BookReader } from "@/components/BookReader";
-import { VoiceCloneStudio } from "@/components/VoiceCloneStudio";
 import "./anyvoice.css";
 import { I18nProvider, useT, type Lang, type VoiceStatus, type VoiceView } from "./i18n";
 import { WorkspaceShell } from "./WorkspaceShell";
 import type { Tab } from "./Topbar";
 import { GenerateTab } from "./GenerateTab";
+import { BuildTab } from "./BuildTab";
+import { CreateVoiceModal } from "./CreateVoiceModal";
 import { fetchProfiles, type ProfileListItem } from "./lib/anyvoice-client";
 
 /** Backend two-status model → design status enum. */
@@ -45,6 +46,7 @@ function Workspace({
   const [activeTab, setActiveTab] = useState<Tab>("generate");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   const voices = useMemo(() => profiles.map(toVoiceView), [profiles]);
 
@@ -52,6 +54,13 @@ function Workspace({
     const list = await fetchProfiles();
     setProfiles(list);
     setActiveVoiceId((cur) => cur ?? list.find((p) => p.usable)?.id ?? list[0]?.id ?? null);
+  }, []);
+
+  // Refresh, then force-select a specific profile (used after create/delete).
+  const refreshAndSelect = useCallback(async (id: string | null) => {
+    const list = await fetchProfiles();
+    setProfiles(list);
+    setActiveVoiceId(id && list.some((p) => p.id === id) ? id : (list.find((p) => p.usable)?.id ?? list[0]?.id ?? null));
   }, []);
 
   useEffect(() => {
@@ -73,7 +82,7 @@ function Workspace({
       voices={voices}
       activeVoiceId={activeVoiceId}
       onSelectVoice={setActiveVoiceId}
-      onCreateVoice={() => setActiveTab("build")}
+      onCreateVoice={() => setShowCreate(true)}
       activeTab={activeTab}
       onChangeTab={setActiveTab}
       lang={lang}
@@ -88,12 +97,12 @@ function Workspace({
       )}
 
       {activeTab === "build" && (
-        <div className="legacy-tab-slot">
-          {/* P0: the full 24-line in-browser recorder is deferred to P1. The
-              existing enrollment / recording-kit UI is mounted here so no
-              working build feature is lost. */}
-          <VoiceCloneStudio />
-        </div>
+        <BuildTab
+          activeProfile={activeProfile}
+          onRefresh={() => void refresh()}
+          onChangeTab={(tab) => setActiveTab(tab)}
+          onDeleted={() => void refreshAndSelect(null)}
+        />
       )}
 
       {activeTab === "audiobook" && (
@@ -111,6 +120,22 @@ function Workspace({
             </div>
           )}
         </div>
+      )}
+
+      {showCreate && (
+        <CreateVoiceModal
+          onClose={() => setShowCreate(false)}
+          onRecordPath={(id) => {
+            setShowCreate(false);
+            void refreshAndSelect(id);
+            setActiveTab("build");
+          }}
+          onCreated={(id) => {
+            setShowCreate(false);
+            void refreshAndSelect(id);
+            setActiveTab("build");
+          }}
+        />
       )}
 
       {toast && <div className="toast">{toast}</div>}
