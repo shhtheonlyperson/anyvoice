@@ -22,24 +22,28 @@ the launchd agent `com.shh.anyvoice-worker` → `.anyvoice/start-worker.sh` →
 `next start -p 3001`).
 
 **DNS finding (2026-05-22):** `voice.theonlyperson.com` currently CNAMEs to
-`cname.vercel-dns.com`. The zone `theonlyperson.com` is on **Google Cloud DNS**
-(`ns-cloud-*.googledomains.com`), **not Cloudflare**. This constrains the tunnel
-options below.
+`cname.vercel-dns.com`. DNS for `theonlyperson.com` is **managed in Squarespace**
+(the nameservers still read `ns-cloud-*.googledomains.com` — the Google Domains
+backend Squarespace inherited). It is **not on Cloudflare**, so the Cloudflare
+Tunnel path needs a nameserver change *in Squarespace* first. This constrains
+the options below.
 
 **Fix (when we circle back):** repoint `voice.theonlyperson.com` away from
 Vercel and at the Mac Studio's `:3001` via an HTTPS tunnel (the mic's
 `getUserMedia` requires a secure context). Each option needs an interactive
 account login, so it can't be automated:
 
-- **Cloudflare Tunnel (custom domain).** Requires moving the zone to Cloudflare
-  first (Cloudflare's `<uuid>.cfargotunnel.com` routing only works for
-  Cloudflare-managed zones; partial-CNAME setup is Enterprise-only): add
-  `theonlyperson.com` to a Cloudflare account → change NS at the registrar to
-  Cloudflare's → `brew install cloudflared` → `cloudflared tunnel login` →
-  `cloudflared tunnel create anyvoice` →
-  `cloudflared tunnel route dns anyvoice voice.theonlyperson.com` → run
-  `cloudflared tunnel run --url http://localhost:3001 anyvoice` (as a launchd
-  agent alongside the worker).
+- **Cloudflare Tunnel (custom domain) — recommended.** `cloudflared` is already
+  installed and `scripts/setup-cloudflare-tunnel.sh` automates the machine side
+  (login → create tunnel → write config → route DNS → install a launchd agent
+  `com.shh.anyvoice-tunnel`). The only manual prerequisite is moving the zone to
+  Cloudflare, because `<uuid>.cfargotunnel.com` routing only works for
+  Cloudflare-managed zones (partial-CNAME is Enterprise-only):
+    1. dash.cloudflare.com → Add a site → `theonlyperson.com`.
+    2. Squarespace → Domains → theonlyperson.com → change the nameservers to the
+       pair Cloudflare provides; wait for the zone to go "Active".
+    3. Run `scripts/setup-cloudflare-tunnel.sh`, then set
+       `AUTH_URL=https://voice.theonlyperson.com` and restart the worker.
 - **Keep DNS on Google Cloud, expose via a public reverse proxy.** Stand up a
   tiny VPS (or Cloudflare-fronted Worker) and point an A/CNAME record at it; it
   reverse-proxies to the Mac over a tunnel/VPN. More moving parts.
