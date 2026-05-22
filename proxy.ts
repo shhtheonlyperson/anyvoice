@@ -1,16 +1,28 @@
-// Gate the whole app behind the Google-OAuth allowlist defined in auth.ts.
-// The `authorized` callback there decides; Auth.js redirects anonymous page
-// requests to the Google sign-in flow automatically.
+import { NextResponse } from "next/server";
+import { auth, isAllowedEmail } from "@/auth";
+import { ANYVOICE_USER_HEADER, userIdForEmail } from "@/lib/user-session";
+
+// Gate the whole app behind the Google-OAuth allowlist (see auth.ts) and inject
+// the authenticated identity so voice data follows the Google account.
 //
-// Runs on the Node.js runtime: this app is served by `next start` and its libs
-// use Node built-ins (node:fs, node:child_process, …), which the Edge runtime
-// rejects.
-export { auth as proxy } from "@/auth";
+// Runs on the Node.js runtime (proxy always does), so the app's node: built-ins
+// are fine here. All matched routes pass through this, and we OVERWRITE the
+// identity header, so a client cannot spoof it.
+export const proxy = auth((req) => {
+  const email = req.auth?.user?.email;
+  if (!isAllowedEmail(email)) {
+    const url = new URL("/api/auth/signin", req.nextUrl.origin);
+    url.searchParams.set("callbackUrl", req.nextUrl.href);
+    return NextResponse.redirect(url);
+  }
+  const headers = new Headers(req.headers);
+  headers.set(ANYVOICE_USER_HEADER, userIdForEmail(email as string));
+  return NextResponse.next({ request: { headers } });
+});
 
 export const config = {
   // Run on everything except the Auth.js endpoints (the login flow itself),
-  // Next internals, and static asset files. (Proxy always runs on Node.js, so
-  // no runtime key — and our libs' node: built-ins are fine here.)
+  // Next internals, and static asset files.
   matcher: [
     "/((?!api/auth|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|.*\\.(?:png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|otf|css|js|map)$).*)",
   ],
