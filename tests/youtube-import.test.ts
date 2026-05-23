@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  clampScanWindow,
   clampWindow,
   parseTimeParam,
   parseVtt,
   parseYoutubeUrl,
   pickSubtitleFile,
+  planFixedSlices,
+  planSegments,
   selectCuesText,
   simplifiedToTraditional,
+  type VttCue,
 } from "@/lib/youtube-import";
 import { strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
 
@@ -57,6 +61,69 @@ describe("clampWindow", () => {
   it("clamps below 6s and above 20s", () => {
     expect(clampWindow(100, 2)).toEqual({ start: 100, end: 106 });
     expect(clampWindow(100, 60)).toEqual({ start: 100, end: 120 });
+  });
+});
+
+describe("clampScanWindow", () => {
+  it("defaults to a 90s scan window", () => {
+    expect(clampScanWindow(100)).toEqual({ start: 100, end: 190 });
+  });
+  it("clamps the scan span to 30–120s", () => {
+    expect(clampScanWindow(100, 10)).toEqual({ start: 100, end: 130 });
+    expect(clampScanWindow(100, 600)).toEqual({ start: 100, end: 220 });
+  });
+});
+
+describe("planSegments", () => {
+  // 90s of evenly-spaced 6s cues starting at t=300.
+  const cues: VttCue[] = Array.from({ length: 15 }, (_, i) => ({
+    start: 300 + i * 6,
+    end: 306 + i * 6,
+    text: `句子${i + 1}`,
+  }));
+
+  it("chunks captions into several ~6–18s clips aligned to cue boundaries", () => {
+    const segs = planSegments(cues, 300, 390);
+    expect(segs.length).toBeGreaterThanOrEqual(5); // enough to clear the 5-clip bar
+    for (const s of segs) {
+      const dur = s.end - s.start;
+      expect(dur).toBeGreaterThanOrEqual(6);
+      expect(dur).toBeLessThanOrEqual(18);
+      expect(s.text.length).toBeGreaterThan(0);
+    }
+    // Segments stay within the window and don't overlap.
+    expect(segs[0].start).toBeGreaterThanOrEqual(300);
+    expect(segs[segs.length - 1].end).toBeLessThanOrEqual(390);
+  });
+
+  it("drops rolling auto-caption duplicates within a clip", () => {
+    const dupes: VttCue[] = [
+      { start: 300, end: 305, text: "你好" },
+      { start: 305, end: 310, text: "你好世界" },
+      { start: 310, end: 316, text: "你好世界今天" },
+    ];
+    const segs = planSegments(dupes, 300, 320);
+    expect(segs).toHaveLength(1);
+    expect(segs[0].text).toBe("你好世界今天");
+  });
+
+  it("returns [] when no cues overlap the window", () => {
+    expect(planSegments(cues, 1000, 1100)).toEqual([]);
+  });
+});
+
+describe("planFixedSlices", () => {
+  it("splits a 90s window into ~6 slices in the 6–18s band", () => {
+    const slices = planFixedSlices(90);
+    expect(slices.length).toBeGreaterThanOrEqual(5);
+    for (const s of slices) {
+      expect(s.duration).toBeGreaterThanOrEqual(6);
+      expect(s.duration).toBeLessThanOrEqual(18);
+    }
+    expect(slices[0].relStart).toBe(0);
+  });
+  it("returns [] for a sub-minimum span", () => {
+    expect(planFixedSlices(3)).toEqual([]);
   });
 });
 

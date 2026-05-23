@@ -29,6 +29,19 @@ const MIN_WINDOW_SEC = 6;
 const MAX_WINDOW_SEC = 20;
 
 /**
+ * Scan window: instead of one short clip, grab a longer span and auto-chunk it
+ * into several reference clips so a single video can establish a full profile
+ * (incl. the strict 5-clip studio-grade bar). 90s ≈ six ~14s clips.
+ */
+const DEFAULT_SCAN_SEC = 90;
+const MIN_SCAN_SEC = 30;
+const MAX_SCAN_SEC = 120;
+/** Per-clip duration band used when chunking the scan window. */
+const SEGMENT_TARGET_SEC = 14;
+const SEGMENT_MIN_SEC = 6;
+const SEGMENT_MAX_SEC = 18;
+
+/**
  * Parse a `t` / `start` time value into seconds. Accepts a bare integer
  * ("300"), a trailing-unit form ("300s", "5m0s", "1h2m3s"), or a clock form
  * ("5:00", "1:05:00"). Returns 0 for empty or unrecognized input.
@@ -94,6 +107,103 @@ export function clampWindow(
   const requested = durationSeconds && durationSeconds > 0 ? durationSeconds : DEFAULT_WINDOW_SEC;
   const window = Math.min(MAX_WINDOW_SEC, Math.max(MIN_WINDOW_SEC, Math.round(requested)));
   return { start: safeStart, end: safeStart + window };
+}
+
+/**
+ * Clamp the requested *scan* window (default 90s, 30–120s) — the longer span we
+ * download and then chunk into multiple reference clips.
+ */
+export function clampScanWindow(
+  start: number,
+  durationSeconds?: number,
+): { start: number; end: number } {
+  const safeStart = Math.max(0, Math.floor(start || 0));
+  const requested = durationSeconds && durationSeconds > 0 ? durationSeconds : DEFAULT_SCAN_SEC;
+  const window = Math.min(MAX_SCAN_SEC, Math.max(MIN_SCAN_SEC, Math.round(requested)));
+  return { start: safeStart, end: safeStart + window };
+}
+
+export interface PlannedSegment {
+  /** Absolute video time, seconds. */
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Chunk the captions overlapping [windowStart, windowEnd] into a list of clip
+ * segments, each in the ~6–18s enrollment band and aligned to caption (cue)
+ * boundaries so the sliced audio matches its transcript. Drops the
+ * rolling-duplicate lines YouTube auto-captions emit. Returns [] when there are
+ * no usable cues (caller falls back to fixed-length ASR slicing).
+ */
+export function planSegments(
+  cues: VttCue[],
+  windowStart: number,
+  windowEnd: number,
+  opts: { target?: number; min?: number; max?: number } = {},
+): PlannedSegment[] {
+  const target = opts.target ?? SEGMENT_TARGET_SEC;
+  const min = opts.min ?? SEGMENT_MIN_SEC;
+  const max = opts.max ?? SEGMENT_MAX_SEC;
+
+  const picked = cues
+    .filter((c) => c.end > windowStart && c.start < windowEnd)
+    .sort((a, b) => a.start - b.start);
+  if (picked.length === 0) return [];
+
+  const segments: PlannedSegment[] = [];
+  let curStart: number | null = null;
+  let curEnd = 0;
+  let curTexts: string[] = [];
+
+  const addText = (text: string) => {
+    const last = curTexts[curTexts.length - 1];
+    if (text === last) return;
+    if (last && (last.endsWith(text) || text.startsWith(last))) {
+      curTexts[curTexts.length - 1] = text.length >= last.length ? text : last;
+      return;
+    }
+    curTexts.push(text);
+  };
+
+  const flush = () => {
+    if (curStart === null) return;
+    const end = Math.min(curEnd, curStart + max);
+    const text = curTexts.join(" ").replace(/\s+/g, " ").trim();
+    if (text) segments.push({ start: curStart, end, text });
+    curStart = null;
+    curEnd = 0;
+    curTexts = [];
+  };
+
+  for (const cue of picked) {
+    const cStart = Math.max(cue.start, windowStart);
+    const cEnd = Math.min(cue.end, windowEnd);
+    // Close the current segment before it would exceed max.
+    if (curStart !== null && cEnd - curStart > max) flush();
+    if (curStart === null) curStart = cStart;
+    curEnd = cEnd;
+    addText(cue.text);
+    if (curEnd - curStart >= target) flush();
+  }
+  flush();
+
+  // Merge a too-short trailing segment into the previous one when possible;
+  // otherwise drop sub-min fragments (too short for the analyzer).
+  const usable: PlannedSegment[] = [];
+  for (const seg of segments) {
+    if (seg.end - seg.start >= min) {
+      usable.push(seg);
+      continue;
+    }
+    const prev = usable[usable.length - 1];
+    if (prev && seg.end - prev.start <= max) {
+      prev.end = seg.end;
+      prev.text = `${prev.text} ${seg.text}`.replace(/\s+/g, " ").trim();
+    }
+  }
+  return usable;
 }
 
 function parseVttTimestamp(value: string): number | null {
@@ -214,6 +324,83 @@ export async function transcribeAudioFile(audioPath: string, language = "zh"): P
     return (parsed.transcript || "").trim();
   } catch {
     return "";
+  }
+}
+
+/**
+ * Plan fixed-length slices across a window when there are no captions to align
+ * to. Used by the ASR fallback: we slice the audio into ~target-second pieces
+ * and transcribe each one. Returns relative offsets into the downloaded wav
+ * (the wav starts at windowStart, so offset = absolute − windowStart).
+ */
+export function planFixedSlices(
+  windowSeconds: number,
+  opts: { target?: number; min?: number; max?: number } = {},
+): { relStart: number; duration: number }[] {
+  const target = opts.target ?? SEGMENT_TARGET_SEC;
+  const min = opts.min ?? SEGMENT_MIN_SEC;
+  const max = opts.max ?? SEGMENT_MAX_SEC;
+  const span = Math.max(0, Math.floor(windowSeconds));
+  if (span < min) return [];
+  const count = Math.max(1, Math.round(span / target));
+  const size = Math.min(max, Math.max(min, Math.floor(span / count)));
+  const slices: { relStart: number; duration: number }[] = [];
+  for (let offset = 0; offset + min <= span; offset += size) {
+    slices.push({ relStart: offset, duration: Math.min(size, span - offset) });
+  }
+  return slices;
+}
+
+/**
+ * Extract [relStart, relStart+duration] from a wav into outPath as 16k mono —
+ * the format the analyzer wants. Throws YoutubeImportError on ffmpeg failure.
+ */
+export async function sliceAudioSegment(opts: {
+  srcWav: string;
+  relStart: number;
+  duration: number;
+  outPath: string;
+  timeoutMs?: number;
+}): Promise<void> {
+  const ffmpeg = process.env.ANYVOICE_FFMPEG || "/opt/homebrew/bin/ffmpeg";
+  const args = [
+    "-y",
+    "-ss",
+    String(Math.max(0, opts.relStart)),
+    "-t",
+    String(Math.max(0.1, opts.duration)),
+    "-i",
+    opts.srcWav,
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-c:a",
+    "pcm_s16le",
+    opts.outPath,
+  ];
+  const result = await new Promise<RunResult>((resolve) => {
+    const child = spawn(ffmpeg, args, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let spawnError: Error | null = null;
+    const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 30_000);
+    child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf-8")));
+    child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf-8")));
+    child.on("error", (err) => (spawnError = err));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, spawnError });
+    });
+  });
+  if (result.spawnError && (result.spawnError as NodeJS.ErrnoException).code === "ENOENT") {
+    throw new YoutubeImportError("ffmpeg is not installed: brew install ffmpeg", 500);
+  }
+  if (result.code !== 0) {
+    throw new YoutubeImportError(
+      `ffmpeg slice failed: ${(result.stderr.trim() || result.stdout.trim()).slice(0, 200)}`,
+      502,
+    );
   }
 }
 

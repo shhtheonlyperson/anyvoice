@@ -65,7 +65,10 @@ type LineStatus = "todo" | "pass" | "retry" | "recording" | "processing";
 /** Map the real summary to the design state. */
 function deriveState(p: ProfileListItem | undefined): Exclude<BuildState, "recording"> {
   if (!p || p.clipCount === 0) return "empty";
-  if (p.studioGrade) return "ready";
+  // Done once the profile meets its own requirement tier: studio-grade for
+  // local-default, the lenient minClips:1 bar for imports. Otherwise it's still
+  // being built up (the "reviewing" progress card).
+  if (p.meetsRequirements || p.studioGrade) return "ready";
   return "reviewing";
 }
 

@@ -11,10 +11,19 @@ vi.mock("@/lib/profile-enrollment", async () => {
 vi.mock("@/lib/voice-profile", () => ({ persistVoiceProfileManifest: vi.fn() }));
 vi.mock("nanoid", () => ({ nanoid: () => "yt-job-id" }));
 
-// Keep the pure helpers real; only stub the network/yt-dlp orchestrator.
+// Keep the pure helpers real; stub the network/yt-dlp + ffmpeg side effects.
 vi.mock("@/lib/youtube-import", async () => {
   const actual = await vi.importActual<typeof import("@/lib/youtube-import")>("@/lib/youtube-import");
-  return { ...actual, downloadYoutubeReference: vi.fn(), transcribeAudioFile: vi.fn() };
+  const { writeFile: wf } = await import("node:fs/promises");
+  return {
+    ...actual,
+    downloadYoutubeReference: vi.fn(),
+    transcribeAudioFile: vi.fn(),
+    // Stub ffmpeg: just create the output slice so the route's readFile works.
+    sliceAudioSegment: vi.fn(async ({ outPath }: { outPath: string }) => {
+      await wf(outPath, Buffer.from([1, 2, 3, 4]));
+    }),
+  };
 });
 
 import { POST } from "@/app/api/voice-profile/enroll/youtube/route";
@@ -127,7 +136,8 @@ describe("POST /api/voice-profile/enroll/youtube", () => {
     const body = await res.json();
     expect(body.status).toBe("enrolled");
     expect(body.profile.status).toBe("ready");
-    expect(downloadMock).toHaveBeenCalledWith(expect.objectContaining({ videoId: "dQw4w9WgXcQ", start: 300, end: 312 }));
+    // Scan window is 90s; the single 10s caption cue yields one aligned clip.
+    expect(downloadMock).toHaveBeenCalledWith(expect.objectContaining({ videoId: "dQw4w9WgXcQ", start: 300, end: 390 }));
     expect(enrollMock).toHaveBeenCalledTimes(1);
     const transcript = enrollMock.mock.calls[0][1].promptTranscript;
     expect(transcript).toContain("這");
@@ -139,7 +149,8 @@ describe("POST /api/voice-profile/enroll/youtube", () => {
     transcribeMock.mockResolvedValue("这是自动语音识别的文字。"); // Simplified — should be converted
     const res = await POST(makeReq({ url: "https://youtu.be/dQw4w9WgXcQ", consent: "yes" }));
     expect(res.status).toBe(200);
-    expect(transcribeMock).toHaveBeenCalledTimes(1);
+    // No captions → fixed slices, each transcribed by ASR (≥1 clip).
+    expect(transcribeMock).toHaveBeenCalled();
     const transcript = enrollMock.mock.calls[0][1].promptTranscript;
     expect(transcript).toContain("這");
     expect(transcript).not.toContain("这");
