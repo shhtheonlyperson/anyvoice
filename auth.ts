@@ -2,6 +2,20 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 
 /**
+ * Resolve the origin Auth.js builds callback URLs against, per environment —
+ * one `next start` process serves both localhost and the public domain, and
+ * Next 16 + Auth.js don't honor `X-Forwarded-Host`, so we can't infer it
+ * per-request. Precedence:
+ *   1. AUTH_URL / NEXTAUTH_URL — explicit override always wins.
+ *   2. ANYVOICE_PUBLIC_URL — the production public origin.
+ *   3. NODE_ENV: production → the public domain; otherwise localhost dev.
+ * Set before NextAuth() so its env read picks this up.
+ */
+const PUBLIC_URL = process.env.ANYVOICE_PUBLIC_URL ?? "https://voice.theonlyperson.com";
+process.env.AUTH_URL ??=
+  process.env.NEXTAUTH_URL ?? (process.env.NODE_ENV === "production" ? PUBLIC_URL : "http://localhost:3001");
+
+/**
  * Google-OAuth gate for the app. Only these accounts may sign in; everyone else
  * is denied at the `signIn` callback (Auth.js then shows AccessDenied). This is
  * a hard allowlist — adding a user means editing this list (or ANYVOICE_ALLOWED_EMAILS).
