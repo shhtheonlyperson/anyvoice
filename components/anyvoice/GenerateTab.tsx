@@ -241,12 +241,12 @@ function ResultPlayer({ gen, onRegenerate, onDownload, onShare }: {
           </div>
         </div>
         <div className="player-controls-right">
-          <button className="dark-icon-btn" title="Volume" type="button">
+          <button className="dark-icon-btn" title={t("gen.player.volume")} type="button">
             <IcVolume size={16} />
           </button>
           <button className="dark-link-btn" onClick={onShare} type="button">
             <IcShare size={14} />
-            Share
+            {t("gen.btn.share")}
           </button>
           <a
             className="dark-link-btn"
@@ -283,6 +283,7 @@ function RecentRow({ run, voices, onPlay, onCopy }: {
   onPlay: (r: RunItem) => void;
   onCopy: (r: RunItem) => void;
 }) {
+  const t = useT();
   const v = voices.find((x) => x.name === run.voiceName);
   const seed = seedFromId(run.id);
   const ts = new Date(run.createdAt);
@@ -311,7 +312,7 @@ function RecentRow({ run, voices, onPlay, onCopy }: {
         <div className="recent-actions">
           <button
             className="icon-btn"
-            title="Copy text"
+            title={t("gen.row.copy")}
             type="button"
             onClick={(e) => {
               e.stopPropagation();
@@ -320,7 +321,7 @@ function RecentRow({ run, voices, onPlay, onCopy }: {
           >
             <IcCopy size={14} />
           </button>
-          <button className="icon-btn" title="More" type="button" onClick={(e) => e.stopPropagation()}>
+          <button className="icon-btn" title={t("gen.row.more")} type="button" onClick={(e) => e.stopPropagation()}>
             <IcDots size={14} />
           </button>
         </div>
