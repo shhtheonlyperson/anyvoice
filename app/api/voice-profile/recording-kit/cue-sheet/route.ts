@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { readCurrentVoiceProfileRecordingKitCueSheet, readVoiceProfileRecordingKitCueSheet } from "@/lib/recording-kit";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 
 export const runtime = "nodejs";
 
@@ -23,6 +24,8 @@ export async function GET(req: NextRequest) {
   const params = new URL(req.url).searchParams;
   const profileId = params.get("profileId") || "local-default";
   const manifest = params.get("manifest");
+  const denied = await guardVoiceProfileAccess(session, profileId);
+  if (denied) return denied;
   try {
     const cueSheet = manifest
       ? await readVoiceProfileRecordingKitCueSheet(manifest, profileId)

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 import { reanalyzeVoiceProfileRuns } from "@/lib/voice-profile-reanalysis";
 
 export const runtime = "nodejs";
@@ -27,6 +28,8 @@ async function readBody(req: NextRequest): Promise<{ profileId: string; dryRun: 
 export async function POST(req: NextRequest) {
   const session = getOrCreateAnyVoiceUserSession(req);
   const options = await readBody(req);
+  const denied = await guardVoiceProfileAccess(session, options.profileId);
+  if (denied) return denied;
   try {
     const result = await reanalyzeVoiceProfileRuns(options);
     return withAnyVoiceUserCookie(json(result), session);

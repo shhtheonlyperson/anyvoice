@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { smokeTestVoiceProfileRecordingKit } from "@/lib/recording-kit";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,8 @@ async function readBody(req: NextRequest): Promise<{ manifest: string; profileId
 export async function POST(req: NextRequest) {
   const session = getOrCreateAnyVoiceUserSession(req);
   const { manifest, profileId } = await readBody(req);
+  const denied = await guardVoiceProfileAccess(session, profileId);
+  if (denied) return denied;
   try {
     const preflight = await smokeTestVoiceProfileRecordingKit(manifest, profileId);
     return withAnyVoiceUserCookie(json({ preflight }), session);

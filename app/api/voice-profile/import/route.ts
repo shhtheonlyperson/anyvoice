@@ -11,6 +11,7 @@ import { getCurrentVoiceProfileRecordingKit } from "@/lib/recording-kit";
 import { detectChineseScript, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -172,6 +173,9 @@ export async function POST(req: NextRequest) {
   const profileIdRaw = form.get("profileId");
   const voiceProfileId = typeof profileIdRaw === "string" && profileIdRaw.trim() ? profileIdRaw.trim() : undefined;
   const profileId = voiceProfileId ?? "local-default";
+
+  const denied = await guardVoiceProfileAccess(session, profileId);
+  if (denied) return denied;
 
   const preparedClips: Array<{
     spec: ClipSpec;

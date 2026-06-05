@@ -6,6 +6,7 @@ import { startBookSynthesis } from "@/lib/book-synthesizer";
 import { loadVoiceProfileManifest } from "@/lib/voice-profile";
 import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,8 @@ export async function POST(req: NextRequest) {
   if (!(file instanceof File)) return fail(400, "upload an .epub or .pdf file");
 
   const profileId = String(form.get("profileId") || "").trim() || "local-default";
+  const denied = await guardVoiceProfileAccess(session, profileId);
+  if (denied) return denied;
   let verification;
   try {
     verification = await verifyVoiceProfileReadiness({ profileId, requireTranscriptValidation: true });

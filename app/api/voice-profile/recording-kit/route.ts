@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { createVoiceProfileRecordingKit, getCurrentVoiceProfileRecordingKit } from "@/lib/recording-kit";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,8 @@ async function readOptions(req: NextRequest): Promise<{ profileId: string; promp
 export async function POST(req: NextRequest) {
   const session = getOrCreateAnyVoiceUserSession(req);
   const { profileId, promptSet } = await readOptions(req);
+  const denied = await guardVoiceProfileAccess(session, profileId);
+  if (denied) return denied;
   try {
     const kit = await createVoiceProfileRecordingKit(profileId, { promptSet });
     return withAnyVoiceUserCookie(json({ kit }), session);

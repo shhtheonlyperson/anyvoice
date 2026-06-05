@@ -7,6 +7,7 @@ import {
 } from "@/lib/profile-enrollment";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -28,6 +29,9 @@ export async function POST(req: NextRequest) {
   if (isVoiceProfileEnrollmentError(input)) {
     return withAnyVoiceUserCookie(json(input.body, { status: input.statusCode }), session);
   }
+
+  const denied = await guardVoiceProfileAccess(session, input.voiceProfileId ?? "local-default");
+  if (denied) return denied;
 
   const jobId = nanoid(10);
   try {

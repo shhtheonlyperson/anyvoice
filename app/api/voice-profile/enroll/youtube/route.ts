@@ -6,6 +6,7 @@ import { enrollVoiceProfileClip } from "@/lib/profile-enrollment";
 import { safeRunDir } from "@/lib/run-paths";
 import { detectChineseScript, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import {
   clampScanWindow,
@@ -68,6 +69,9 @@ export async function POST(req: NextRequest) {
     typeof body.startSeconds === "number" && body.startSeconds >= 0 ? body.startSeconds : parsed.startSeconds;
   const { start, end } = clampScanWindow(startSeconds, body.durationSeconds);
   const voiceProfileId = typeof body.profileId === "string" && body.profileId.trim() ? body.profileId.trim() : undefined;
+
+  const denied = await guardVoiceProfileAccess(session, voiceProfileId ?? "local-default");
+  if (denied) return denied;
 
   const baseJobId = nanoid(10);
   const baseRunDir = safeRunDir(baseJobId);

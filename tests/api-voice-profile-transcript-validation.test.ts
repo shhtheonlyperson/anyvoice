@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/lib/voice-profile-access", () => ({
+  guardVoiceProfileAccess: vi.fn(async () => null),
+}));
+
 vi.mock("@/lib/voice-profile-transcript-validation", () => ({
   validateVoiceProfileTranscripts: vi.fn(),
 }));
