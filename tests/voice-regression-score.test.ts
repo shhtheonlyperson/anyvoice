@@ -67,6 +67,12 @@ function reportJson({
           locale: "zh-Hant",
           tags: ["polyphone"],
           text,
+        } as {
+          id: string;
+          locale: string;
+          tags: string[];
+          text: string;
+          asrEquivalenceAliases?: { text: string; reason: string }[];
         },
         stability,
         renders: [

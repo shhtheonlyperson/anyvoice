@@ -227,6 +227,13 @@ def evaluate_subjective_review(
     if not isinstance(review, dict):
         return {"status": "fail", "reasons": ["subjective_review_not_object"], "reviewJson": str(review_path)}
     expected_report_sha = sha256_file(source_report)
+    if not expected_report_sha:
+        return {
+            "status": "fail",
+            "reasons": ["subjective_review_source_report_unreadable"],
+            "reviewJson": str(review_path),
+            "report": str(source_report),
+        }
     review_report_sha = review.get("reportSha256")
     if not isinstance(review_report_sha, str) or not review_report_sha.strip():
         return {
