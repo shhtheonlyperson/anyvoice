@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -28,6 +28,33 @@ function shellQuote(value: string): string {
 
 function textSha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function fileSha256(filePath: string): Promise<string> {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function canonicalProfileSha256(profilePath: string): Promise<string> {
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  delete profile.createdAt;
+  delete profile.loraPath;
+  delete profile.loraAdapter;
+  delete profile.preferredBackend;
+  return createHash("sha256").update(canonicalJson(profile)).digest("hex");
 }
 
 function speakerBackendsJson({
@@ -209,26 +236,39 @@ async function writeKit({
 }
 
 async function writeReadyProfile({
+  count = 5,
   recordingKitClipIds,
 }: {
+  count?: number;
   recordingKitClipIds?: string[];
 } = {}): Promise<string> {
   const profileDir = path.join(tmpRoot, "profile");
   await mkdir(profileDir, { recursive: true });
   const clips = [];
-  for (let index = 1; index <= 5; index += 1) {
+  const extraTranscripts = [
+    "請把行長這個詞讀成銀行的行、長官的長，保持清楚自然。",
+    "我會把 VoxCPM2 和 AnyVoice 的名稱讀清楚，並保持穩定音量。",
+    "這段聲音包含較長停頓、短句和自然語氣，讓模型學到穩定節奏。",
+    "今天的範例包含二零二六年五月二十日，以及幾個清楚的數字。",
+    "最後一段我會維持相同距離，讓每個音節都乾淨可辨識。",
+  ];
+  for (let index = 1; index <= count; index += 1) {
     const audioPath = path.join(profileDir, `clip-${index}.wav`);
     await writeFile(audioPath, Buffer.from([index, index + 1, index + 2]));
+    const transcriptRaw =
+      index <= 5
+        ? `這是第 ${index} 段 AnyVoice、重慶、銀行、角色、音樂和長樂，二零二六年五月十九日。`
+        : extraTranscripts[index - 6] ?? `這是第 ${index} 段 AnyVoice、VoxCPM2、行長和重慶的延伸聲音樣本。`;
     clips.push({
       sourceRunId: `clip-${index}`,
       ...(recordingKitClipIds?.[index - 1] ? { recordingKitClipId: recordingKitClipIds[index - 1] } : {}),
       audioPath,
-      transcriptRaw: `這是第 ${index} 段 AnyVoice、重慶、銀行、角色、音樂和長樂，二零二六年五月十九日。`,
+      transcriptRaw,
       transcriptScript: "zh_hant",
       coverageFeatures: coverage,
       sourceKind: "scripted",
       quality: {
-        grade: index === 5 ? "B" : "A",
+        grade: index === count ? "B" : "A",
         durationSec: 7 + index,
         snrDb: 28,
         clippingRatio: 0,
@@ -252,8 +292,8 @@ async function writeReadyProfile({
       requiredCoverageFeatures: coverage,
     },
     summary: {
-      eligibleClips: 5,
-      selectedClips: 5,
+      eligibleClips: count,
+      selectedClips: count,
       rejectedClips: 0,
       remainingClipsNeeded: 0,
     },
@@ -271,22 +311,42 @@ async function writeReadyProfile({
 
 async function writeTranscriptValidation(
   profilePath = path.join(tmpRoot, "profile", "profile.json"),
-  { failedSourceRunId = "" }: { failedSourceRunId?: string } = {},
+  {
+    createdAt,
+    failedSourceRunId = "",
+    omitProfileSha256 = false,
+    profileSha256,
+    staleSourceRunId = "",
+    validationPath = path.join(tmpRoot, "transcript-validation.json"),
+    voiceProfileId,
+  }: {
+    createdAt?: string;
+    failedSourceRunId?: string;
+    omitProfileSha256?: boolean;
+    profileSha256?: string;
+    staleSourceRunId?: string;
+    validationPath?: string;
+    voiceProfileId?: string;
+  } = {},
 ): Promise<string> {
-  const validation = path.join(tmpRoot, "transcript-validation.json");
+  const validation = validationPath;
   const profile = JSON.parse(await readFile(profilePath, "utf-8")) as {
     clips: Array<{ sourceRunId: string; transcriptRaw: string; audioPath: string }>;
   };
   const failed = failedSourceRunId ? 1 : 0;
+  const effectiveProfileSha256 = omitProfileSha256 ? undefined : profileSha256 ?? (await canonicalProfileSha256(profilePath));
   await writeFile(
     validation,
     `${JSON.stringify({
+      ...(createdAt ? { createdAt } : {}),
       profile: profilePath,
+      voiceProfileId: voiceProfileId ?? "local-test",
+      ...(effectiveProfileSha256 ? { profileSha256: effectiveProfileSha256 } : {}),
       status: failed ? "blocked" : "pass",
       summary: { total: 5, passed: 5 - failed, failed },
       clips: profile.clips.slice(0, 5).map((clip) => ({
         sourceRunId: clip.sourceRunId,
-        expectedTranscript: clip.transcriptRaw,
+        expectedTranscript: clip.sourceRunId === staleSourceRunId ? "舊的逐字稿" : clip.transcriptRaw,
         audioPath: clip.audioPath,
         verdict: clip.sourceRunId === failedSourceRunId ? "fail" : "pass",
         cer: { rate: clip.sourceRunId === failedSourceRunId ? 0.46 : 0 },
@@ -326,6 +386,7 @@ async function writeQualityGate(
     transcriptValidationPassed = true,
     skipProfileVerify = !profileVerifyPassed,
     skipTranscriptValidation = !transcriptValidationPassed,
+    loraPath,
   }: {
     status?: string;
     dryRun?: boolean;
@@ -335,6 +396,7 @@ async function writeQualityGate(
     transcriptValidationPassed?: boolean;
     skipProfileVerify?: boolean;
     skipTranscriptValidation?: boolean;
+    loraPath?: string;
   } = {},
 ): Promise<string> {
   const gateDir = path.join(
@@ -344,6 +406,152 @@ async function writeQualityGate(
   );
   await mkdir(gateDir, { recursive: true });
   const gatePath = path.join(gateDir, "quality-gate.json");
+  const reportPath = path.join(gateDir, "report.json");
+  const asrPath = path.join(gateDir, "asr.json");
+  const speakerPath = path.join(gateDir, "speaker.json");
+  const scorePath = path.join(gateDir, "score.json");
+  const transcriptValidationJson = path.join(tmpRoot, "transcript-validation.json");
+  const transcriptValidationSha256 = await fileSha256(transcriptValidationJson);
+  const profilePayload = JSON.parse(await readFile(profile, "utf-8")) as { voiceProfileId?: string };
+  const profileSha256 = await canonicalProfileSha256(profile);
+  const profileEvidence = {
+    voiceProfileId: profilePayload.voiceProfileId,
+    profileSha256,
+  };
+  const renderMetadata = loraPath
+    ? {
+        metadataJson: {
+          effectiveParams: {
+            cloneMode: "hifi",
+            loraEnabled: true,
+            loraPath,
+          },
+        },
+      }
+    : {};
+  const reportGroups = [
+    {
+      ...profileEvidence,
+      cloneMode: cloneMode === "both" ? "prompt" : "hifi",
+      case: { id: "zh_hant_polyphones", text: "重慶角色" },
+      renders: [{ ...profileEvidence, repeat: 1, status: "ready", outputWav: "sample.wav", ...(cloneMode === "hifi" ? renderMetadata : {}) }],
+    },
+    ...(cloneMode === "both"
+      ? [
+          {
+            ...profileEvidence,
+            cloneMode: "hifi",
+            case: { id: "zh_hant_polyphones", text: "重慶角色" },
+            renders: [{ ...profileEvidence, repeat: 1, status: "ready", outputWav: "sample-hifi.wav", ...renderMetadata }],
+          },
+        ]
+      : []),
+  ];
+  for (const group of reportGroups) {
+    for (const render of group.renders as Array<Record<string, unknown> & { outputWav: string }>) {
+      const outputPath = path.isAbsolute(render.outputWav) ? render.outputWav : path.join(gateDir, render.outputWav);
+      const audio = Buffer.from(`${group.cloneMode}-${group.case.id}-${render.repeat}\n`, "utf-8");
+      await writeFile(outputPath, audio);
+      render.outputExists = true;
+      render.missingOutput = false;
+      render.outputBytes = audio.byteLength;
+      render.outputSha256 = textSha256(audio.toString("utf-8"));
+    }
+  }
+  await writeFile(
+    reportPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        voiceProfile: profileEvidence,
+        groups: reportGroups,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+  await writeFile(asrPath, `${JSON.stringify({ "hifi/zh_hant_polyphones/r01": "重慶角色" }, null, 2)}\n`, "utf-8");
+  await writeFile(
+    speakerPath,
+    `${JSON.stringify({ version: 1, backend: "speechbrain-ecapa", summary: { total: 1, scored: 1, failed: 0 } }, null, 2)}\n`,
+    "utf-8",
+  );
+  const reportSha256 = await fileSha256(reportPath);
+  const asrSha256 = await fileSha256(asrPath);
+  const speakerSha256 = await fileSha256(speakerPath);
+  await writeFile(
+    scorePath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        verdict: "pass",
+        thresholds: {
+          requireSpeakerSimilarity: true,
+          requireProfileReferenceSimilarity: true,
+        },
+        voiceProfile: profileEvidence,
+        summary: {
+          groups: reportGroups.length,
+          passingGroups: reportGroups.length,
+          avgSpeakerSimilarity: 0.91,
+          speakerReviewGroups: 0,
+        },
+        pairedComparison: cloneMode === "both"
+          ? {
+              verdict: "pass",
+              baselineCloneMode: "prompt",
+              candidateCloneMode: "hifi",
+              minReductionPct: 50,
+              pairs: [
+                {
+                  caseId: "zh_hant_polyphones",
+                  baselineCloneMode: "prompt",
+                  candidateCloneMode: "hifi",
+                  verdict: "pass",
+                  cerReductionPct: 90,
+                  werReductionPct: 88,
+                  speakerSimilarityDelta: 0.01,
+                  latencyVerdict: "pass",
+                  latencyRegressionPct: 0,
+                },
+              ],
+              summary: {
+                pairs: 1,
+                passingPairs: 1,
+                reviewPairs: 0,
+                avgCerReductionPct: 90,
+                avgWerReductionPct: 88,
+                avgLatencyRegressionPct: 0,
+              },
+            }
+          : undefined,
+        groups: reportGroups.map((group) => ({
+          ...group,
+          caseId: group.case?.id,
+          renderCount: Array.isArray(group.renders) ? group.renders.length : 0,
+          verdict: "pass",
+          speakerIdentityVerdict: "pass",
+          speakerIdentity: {
+            verdict: "pass",
+            avgSpeakerSimilarity: 0.91,
+            profileReferenceEvaluatedRenders: Array.isArray(group.renders) ? group.renders.length : 0,
+            requireProfileReferenceSimilarity: true,
+          },
+        })),
+        sourceReport: reportPath,
+        sourceReportSha256: reportSha256,
+        asrJson: asrPath,
+        asrJsonSha256: asrSha256,
+        speakerJson: speakerPath,
+        speakerJsonSha256: speakerSha256,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+  const scoreSha256 = await fileSha256(scorePath);
   await writeFile(
     gatePath,
     `${JSON.stringify({
@@ -353,12 +561,16 @@ async function writeQualityGate(
       dryRun,
       inputs: {
         profileJson: profile,
+        profileSha256,
         cloneMode,
         quality: "balanced",
         repeats: 3,
         requireSpeakerBackend: cloneMode === "both" ? "speechbrain-ecapa" : null,
+        transcriptValidationJson,
+        transcriptValidationSha256,
         skipProfileVerify,
         skipTranscriptValidation,
+        ...(loraPath ? { loraPath } : {}),
       },
       proofs: {
         profileVerifyRequired: !skipProfileVerify,
@@ -366,11 +578,19 @@ async function writeQualityGate(
         profileVerifyPassed,
         transcriptValidationRequired: !skipTranscriptValidation,
         transcriptValidationSkipped: skipTranscriptValidation,
+        transcriptValidationJson,
+        transcriptValidationSha256,
         transcriptValidationPassed,
         speakerBackendRequirement:
           cloneMode === "both"
             ? { requested: "auto", selected: "speechbrain-ecapa", required: "speechbrain-ecapa" }
             : { requested: "auto", selected: "mfcc-cosine", required: null },
+        artifacts: {
+          report: { path: reportPath, sha256: reportSha256 },
+          asr: { path: asrPath, sha256: asrSha256 },
+          speaker: { path: speakerPath, sha256: speakerSha256 },
+          score: { path: scorePath, sha256: scoreSha256 },
+        },
       },
       commands: {
         score:
@@ -380,12 +600,184 @@ async function writeQualityGate(
       },
       paths: {
         qualityGate: gatePath,
-        score: path.join(gateDir, "score.json"),
+        report: reportPath,
+        asr: asrPath,
+        speaker: speakerPath,
+        profileTranscriptValidation: transcriptValidationJson,
+        score: scorePath,
       },
     }, null, 2)}\n`,
     "utf-8",
   );
   return gatePath;
+}
+
+async function markQualityGateProfileReferenceReview(gatePath: string, presetId = "brand:voxcpm2"): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.verdict = "review";
+  score.summary = {
+    ...score.summary,
+    passingGroups: 0,
+    profileReferenceReviewGroups: 1,
+  };
+  score.groups = [
+    {
+      ...(Array.isArray(score.groups) && score.groups[0] ? score.groups[0] : {}),
+      verdict: "review",
+      profileReferenceVerdict: "review",
+      profileReference: {
+        verdict: "review",
+        evaluatedRenders: 1,
+        missingByRender: [
+          {
+            caseId: "zh_hant_polyphones",
+            repeat: 1,
+            profileClipId: "clip-1",
+            missingPronunciationPresetIds: [presetId],
+          },
+        ],
+      },
+    },
+  ];
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.status = "failed";
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function tamperQualityGateAsrArtifact(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  await writeFile(gate.paths.asr, `${JSON.stringify({ stale: "changed after gate" }, null, 2)}\n`, "utf-8");
+}
+
+async function pointQualityGateScoreAtStaleAsrHash(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.asrJsonSha256 = "0".repeat(64);
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function removeQualityGatePairedComparison(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  delete score.pairedComparison;
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function removeQualityGatePairedImprovementCommandFlag(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  gate.commands.score = "python3 scripts/score_voice_regression.py --baseline-clone-mode prompt --candidate-clone-mode hifi";
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function regressQualityGatePairedSpeakerSimilarity(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.pairedComparison.pairs[0].speakerSimilarityDelta = -0.01;
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function pointQualityGateSourceReportAtStaleProfileEvidence(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const report = JSON.parse(await readFile(gate.paths.report, "utf-8"));
+  report.voiceProfile.profileSha256 = "0".repeat(64);
+  report.groups[0].profileSha256 = "0".repeat(64);
+  report.groups[0].renders[0].profileSha256 = "0".repeat(64);
+  await writeFile(gate.paths.report, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+  const reportSha256 = await fileSha256(gate.paths.report);
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.sourceReportSha256 = reportSha256;
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.report.sha256 = reportSha256;
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function pointQualityGateSourceReportAtStaleRenderOutput(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const report = JSON.parse(await readFile(gate.paths.report, "utf-8"));
+  const renderOutput = path.join(path.dirname(gate.paths.report), "sample.wav");
+  const originalBytes = "original render output bytes";
+  await writeFile(renderOutput, originalBytes);
+  report.groups[0].renders[0].outputWav = renderOutput;
+  report.groups[0].renders[0].outputExists = true;
+  report.groups[0].renders[0].missingOutput = false;
+  report.groups[0].renders[0].outputBytes = Buffer.byteLength(originalBytes);
+  report.groups[0].renders[0].outputSha256 = textSha256(originalBytes);
+  await writeFile(gate.paths.report, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+  const reportSha256 = await fileSha256(gate.paths.report);
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.sourceReportSha256 = reportSha256;
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.report.sha256 = reportSha256;
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+  await writeFile(renderOutput, "mutated render output bytes");
+}
+
+async function removeQualityGateSourceReportRenderOutputProof(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const report = JSON.parse(await readFile(gate.paths.report, "utf-8"));
+  const render = report.groups[0].renders[0];
+  delete render.outputExists;
+  delete render.missingOutput;
+  delete render.outputBytes;
+  delete render.outputSha256;
+  await writeFile(gate.paths.report, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+  const reportSha256 = await fileSha256(gate.paths.report);
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.sourceReportSha256 = reportSha256;
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.report.sha256 = reportSha256;
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function pointQualityGateScoreAtStaleProfileEvidence(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.voiceProfile.profileSha256 = "0".repeat(64);
+  score.groups[0].profileSha256 = "0".repeat(64);
+  score.groups[0].renders[0].profileSha256 = "0".repeat(64);
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function removeQualityGateProfileReferenceSpeakerProof(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.thresholds.requireProfileReferenceSimilarity = false;
+  for (const group of score.groups ?? []) {
+    if (!group?.speakerIdentity) continue;
+    group.speakerIdentity.requireProfileReferenceSimilarity = false;
+    group.speakerIdentity.profileReferenceEvaluatedRenders = 0;
+  }
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function markQualityGateSpeakerIdentityForReview(gatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  for (const group of score.groups ?? []) {
+    group.verdict = "review";
+    group.speakerIdentityVerdict = "review";
+    if (group?.speakerIdentity) {
+      group.speakerIdentity.verdict = "review";
+    }
+  }
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
 }
 
 beforeEach(async () => {
@@ -417,6 +809,37 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.nextAction.command).toContain("--out-dir");
     expect(payload.nextAction.command).toContain(path.join(tmpRoot, "kit"));
     expect(payload.nextAction.command).toContain("--profile-id local-default");
+  });
+
+  it("accepts an explicit json output flag", async () => {
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      path.join(tmpRoot, "profile.json"),
+      "--kit-manifest",
+      path.join(tmpRoot, "kit", "manifest.json"),
+      "--json",
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_recording_kit");
+    expect(payload.nextAction.id).toBe("prepare_recording_kit");
+  });
+
+  it("rejects conflicting json and brief output flags", async () => {
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        path.join(tmpRoot, "profile.json"),
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--json",
+        "--brief",
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("--brief and --json cannot be used together"),
+    });
   });
 
   it("points at terminal recording when the kit exists but audio is missing", async () => {
@@ -479,13 +902,19 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.commands.recordProfileKitAndProve).toContain("--open-cue-sheet");
     expect(payload.commands.recordProfileKitAndProve).toContain("--microphone-smoke-sec 2");
     expect(payload.commands.recordProfileKitAndProve).toContain("--auto-duration");
+    expect(payload.commands.recordProfileKitAndProve).toContain("--check");
     expect(payload.commands.recordProfileKitAndProductProof).toContain("--run-product-proof-after-check");
     expect(payload.commands.recordProfileKitAndProductProof).toContain("--open-cue-sheet");
     expect(payload.commands.recordProfileKitAndProductProof).toContain("--microphone-smoke-sec 2");
     expect(payload.commands.recordProfileKitAndProductProof).toContain("--auto-duration");
+    expect(payload.commands.recordProfileKitAndProductProof).toContain("--check");
     expect(payload.commands.recordProfileKitToLoraHandoff).toContain("--prepare-lora-after-product-proof");
     expect(payload.commands.recordProfileKitToLoraHandoff).toContain("--microphone-smoke-sec 2");
     expect(payload.commands.recordProfileKitToLoraHandoff).toContain("--auto-duration");
+    expect(payload.commands.recordProfileKitToLoraHandoff).toContain("--check");
+    expect(payload.commands.normalizeExternalRecordings).toContain("scripts/normalize_voice_profile_recording_kit_audio.py");
+    expect(payload.commands.normalizeExternalRecordings).toContain("--check");
+    expect(payload.commands.normalizeExternalRecordings).toContain("--profile-id local-default");
     expect(payload.commands.qualityGateProductProof).toContain("--clone-mode both");
     expect(payload.commands.qualityGateProductProof).toContain("--require-speaker-backend speechbrain-ecapa");
     expect(payload.commands.microphoneSmokeTestRecordingKit).toContain("--preflight --brief");
@@ -498,6 +927,11 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.nextAction.secondaryCommands[4]).toContain("--run-proof-after-check");
     expect(payload.nextAction.secondaryCommands[5]).toContain("--run-product-proof-after-check");
     expect(payload.nextAction.secondaryCommands[6]).toContain("--prepare-lora-after-product-proof");
+    expect(payload.nextAction.secondaryCommands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("scripts/normalize_voice_profile_recording_kit_audio.py"),
+      ]),
+    );
     expect(payload.postRecordingProofPlan).toMatchObject({
       recommendedCommand: expect.stringContaining("--allow-enroll --allow-expensive"),
       productProofCommand: expect.stringContaining("--require-speaker-backend speechbrain-ecapa"),
@@ -607,6 +1041,205 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.recordingBrief.clips[2].preflightCommand).toContain("--auto-duration");
   });
 
+  it("prioritizes normalizing exported phone recordings when every missing WAV has a source file", async () => {
+    const kit = await writeKit({ withAudio: false });
+    const recordingsDir = path.join(tmpRoot, "kit", "recordings");
+    for (let index = 1; index <= transcripts.length; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      await writeFile(path.join(recordingsDir, `profile-clip-${suffix}.m4a`), Buffer.from(`phone export ${suffix}`));
+    }
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      path.join(tmpRoot, "profile.json"),
+      "--kit-manifest",
+      kit,
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_external_recording_normalization");
+    expect(payload.nextAction).toMatchObject({
+      id: "normalize_external_recordings",
+      phase: "recording_import",
+      command: expect.stringContaining("scripts/normalize_voice_profile_recording_kit_audio.py"),
+      pendingExternalRecordings: expect.arrayContaining([
+        expect.objectContaining({
+          id: "profile-clip-01",
+          sourceAudioPath: expect.stringMatching(/profile-clip-01\.m4a$/),
+          audioPath: expect.stringMatching(/profile-clip-01\.wav$/),
+        }),
+      ]),
+    });
+    expect(payload.nextAction.pendingExternalRecordings).toHaveLength(transcripts.length);
+    expect(payload.nextAction.command).toContain("--check");
+    expect(payload.nextAction.command).toContain("--profile-id local-default");
+    expect(payload.nextAction.command).not.toContain("record_voice_profile_recording_kit.py");
+    expect(payload.nextAction.secondaryCommands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("scripts/enroll_voice_profile_kit.py"),
+        expect.stringContaining("--record-missing-until-complete"),
+      ]),
+    );
+  });
+
+  it("normalizes present exported phone recordings before asking for the remaining missing clips", async () => {
+    const kit = await writeKit({ withAudio: false });
+    const recordingsDir = path.join(tmpRoot, "kit", "recordings");
+    await writeFile(path.join(recordingsDir, "profile-clip-01.m4a"), Buffer.from("phone export 01"));
+    await writeFile(path.join(recordingsDir, "profile-clip-03.m4a"), Buffer.from("phone export 03"));
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      path.join(tmpRoot, "profile.json"),
+      "--kit-manifest",
+      kit,
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_partial_external_recording_normalization");
+    expect(payload.nextAction).toMatchObject({
+      id: "normalize_partial_external_recordings",
+      phase: "recording_import",
+      command: expect.stringContaining("scripts/normalize_voice_profile_recording_kit_audio.py"),
+      pendingExternalRecordings: expect.arrayContaining([
+        expect.objectContaining({
+          id: "profile-clip-01",
+          sourceAudioPath: expect.stringMatching(/profile-clip-01\.m4a$/),
+        }),
+        expect.objectContaining({
+          id: "profile-clip-03",
+          sourceAudioPath: expect.stringMatching(/profile-clip-03\.m4a$/),
+        }),
+      ]),
+    });
+    expect(payload.nextAction.pendingExternalRecordings).toHaveLength(2);
+    expect(payload.nextAction.command).toContain("--only-present");
+    expect(payload.nextAction.command).not.toContain("--check");
+    expect(payload.nextAction.secondaryCommands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("--record-missing-until-complete"),
+        expect.stringContaining("scripts/normalize_voice_profile_recording_kit_audio.py"),
+        expect.stringContaining("scripts/enroll_voice_profile_kit.py"),
+      ]),
+    );
+    expect(payload.nextAction.reason).toContain("3 missing WAV source(s)");
+  });
+
+  it("runs partial external normalization and auto-advances to remaining recording work", async () => {
+    const kit = await writeKit({ withAudio: false });
+    const recordingsDir = path.join(tmpRoot, "kit", "recordings");
+    await writeFile(path.join(recordingsDir, "profile-clip-01.source.wav"), wavBuffer(7));
+    await writeFile(path.join(recordingsDir, "profile-clip-03.source.wav"), wavBuffer(9));
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      path.join(tmpRoot, "profile.json"),
+      "--kit-manifest",
+      kit,
+      "--run",
+      "--auto-advance",
+      "--max-steps",
+      "1",
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.initialStatus).toBe("needs_partial_external_recording_normalization");
+    expect(payload.initialAction).toMatchObject({
+      id: "normalize_partial_external_recordings",
+      command: expect.stringContaining("--only-present"),
+    });
+    expect(payload.status).toBe("needs_recording");
+    expect(payload.nextAction).toMatchObject({
+      id: "record_profile_kit",
+      phase: "recording",
+    });
+    expect(payload.missingRecordingClips).toEqual(["profile-clip-02", "profile-clip-04", "profile-clip-05"]);
+    expect(payload.runs).toHaveLength(1);
+    expect(payload.runs[0]).toMatchObject({
+      status: "ran",
+      actionId: "normalize_partial_external_recordings",
+      command: expect.stringContaining("--only-present"),
+      result: {
+        exitCode: 0,
+        stdout: {
+          status: "partial_normalized",
+          summary: { normalized: 2, missingSources: 3 },
+        },
+      },
+    });
+    await expect(stat(path.join(recordingsDir, "profile-clip-01.wav"))).resolves.toMatchObject({
+      size: expect.any(Number),
+    });
+    await expect(stat(path.join(recordingsDir, "profile-clip-03.wav"))).resolves.toMatchObject({
+      size: expect.any(Number),
+    });
+  });
+
+  it("prioritizes the extended recording kit before transcript validation when capture depth is incomplete", async () => {
+    const profile = await writeReadyProfile();
+    const kit = await writeKit({ withAudio: false });
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      profile,
+      "--kit-manifest",
+      kit,
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_recording");
+    expect(payload.nextAction).toMatchObject({
+      id: "record_profile_kit",
+      phase: "recording",
+      productCaptureDepth: {
+        ok: false,
+        selectedClips: 5,
+      },
+    });
+    expect(payload.nextAction.productCaptureDepth.missingPronunciationPresetIds).toEqual([]);
+    expect(payload.nextAction.command).toContain("--record-missing-until-complete");
+    expect(payload.nextAction.command).not.toContain("validate_voice_profile_transcripts.py");
+    expect(payload.brief).toContain("Status: needs_recording");
+    expect(payload.brief).toContain("Capture depth: 5/7 clips");
+    expect(payload.brief).toContain("Capture duration: 50/60s");
+    expect(payload.brief).not.toContain("Missing pronunciation coverage:");
+  });
+
+  it("does not let stale external kit files block a profile that already has 7-clip product capture depth", async () => {
+    const profile = await writeReadyProfile({ count: 10 });
+    const kit = await writeKit({ withAudio: false, promptDriftIndex: 2 });
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      profile,
+      "--kit-manifest",
+      kit,
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_transcript_validation");
+    expect(payload.profile.summary).toMatchObject({
+      selectedClips: 10,
+      totalDurationSec: 125,
+      missingCoverageFeatures: [],
+      missingPronunciationPresetIds: [],
+    });
+    expect(payload.recordingKit.status).toBe("incomplete");
+    expect(payload.recordingKit.checks.find((row: { check: string }) => row.check === "prompt_files")).toMatchObject({
+      ok: false,
+    });
+    expect(payload.nextAction).toMatchObject({
+      id: "validate_transcripts",
+      phase: "transcript_validation",
+    });
+    expect(payload.nextAction.command).toContain("scripts/validate_voice_profile_transcripts.py");
+    expect(payload.nextAction.command).not.toContain("record_voice_profile_recording_kit.py");
+    expect(payload.nextAction.productCaptureDepth).toBeUndefined();
+  });
+
   it("prints a compact brief for a missing-audio recording session", async () => {
     const kit = await writeKit({ withAudio: false });
     const { stdout } = await execFileAsync(
@@ -638,6 +1271,9 @@ describe("voice_profile_next_step.py", () => {
     expect(stdout).not.toContain("--clip profile-clip-01 --profile-id local-default --open-cue-sheet --countdown-sec 2 --write-metadata --overwrite");
     expect(stdout).toContain("Record missing clips:");
     expect(stdout).toContain("--record-missing-until-complete");
+    expect(stdout).toContain("Normalize phone files:");
+    expect(stdout).toContain("normalize_voice_profile_recording_kit_audio.py");
+    expect(stdout).toContain("--check --profile-id local-default");
     expect(stdout).toContain("Proof backend readiness:");
     expect(stdout).toContain("- ASR: ready (faster-whisper)");
     expect(stdout).toContain("- Speaker: ready (speechbrain-ecapa)");
@@ -890,6 +1526,198 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.nextAction.command).toContain(path.join("profile", "transcript-validation.json"));
   });
 
+  it("prefers a current profile-bound transcript validation over a newer stale root report", async () => {
+    const profile = await writeReadyProfile();
+    const profileSha256 = await canonicalProfileSha256(profile);
+    const profileLocalValidation = path.join(path.dirname(profile), "transcript-validation.json");
+    const validationRoot = path.join(tmpRoot, "validation-root");
+    const staleValidation = path.join(validationRoot, "newer-stale-validation.json");
+    await mkdir(validationRoot, { recursive: true });
+    await writeTranscriptValidation(profile, {
+      createdAt: "2026-01-01T00:00:00.000Z",
+      profileSha256,
+      validationPath: profileLocalValidation,
+    });
+    await writeTranscriptValidation(profile, {
+      createdAt: "2026-01-02T00:00:00.000Z",
+      profileSha256: "0".repeat(64),
+      validationPath: staleValidation,
+    });
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_TRANSCRIPT_VALIDATION_ROOT: validationRoot,
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.transcriptValidation.json).toBe(await realpath(profileLocalValidation));
+    expect(payload.transcriptValidation.json).not.toBe(await realpath(staleValidation));
+    expect(payload.nextAction.command).toContain(await realpath(profileLocalValidation));
+    expect(payload.nextAction.command).not.toContain(await realpath(staleValidation));
+  });
+
+  it("routes failed hifi gates with missing profile-reference presets back to focused recording", async () => {
+    const kit = await writeKit({ withAudio: true });
+    const manifestPayload = JSON.parse(await readFile(kit, "utf-8"));
+    manifestPayload.clips[0].pronunciationPresetIds = ["brand:voxcpm2"];
+    await writeFile(kit, `${JSON.stringify(manifestPayload, null, 2)}\n`, "utf-8");
+    const profile = await writeReadyProfile();
+    const validation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, { validationPath: path.join(tmpRoot, "transcript-validation.json") });
+    await writeTranscriptValidation(profile, { validationPath: validation });
+    const gatePath = await writeQualityGate(profile);
+    await markQualityGateProfileReferenceReview(gatePath, "brand:voxcpm2");
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        kit,
+        "--json",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_profile_reference_recording");
+    expect(payload.nextAction).toMatchObject({
+      id: "record_quality_gate_profile_reference",
+      phase: "quality_gate_repair",
+      profileReferenceRepair: {
+        presetIds: ["brand:voxcpm2"],
+        clipIds: ["profile-clip-01"],
+      },
+    });
+    expect(payload.nextAction.command).toContain("scripts/record_voice_profile_recording_kit.py");
+    expect(payload.nextAction.command).toContain("--clip profile-clip-01");
+    expect(payload.nextAction.command).toContain("--check-selected");
+    expect(payload.nextAction.command).not.toContain("--record-missing-until-complete");
+    expect(payload.nextAction.command).not.toContain("scripts/run_voice_quality_gate.py");
+    expect(payload.nextAction.nonInteractiveCommand).toContain("--clip profile-clip-01");
+    expect(payload.nextAction.nonInteractiveCommand).toContain("--yes");
+    expect(payload.nextAction.nonInteractiveCommand).not.toContain("--open-cue-sheet");
+    expect(payload.missingRecordingClips).toBeUndefined();
+    expect(payload.recordingBrief).toBeUndefined();
+  });
+
+  it("runs preflight instead of recording focused quality-gate reference clips unless explicitly allowed", async () => {
+    const kit = await writeKit({ withAudio: true });
+    const manifestPayload = JSON.parse(await readFile(kit, "utf-8"));
+    manifestPayload.clips[0].pronunciationPresetIds = ["brand:voxcpm2"];
+    await writeFile(kit, `${JSON.stringify(manifestPayload, null, 2)}\n`, "utf-8");
+    const profile = await writeReadyProfile();
+    const validation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, { validationPath: path.join(tmpRoot, "transcript-validation.json") });
+    await writeTranscriptValidation(profile, { validationPath: validation });
+    const gatePath = await writeQualityGate(profile);
+    await markQualityGateProfileReferenceReview(gatePath, "brand:voxcpm2");
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        kit,
+        "--run",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+          ANYVOICE_RECORDER_COMMAND: "fake-recorder --out {audio_path} --seconds {duration} --clip {id}",
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_profile_reference_recording");
+    expect(payload.run).toMatchObject({
+      status: "ran_preflight_instead_of_recording",
+      actionId: "record_quality_gate_profile_reference",
+      command: expect.stringContaining("--preflight"),
+      result: {
+        exitCode: 0,
+      },
+    });
+  });
+
+  it("uses the focused non-interactive command when quality-gate reference recording is explicitly allowed", async () => {
+    const kit = await writeKit({ withAudio: true });
+    const manifestPayload = JSON.parse(await readFile(kit, "utf-8"));
+    manifestPayload.clips[0].pronunciationPresetIds = ["brand:voxcpm2"];
+    await writeFile(kit, `${JSON.stringify(manifestPayload, null, 2)}\n`, "utf-8");
+    const profile = await writeReadyProfile();
+    const validation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, { validationPath: path.join(tmpRoot, "transcript-validation.json") });
+    await writeTranscriptValidation(profile, { validationPath: validation });
+    const gatePath = await writeQualityGate(profile);
+    await markQualityGateProfileReferenceReview(gatePath, "brand:voxcpm2");
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        kit,
+        "--run",
+        "--allow-recording",
+        "--record-countdown-sec",
+        "0",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+          ANYVOICE_RECORDER_COMMAND: await writeFakeRecorder(),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("needs_profile_reference_recording");
+    expect(payload.run).toMatchObject({
+      status: "ran",
+      actionId: "record_quality_gate_profile_reference",
+      command: expect.stringContaining("--clip profile-clip-01"),
+      result: { exitCode: 0 },
+    });
+    expect(payload.run.command).toContain("--yes");
+    expect(payload.run.command).not.toContain("--next-missing");
+    expect(payload.run.command).not.toContain("--record-missing-until-complete");
+    expect(payload.run.command).not.toContain("--open-cue-sheet");
+  });
+
   it("points transcript-validation failures at the exact clip re-record command", async () => {
     const profile = await writeReadyProfile({
       recordingKitClipIds: Array.from({ length: 5 }, (_, index) => `profile-clip-${String(index + 1).padStart(2, "0")}`),
@@ -1011,9 +1839,9 @@ describe("voice_profile_next_step.py", () => {
     ]);
     expect(payload.nextAction.secondaryCommands[0]).toContain("--clone-mode both");
     expect(payload.nextAction.secondaryCommands[0]).toContain("--require-speaker-backend speechbrain-ecapa");
-    expect(payload.nextAction.secondaryCommands[2]).toContain("--min-clips 10");
+    expect(payload.nextAction.secondaryCommands[2]).toContain("--min-clips 7");
     expect(payload.nextAction.secondaryCommands[2]).toContain("--min-total-duration-sec 60.0");
-    expect(payload.nextAction.secondaryCommands[3]).toContain("--min-clips 10");
+    expect(payload.nextAction.secondaryCommands[3]).toContain("--min-clips 7");
     expect(payload.nextAction.secondaryCommands[3]).toContain("--min-total-duration-sec 60.0");
     expect(payload.commands.qualityGateProductProof).toContain("--transcript-validation-json");
     expect(payload.commands.qualityGateProductProof).toContain(validation);
@@ -1023,9 +1851,9 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.commands.validateTranscripts).toContain("scripts/validate_voice_profile_transcripts.py");
     expect(payload.commands.enrollProfileKitAndValidate).toContain("--transcript-python /tmp/asrpy");
     expect(payload.commands.prepareLoraDataset).toContain("--require-product-proof-quality-gate");
-    expect(payload.commands.prepareLoraDataset).toContain("--min-clips 10");
+    expect(payload.commands.prepareLoraDataset).toContain("--min-clips 7");
     expect(payload.commands.prepareLoraDataset).toContain("--min-total-duration-sec 60.0");
-    expect(payload.commands.prepareLoraTrainingJob).toContain("--min-clips 10");
+    expect(payload.commands.prepareLoraTrainingJob).toContain("--min-clips 7");
     expect(payload.commands.prepareLoraTrainingJob).toContain("--min-total-duration-sec 60.0");
     expect(payload.commands.prepareBackendShootout).toContain("--transcript-validation-json");
     expect(payload.commands.prepareBackendShootout).toContain(validation);
@@ -1093,9 +1921,234 @@ describe("voice_profile_next_step.py", () => {
       expect.stringContaining("scripts/prepare_voxcpm_lora_training_job.py"),
     ]);
     expect(payload.nextAction.secondaryCommands[1]).toContain("--require-product-proof-quality-gate");
+    expect(payload.commands.prepareBackendShootout).toContain("--backend voxcpm2-hifi");
     expect(payload.commands.prepareBackendShootout).toContain("--backend indextts2 --backend f5-tts");
     expect(payload.commands.prepareBackendShootout).toContain("--transcript-validation-json");
     expect(payload.commands.prepareBackendShootout).toContain(validation);
+  });
+
+  it("does not move to product proof when the hifi quality gate ASR artifact changed", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    await tamperQualityGateAsrArtifact(gatePath);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+    });
+  });
+
+  it("does not move to product proof when the hifi quality gate source report has stale profile evidence", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    await pointQualityGateSourceReportAtStaleProfileEvidence(gatePath);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+    });
+  });
+
+  it("does not move to product proof when the hifi quality gate source report has stale render output proof", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    await pointQualityGateSourceReportAtStaleRenderOutput(gatePath);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+    });
+  });
+
+  it("does not move to product proof when the hifi quality gate source report omits render output proof", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    await removeQualityGateSourceReportRenderOutputProof(gatePath);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
+  });
+
+  it("does not move to product proof when the hifi quality gate score lacks enrollment-set speaker proof", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    await removeQualityGateProfileReferenceSpeakerProof(gatePath);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+    });
+  });
+
+  it("does not move to product proof when the hifi quality gate score speaker verdict is not pass", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    await markQualityGateSpeakerIdentityForReview(gatePath);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+    });
   });
 
   it("moves to LoRA dataset export after a paired product-proof quality gate pass", async () => {
@@ -1137,15 +2190,274 @@ describe("voice_profile_next_step.py", () => {
     expect(payload.nextAction.command).toContain("--quality-gate-json");
     expect(payload.nextAction.command).toContain(await realpath(productGate));
     expect(payload.nextAction.command).toContain("--require-product-proof-quality-gate");
-    expect(payload.nextAction.command).toContain("--min-clips 10");
+    expect(payload.nextAction.command).toContain("--min-clips 7");
     expect(payload.nextAction.command).toContain("--min-total-duration-sec 60.0");
     expect(payload.nextAction.secondaryCommands).toEqual([
       expect.stringContaining("scripts/prepare_voxcpm_lora_training_job.py"),
       expect.stringContaining("scripts/prepare_voice_backend_shootout.py"),
       expect.stringContaining("scripts/register_voice_backend_renders.py"),
     ]);
-    expect(payload.nextAction.secondaryCommands[0]).toContain("--min-clips 10");
+    expect(payload.nextAction.secondaryCommands[0]).toContain("--min-clips 7");
     expect(payload.nextAction.secondaryCommands[0]).toContain("--min-total-duration-sec 60.0");
+  });
+
+  it("does not move to LoRA dataset export when the product-proof score consumed a stale ASR hash", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const productGate = await writeQualityGate(profile, { cloneMode: "both", createdAt: "2026-01-03T00:00:00.000Z" });
+    await writeQualityGate(profile, { createdAt: "2026-01-04T00:00:00.000Z" });
+    await pointQualityGateScoreAtStaleAsrHash(productGate);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_product_proof");
+    expect(payload.productQualityGate).toBeNull();
+    expect(payload.nextAction).toMatchObject({
+      id: "run_product_proof_quality_gate",
+      phase: "product_proof",
+    });
+  });
+
+  it("moves to LoRA dataset export when paired product proof is artifact-backed without the legacy command flag", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const productGate = await writeQualityGate(profile, { cloneMode: "both", createdAt: "2026-01-03T00:00:00.000Z" });
+    await writeQualityGate(profile, { createdAt: "2026-01-04T00:00:00.000Z" });
+    await removeQualityGatePairedImprovementCommandFlag(productGate);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_lora_dataset");
+    expect(payload.productQualityGate.json).toBe(await realpath(productGate));
+    expect(payload.nextAction).toMatchObject({
+      id: "prepare_lora_dataset",
+      phase: "lora_dataset",
+    });
+  });
+
+  it("does not move to LoRA dataset export when product proof lacks paired improvement evidence", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const productGate = await writeQualityGate(profile, { cloneMode: "both", createdAt: "2026-01-03T00:00:00.000Z" });
+    await writeQualityGate(profile, { createdAt: "2026-01-04T00:00:00.000Z" });
+    await removeQualityGatePairedComparison(productGate);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_product_proof");
+    expect(payload.productQualityGate).toBeNull();
+    expect(payload.nextAction).toMatchObject({
+      id: "run_product_proof_quality_gate",
+      phase: "product_proof",
+    });
+  });
+
+  it("does not move to LoRA dataset export when product proof regresses speaker similarity", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const productGate = await writeQualityGate(profile, { cloneMode: "both", createdAt: "2026-01-03T00:00:00.000Z" });
+    await writeQualityGate(profile, { createdAt: "2026-01-04T00:00:00.000Z" });
+    await regressQualityGatePairedSpeakerSimilarity(productGate);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_product_proof");
+    expect(payload.productQualityGate).toBeNull();
+    expect(payload.nextAction).toMatchObject({
+      id: "run_product_proof_quality_gate",
+      phase: "product_proof",
+    });
+  });
+
+  it("does not move to LoRA dataset export when the product-proof score has stale profile evidence", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const productGate = await writeQualityGate(profile, { cloneMode: "both", createdAt: "2026-01-03T00:00:00.000Z" });
+    await writeQualityGate(profile, { createdAt: "2026-01-04T00:00:00.000Z" });
+    await pointQualityGateScoreAtStaleProfileEvidence(productGate);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_product_proof");
+    expect(payload.productQualityGate).toBeNull();
+    expect(payload.nextAction).toMatchObject({
+      id: "run_product_proof_quality_gate",
+      phase: "product_proof",
+    });
+  });
+
+  it("does not treat an adapter-loaded paired quality gate as the base product proof", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    await writeQualityGate(profile, { createdAt: "2026-01-04T00:00:00.000Z" });
+    await writeQualityGate(profile, {
+      cloneMode: "both",
+      createdAt: "2026-01-05T00:00:00.000Z",
+      loraPath: path.join(tmpRoot, "adapter", "lora_weights.ckpt"),
+    });
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_product_proof");
+    expect(payload.productQualityGate).toBeNull();
+    expect(payload.nextAction).toMatchObject({
+      id: "run_product_proof_quality_gate",
+      phase: "product_proof",
+    });
+  });
+
+  it("does not advance from a stale product-proof quality gate after profile changes", async () => {
+    const profile = await writeReadyProfile();
+    await writeTranscriptValidation();
+    await writeQualityGate(profile, { cloneMode: "both", createdAt: "2026-01-03T00:00:00.000Z" });
+    const payloadBeforeChange = JSON.parse(await readFile(profile, "utf-8")) as Record<string, unknown>;
+    payloadBeforeChange.auditMarker = "profile changed after product proof";
+    await writeFile(profile, `${JSON.stringify(payloadBeforeChange, null, 2)}\n`, "utf-8");
+    const currentValidation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, { validationPath: currentValidation });
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+        "--fail-unless-ready",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toBeNull();
+    expect(payload.productQualityGate).toBeNull();
+    expect(payload.nextAction).toMatchObject({
+      id: "run_quality_gate",
+      phase: "quality_gate",
+    });
   });
 
   it("can stop auto-advance before writing a LoRA dataset", async () => {
@@ -1270,6 +2582,284 @@ describe("voice_profile_next_step.py", () => {
       status: "pass",
       dryRun: false,
       inputs: { skipTranscriptValidation: true },
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock product proof when the quality gate transcript proof has a stale profile hash", async () => {
+    const profile = await writeReadyProfile();
+    const currentValidation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, {
+      profileSha256: await canonicalProfileSha256(profile),
+      validationPath: currentValidation,
+    });
+    await writeTranscriptValidation(profile, { profileSha256: "0".repeat(64) });
+    await writeQualityGate(profile);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock product proof when the quality gate transcript proof omits profile hash evidence", async () => {
+    const profile = await writeReadyProfile();
+    const currentValidation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, {
+      validationPath: currentValidation,
+    });
+    await writeTranscriptValidation(profile, { omitProfileSha256: true });
+    await writeQualityGate(profile);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock product proof when the quality gate transcript proof has stale clip rows", async () => {
+    const profile = await writeReadyProfile();
+    const profileSha256 = await canonicalProfileSha256(profile);
+    const currentValidation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, {
+      profileSha256,
+      validationPath: currentValidation,
+    });
+    await writeTranscriptValidation(profile, {
+      profileSha256,
+      staleSourceRunId: "clip-2",
+    });
+    await writeQualityGate(profile);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock product proof when the quality gate transcript proof has a stale voice profile id", async () => {
+    const profile = await writeReadyProfile();
+    const profileSha256 = await canonicalProfileSha256(profile);
+    const currentValidation = path.join(path.dirname(profile), "transcript-validation.json");
+    await writeTranscriptValidation(profile, {
+      profileSha256,
+      validationPath: currentValidation,
+    });
+    await writeTranscriptValidation(profile, {
+      profileSha256,
+      voiceProfileId: "other-profile",
+    });
+    await writeQualityGate(profile);
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock product proof when quality gate transcript proof paths disagree", async () => {
+    const profile = await writeReadyProfile();
+    const currentValidation = await writeTranscriptValidation(profile);
+    const alternateValidation = path.join(tmpRoot, "alternate-transcript-validation.json");
+    await writeTranscriptValidation(profile, { validationPath: alternateValidation });
+    const gatePath = await writeQualityGate(profile);
+    const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+    gate.inputs.transcriptValidationJson = alternateValidation;
+    await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock product proof when the quality gate transcript proof file changed", async () => {
+    const profile = await writeReadyProfile();
+    const currentValidation = await writeTranscriptValidation(profile);
+    await writeQualityGate(profile);
+    const validationPayload = JSON.parse(await readFile(currentValidation, "utf-8"));
+    validationPayload.mutatedAfterQualityGate = true;
+    await writeFile(currentValidation, `${JSON.stringify(validationPayload, null, 2)}\n`, "utf-8");
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        currentValidation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
+      proofs: { transcriptValidationPassed: true },
+    });
+    expect(payload.nextAction.id).toBe("run_quality_gate");
+  });
+
+  it("does not unlock LoRA export when the latest pass gate omits transcript validation proof JSON", async () => {
+    const profile = await writeReadyProfile();
+    const validation = await writeTranscriptValidation();
+    const gatePath = await writeQualityGate(profile);
+    const gate = JSON.parse(await readFile(gatePath, "utf-8"));
+    delete gate.inputs.transcriptValidationJson;
+    delete gate.proofs.transcriptValidationJson;
+    delete gate.paths.profileTranscriptValidation;
+    await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+
+    const { stdout } = await execFileAsync(
+      python,
+      [
+        script,
+        "--profile-json",
+        profile,
+        "--transcript-validation-json",
+        validation,
+        "--kit-manifest",
+        path.join(tmpRoot, "kit", "manifest.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_QUALITY_GATE_ROOT: path.join(tmpRoot, "quality-gates"),
+        },
+      },
+    );
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("ready_for_quality_gate");
+    expect(payload.qualityGate).toMatchObject({
+      status: "pass",
+      dryRun: false,
       proofs: { transcriptValidationPassed: true },
     });
     expect(payload.nextAction.id).toBe("run_quality_gate");

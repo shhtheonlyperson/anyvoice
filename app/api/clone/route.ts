@@ -2,7 +2,13 @@ import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { shouldReturnWorkerMissing } from "@/lib/clone-config";
 import { cloneInputToFormData, isCloneInputError, type CloneInput, type CloneInputError } from "@/lib/clone-request";
-import { recordCloneError, recordWorkerMissingRun, runLocalClone, workerMissingPayload } from "@/lib/clone-runner";
+import {
+  hasPreferredExternalProfileBackend,
+  recordCloneError,
+  recordWorkerMissingRun,
+  runLocalClone,
+  workerMissingPayload,
+} from "@/lib/clone-runner";
 import { parseCloneFormWithProfile } from "@/lib/profile-clone-input";
 import {
   createErrorHistoryRecord,
@@ -82,7 +88,7 @@ export async function POST(req: NextRequest) {
   }
 
   const jobId = nanoid(10);
-  if (shouldReturnWorkerMissing()) {
+  if (shouldReturnWorkerMissing() && !hasPreferredExternalProfileBackend(input)) {
     await recordWorkerMissingRun(jobId, input);
     const payload = workerMissingPayload(jobId);
     await saveRunHistory(createWorkerMissingHistoryRecord(session.userId, input, payload)).catch(() => {});

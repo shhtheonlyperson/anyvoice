@@ -486,6 +486,37 @@ textarea.target:focus {
   background: var(--surface-cream-strong);
 }
 
+.model-preview {
+  margin-top: 14px;
+}
+.model-preview__grid {
+  display: grid;
+  grid-template-columns: minmax(54px, max-content) minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: start;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--canvas) 74%, var(--surface-soft));
+  padding: 12px;
+}
+.model-preview__label {
+  color: var(--muted);
+  font: 600 12px/1.4 var(--sans);
+  text-transform: uppercase;
+}
+.model-preview__text {
+  min-width: 0;
+  color: var(--body);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.model-preview__text--model {
+  color: var(--body-strong);
+  font-weight: 600;
+}
+
 /* inline notice */
 .notice {
   border-radius: var(--r-md);
@@ -694,6 +725,226 @@ details.adv[open] summary {
     padding: 0 18px;
   }
   .advgrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rk-page {
+  min-height: 100vh;
+  padding: 32px;
+  background: #f7f4ee;
+  color: #191713;
+  font-family: var(--sans);
+}
+
+.rk-header,
+.rk-status,
+.rk-card,
+.rk-footer {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.rk-header,
+.rk-status,
+.rk-footer,
+.rk-card-head,
+.rk-row,
+.rk-controls,
+.rk-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rk-header,
+.rk-status,
+.rk-footer,
+.rk-card-head {
+  justify-content: space-between;
+}
+
+.rk-header {
+  margin-bottom: 20px;
+}
+
+.rk-header h1,
+.rk-card h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.rk-header h1 {
+  font-family: var(--serif);
+  font-size: 42px;
+  line-height: 1;
+}
+
+.rk-header p,
+.rk-hint,
+.rk-notes {
+  color: #665f55;
+}
+
+.rk-eyebrow {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: #8b3f2f;
+}
+
+.rk-status {
+  align-items: stretch;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid #ddd4c6;
+  background: #fffaf2;
+  border-radius: 8px;
+}
+
+.rk-status > div {
+  flex: 1;
+}
+
+.rk-status pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.rk-grid {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.rk-card {
+  padding: 18px;
+  border: 1px solid #ddd4c6;
+  background: #fffaf2;
+  border-radius: 8px;
+}
+
+.rk-card.active {
+  border-color: #b95f46;
+}
+
+.rk-transcript {
+  min-height: 92px;
+  margin: 18px 0 12px;
+  font-size: 22px;
+  line-height: 1.55;
+}
+
+.rk-notes {
+  min-height: 88px;
+  margin: 0 0 14px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.rk-row {
+  justify-content: space-between;
+  padding: 10px 0;
+  border-top: 1px solid #e7decf;
+  border-bottom: 1px solid #e7decf;
+}
+
+.rk-audio {
+  width: 100%;
+  margin: 12px 0;
+}
+
+.rk-button,
+.rk-icon {
+  min-height: 38px;
+  border: 1px solid #b95f46;
+  border-radius: 8px;
+  background: #b95f46;
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rk-button.secondary,
+.rk-icon {
+  background: transparent;
+  color: #8b3f2f;
+}
+
+.rk-button.danger {
+  border-color: #9f2424;
+  background: #9f2424;
+}
+
+.rk-button:disabled,
+.rk-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rk-icon {
+  width: 38px;
+  padding: 0;
+}
+
+.rk-meter {
+  height: 16px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e6ded0;
+}
+
+.rk-meter span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #6f9a70, #d4a13f, #b64234);
+  transition: width 100ms linear;
+}
+
+.rk-error {
+  color: #9f2424;
+  font-weight: 700;
+}
+
+.rk-ok {
+  color: #54895a;
+}
+
+.rk-warn {
+  color: #b95f46;
+}
+
+.rk-footer {
+  margin-top: 18px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .rk-page {
+    padding: 18px;
+  }
+
+  .rk-header,
+  .rk-status,
+  .rk-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rk-grid {
     grid-template-columns: 1fr;
   }
 }

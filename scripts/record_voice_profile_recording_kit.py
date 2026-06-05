@@ -49,6 +49,20 @@ def text_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def same_resolved_path(left: str, right: Path) -> bool:
+    if not left.strip():
+        return False
+    return Path(left).expanduser().resolve(strict=False) == right.resolve(strict=False)
+
+
 def command(parts: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in parts)
 
@@ -521,6 +535,7 @@ def select_missing_clips(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def write_metadata(spec: dict[str, Any], *, recorder_command: str, duration_sec: float) -> Path:
     metadata_path = spec["audioPath"].with_name(f"{spec['audioPath'].name}.recording.json")
+    audio_path: Path = spec["audioPath"]
     prompt_transcript = str(spec.get("promptTranscript") or "")
     metadata_path.write_text(
         json.dumps(
@@ -528,7 +543,9 @@ def write_metadata(spec: dict[str, Any], *, recorder_command: str, duration_sec:
                 "recordedAt": utc_stamp(),
                 "id": spec["id"],
                 "index": spec["index"],
-                "audioPath": str(spec["audioPath"]),
+                "audioPath": str(audio_path),
+                "audioBytes": audio_path.stat().st_size,
+                "audioSha256": file_sha256(audio_path),
                 "promptPath": str(spec["promptPath"]),
                 "transcript": spec["transcript"],
                 "transcriptSha256": spec["transcriptSha256"],
@@ -559,6 +576,8 @@ def recording_metadata_state(spec: dict[str, Any]) -> dict[str, Any]:
     exists = metadata_path.exists()
     transcript = ""
     transcript_sha256 = ""
+    audio_path_raw = ""
+    audio_sha256 = ""
     errors: list[str] = []
     if exists:
         try:
@@ -574,6 +593,10 @@ def recording_metadata_state(spec: dict[str, Any]) -> dict[str, Any]:
             transcript_sha256 = str(
                 metadata.get("transcriptSha256") or metadata.get("manifestTranscriptSha256") or ""
             ).strip().lower()
+            audio_path_raw = str(metadata.get("audioPath") or metadata.get("manifestAudioPath") or "").strip()
+            audio_sha256 = str(
+                metadata.get("audioSha256") or metadata.get("audioFileSha256") or metadata.get("manifestAudioSha256") or ""
+            ).strip().lower()
             expected_sha256 = str(spec["transcriptSha256"])
             if not transcript_sha256:
                 errors.append("recording_metadata_transcript_hash_missing")
@@ -581,11 +604,24 @@ def recording_metadata_state(spec: dict[str, Any]) -> dict[str, Any]:
                 errors.append("recording_metadata_transcript_mismatch")
             elif transcript and transcript != spec["transcript"]:
                 errors.append("recording_metadata_transcript_mismatch")
+            audio_path: Path = spec["audioPath"]
+            if not audio_path_raw:
+                errors.append("recording_metadata_audio_path_missing")
+            elif not same_resolved_path(audio_path_raw, audio_path):
+                errors.append("recording_metadata_audio_path_mismatch")
+            if audio_path.exists() and audio_path.stat().st_size > 0:
+                expected_audio_sha256 = file_sha256(audio_path)
+                if not audio_sha256:
+                    errors.append("recording_metadata_audio_hash_missing")
+                elif audio_sha256 != expected_audio_sha256:
+                    errors.append("recording_metadata_audio_hash_mismatch")
     return {
         "path": str(metadata_path),
         "exists": exists,
         "transcript": transcript,
         "transcriptSha256": transcript_sha256,
+        "audioPath": audio_path_raw,
+        "audioSha256": audio_sha256,
         "expectedTranscriptSha256": spec["transcriptSha256"],
         "errors": errors,
     }
@@ -897,6 +933,7 @@ def build_plan_clips(
             "recordingMetadataPath": recording_metadata["path"],
             "recordingMetadataExists": recording_metadata["exists"],
             "recordingMetadataTranscriptSha256": recording_metadata["transcriptSha256"],
+            "recordingMetadataAudioSha256": recording_metadata["audioSha256"],
             "expectedTranscriptSha256": recording_metadata["expectedTranscriptSha256"],
             "recordingMetadataErrors": recording_metadata["errors"],
         }

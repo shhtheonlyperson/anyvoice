@@ -115,6 +115,25 @@ describe("POST /api/voice-profile/enroll", () => {
     );
   });
 
+  it("rejects known browser captures with DSP enabled before analyzer work", async () => {
+    const res = await POST(
+      makeReq(
+        form({
+          browserCaptureSettings: JSON.stringify({
+            echoCancellation: false,
+            noiseSuppression: true,
+            autoGainControl: false,
+          }),
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.message).toMatch(/microphone processing/);
+    expect(body.message).toMatch(/noiseSuppression/);
+    expect(enrollMock).not.toHaveBeenCalled();
+  });
+
   it("rejects sample audio before analyzer work", async () => {
     const res = await POST(makeReq(form({ sourceKind: "sample" })));
     expect(res.status).toBe(400);

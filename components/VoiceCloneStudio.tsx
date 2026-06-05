@@ -64,6 +64,14 @@ interface ReferenceQuality {
   warnings: string[];
 }
 
+interface BrowserCaptureSettings {
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  autoGainControl?: boolean;
+  sampleRate?: number;
+  channelCount?: number;
+}
+
 interface VoiceProfileEnrollmentPayload {
   status: "enrolled" | "error";
   message?: string;
@@ -144,6 +152,19 @@ function supportedRecorderOptions(): MediaRecorderOptions | undefined {
   return mimeType ? { mimeType } : undefined;
 }
 
+function browserCaptureSettings(stream: MediaStream): BrowserCaptureSettings | null {
+  const track = stream.getAudioTracks()[0];
+  const settings = track?.getSettings?.() as MediaTrackSettings | undefined;
+  if (!settings) return null;
+  return {
+    ...(typeof settings.echoCancellation === "boolean" ? { echoCancellation: settings.echoCancellation } : {}),
+    ...(typeof settings.noiseSuppression === "boolean" ? { noiseSuppression: settings.noiseSuppression } : {}),
+    ...(typeof settings.autoGainControl === "boolean" ? { autoGainControl: settings.autoGainControl } : {}),
+    ...(typeof settings.sampleRate === "number" ? { sampleRate: settings.sampleRate } : {}),
+    ...(typeof settings.channelCount === "number" ? { channelCount: settings.channelCount } : {}),
+  };
+}
+
 // Block Simplified / mixed / unproven Chinese (real product safety contract).
 // Pure non-Chinese (English) target text is allowed.
 function isUnstableChineseScript(text: string): boolean {
@@ -196,6 +217,9 @@ type Copy = {
   chars: string;
   pronTitle: string;
   pronApply: (term: string, replacement: string) => string;
+  modelPreviewTitle: string;
+  modelPreviewRaw: string;
+  modelPreviewModel: string;
   outLabel: string;
   download: string;
   regenerate: string;
@@ -295,6 +319,9 @@ const COPY: Record<Locale, Copy> = {
     chars: "字",
     pronTitle: "建議的發音替換",
     pronApply: (term, replacement) => `${term} → ${replacement}`,
+    modelPreviewTitle: "模型輸入預覽",
+    modelPreviewRaw: "原文",
+    modelPreviewModel: "模型",
     outLabel: "生成結果",
     download: "下載 WAV",
     regenerate: "重新生成",
@@ -392,6 +419,9 @@ const COPY: Record<Locale, Copy> = {
     chars: "chars",
     pronTitle: "Suggested pronunciation fixes",
     pronApply: (term, replacement) => `${term} → ${replacement}`,
+    modelPreviewTitle: "Model input preview",
+    modelPreviewRaw: "Raw",
+    modelPreviewModel: "Model",
     outLabel: "Result",
     download: "Download WAV",
     regenerate: "Regenerate",
@@ -584,8 +614,7 @@ export function VoiceCloneStudio() {
 
   // ---- profile state
   const [profile, setProfile] = useState<VoiceProfilePayload | null>(null);
-  // Two-status model (P0.1/P0.2): a *usable* voice (≥1 passing clip) unlocks
-  // Generate + Audiobook; *studio-grade* is the strict curated bar.
+  // Draft generation can use a usable voice; audiobook requires the strict curated bar.
   const profileUsable = profile?.usable ?? profile?.status === "ready";
   const profileReady = profile?.status === "ready"; // studio-grade (kept for the build done-band)
   // ---- multiple voice profiles
@@ -740,6 +769,15 @@ export function VoiceCloneStudio() {
     () => suggestPronunciationOverrides(text, pronOverrides),
     [text, pronOverrides],
   );
+  const preparedTarget = useMemo(
+    () =>
+      prepareVoiceText(text, {
+        pronunciationOverrides: pronOverrides,
+        autoApplyPresetPronunciations: true,
+      }),
+    [text, pronOverrides],
+  );
+  const showModelPreview = text.trim().length > 0 && preparedTarget.raw !== preparedTarget.model;
 
   function applyPronunciation(term: string, override: PronunciationOverride) {
     setPronText((current) => {
@@ -873,11 +911,6 @@ export function VoiceCloneStudio() {
     setGenMessage("");
     setAudioUrl("");
 
-    const modelText = prepareVoiceText(text, {
-      pronunciationOverrides: pronOverrides,
-      autoApplyPresetPronunciations: true,
-    });
-
     const form = new FormData();
     form.set("targetText", text);
     form.set("consent", "yes");
@@ -889,7 +922,7 @@ export function VoiceCloneStudio() {
       // enrolled clip and clones it zero-shot (no upload, no transcript typing).
       form.set("useVoiceProfile", "yes");
       form.set("profileId", activeProfileId);
-      void modelText; // model preview computed for parity; server re-derives
+      form.set("allowDraftVoiceProfile", "yes");
 
       const response = await fetch("/api/clone/stream", { method: "POST", body: form });
       const contentType = response.headers.get("content-type") || "";
@@ -907,11 +940,8 @@ export function VoiceCloneStudio() {
 
   /* ----------------------------- recording + enroll */
 
-  function micProcessingEnabled(stream: MediaStream): boolean {
-    const track = stream.getAudioTracks()[0];
-    if (!track || typeof track.getSettings !== "function") return false;
-    const settings = track.getSettings() as MediaTrackSettings;
-    return Boolean(settings.echoCancellation || settings.noiseSuppression || settings.autoGainControl);
+  function micProcessingEnabled(settings: BrowserCaptureSettings | null): boolean {
+    return Boolean(settings?.echoCancellation || settings?.noiseSuppression || settings?.autoGainControl);
   }
 
   async function startRecording() {
@@ -928,7 +958,8 @@ export function VoiceCloneStudio() {
       setBuildMessage(t.micBlocked);
       return;
     }
-    if (micProcessingEnabled(stream)) {
+    const captureSettings = browserCaptureSettings(stream);
+    if (micProcessingEnabled(captureSettings)) {
       stream.getTracks().forEach((track) => track.stop());
       setBuildMessage(t.micProcessing);
       return;
@@ -944,7 +975,7 @@ export function VoiceCloneStudio() {
       const file = createRecordedFile(chunksRef.current, recorder.mimeType, Date.now());
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
-      void enrollClip(file);
+      void enrollClip(file, captureSettings);
     };
     recorder.start();
     setRecording(true);
@@ -971,7 +1002,7 @@ export function VoiceCloneStudio() {
     recorderRef.current = null;
   }
 
-  async function enrollClip(file: File) {
+  async function enrollClip(file: File, captureSettings: BrowserCaptureSettings | null) {
     setEnrolling(true);
     const promptTranscript = scripts[cur];
     const form = new FormData();
@@ -980,6 +1011,7 @@ export function VoiceCloneStudio() {
     form.set("sourceKind", "scripted" satisfies SourceKind);
     form.set("voiceProfileId", activeProfileId);
     form.set("consent", "yes");
+    if (captureSettings) form.set("browserCaptureSettings", JSON.stringify(captureSettings));
 
     try {
       const response = await fetch("/api/voice-profile/enroll", { method: "POST", body: form });
@@ -1156,9 +1188,9 @@ export function VoiceCloneStudio() {
           <button
             className="pillbtn"
             aria-pressed={screen === "book"}
-            disabled={!profileUsable}
-            title={!profileUsable ? t.voiceMineHint : undefined}
-            onClick={() => profileUsable && setScreen("book")}
+            disabled={!profileReady}
+            title={!profileReady ? t.voiceMineHint : undefined}
+            onClick={() => profileReady && setScreen("book")}
           >
             {t.navBook}
           </button>
@@ -1248,7 +1280,7 @@ export function VoiceCloneStudio() {
       )}
 
       {screen === "book" ? (
-        <BookReader locale={locale} profileReady={Boolean(profileUsable)} profileId={activeProfileId} />
+        <BookReader locale={locale} profileReady={Boolean(profileReady)} profileId={activeProfileId} />
       ) : screen === "generate" ? (
         <div className="wrap">
           <div className="hero">
@@ -1304,6 +1336,18 @@ export function VoiceCloneStudio() {
                         {t.pronApply(s.term, s.replacement)}
                       </button>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {showModelPreview && (
+                <div className="model-preview" aria-label={t.modelPreviewTitle}>
+                  <span className="label">{t.modelPreviewTitle}</span>
+                  <div className="model-preview__grid">
+                    <span className="model-preview__label">{t.modelPreviewRaw}</span>
+                    <span className="model-preview__text">{preparedTarget.raw}</span>
+                    <span className="model-preview__label">{t.modelPreviewModel}</span>
+                    <span className="model-preview__text model-preview__text--model">{preparedTarget.model}</span>
                   </div>
                 </div>
               )}

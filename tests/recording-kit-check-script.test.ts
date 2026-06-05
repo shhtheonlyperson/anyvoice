@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -23,6 +23,10 @@ const transcripts = [
 
 function textSha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function fileSha256(filePath: string): Promise<string> {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
 }
 
 function wavBuffer(durationSec: number, activeVoiceSec = durationSec, amplitude = 9000): Buffer {
@@ -319,6 +323,63 @@ describe("check_voice_profile_recording_kit.py", () => {
         recordingMetadataTranscriptSha256: textSha256(staleTranscript),
         expectedTranscriptSha256: textSha256(transcripts[1]),
         errors: expect.arrayContaining(["recording_metadata_transcript_mismatch"]),
+      });
+    }
+  });
+
+  it("blocks terminal recording metadata whose audio hash no longer matches", async () => {
+    const recordingsDir = path.join(tmpRoot, "recordings");
+    await mkdir(recordingsDir, { recursive: true });
+    const clips = [];
+    for (let index = 0; index < transcripts.length; index += 1) {
+      const file = `profile-clip-${index + 1}.wav`;
+      const audioPath = path.join(recordingsDir, file);
+      await writeFile(audioPath, wavBuffer(7 + index));
+      clips.push({
+        id: `profile-clip-${index + 1}`,
+        audioPath: `recordings/${file}`,
+        transcript: transcripts[index],
+      });
+    }
+    const audioPath = path.join(recordingsDir, "profile-clip-2.wav");
+    const staleAudioSha256 = await fileSha256(audioPath);
+    await writeFile(audioPath, wavBuffer(9));
+    const currentAudioSha256 = await fileSha256(audioPath);
+    await writeFile(
+      path.join(recordingsDir, "profile-clip-2.wav.recording.json"),
+      `${JSON.stringify(
+        {
+          id: "profile-clip-2",
+          audioPath,
+          audioSha256: staleAudioSha256,
+          transcript: transcripts[1],
+          transcriptSha256: textSha256(transcripts[1]),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+    const manifest = path.join(tmpRoot, "manifest.json");
+    await writeFile(manifest, `${JSON.stringify({ clips }, null, 2)}\n`, "utf-8");
+
+    await expect(execFileAsync(python, [script, "--manifest", manifest])).rejects.toMatchObject({
+      stdout: expect.stringContaining('"recording_metadata_audio_hash_mismatch"'),
+    });
+    try {
+      await execFileAsync(python, [script, "--manifest", manifest]);
+    } catch (error) {
+      const payload = JSON.parse((error as { stdout: string }).stdout);
+      expect(payload.status).toBe("incomplete");
+      expect(payload.checks.find((row: { check: string }) => row.check === "recording_metadata")).toMatchObject({
+        ok: false,
+        message: "1 clip(s) have stale or unreadable recording sidecars",
+      });
+      expect(payload.clips[1]).toMatchObject({
+        recordingMetadataExists: true,
+        recordingMetadataAudioSha256: staleAudioSha256,
+        audioSha256: currentAudioSha256,
+        errors: expect.arrayContaining(["recording_metadata_audio_hash_mismatch"]),
       });
     }
   });

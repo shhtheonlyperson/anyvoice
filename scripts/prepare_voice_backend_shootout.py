@@ -26,11 +26,13 @@ from voice_clone_regression import (
     shell_join,
     utc_stamp,
 )
+from voice_profile_next_step import canonical_profile_sha256, transcript_validation_rows_match_profile
 from verify_voice_profile_ready import readiness_report as verify_profile_readiness_report
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_RENDER_COMMAND = "ANYVOICE_BACKEND_RENDER_COMMAND"
+BASELINE_BACKEND = "voxcpm2-hifi"
 ALLOWED_COMMAND_PLACEHOLDERS = {
     "backend",
     "case_id",
@@ -65,6 +67,13 @@ def safe_backend_id(value: str) -> str:
     return safe.strip("-") or "backend"
 
 
+def backend_render_command_env(backend: str) -> str:
+    suffix = "".join(ch if ch.isalnum() else "_" for ch in backend.strip().upper()).strip("_")
+    while "__" in suffix:
+        suffix = suffix.replace("__", "_")
+    return f"{ENV_RENDER_COMMAND}_{suffix or 'BACKEND'}"
+
+
 def command_template_fields(command_template: str) -> set[str]:
     fields: set[str] = set()
     try:
@@ -90,6 +99,8 @@ def validate_command_template(command_template: str, *, source: str) -> None:
         raise SystemExit(f"{source} must include {{output_wav}} so renders land at the planned output path")
     if "reference_audio" not in fields:
         raise SystemExit(f"{source} must include {{reference_audio}} so clone identity evidence is fixed per job")
+    if "prompt_text_file" not in fields:
+        raise SystemExit(f"{source} must include {{prompt_text_file}} so the exact reference transcript is fixed per job")
     if not {"target_text_file", "target_text"}.intersection(fields):
         raise SystemExit(f"{source} must include {{target_text_file}} or {{target_text}} for model-facing text input")
 
@@ -145,6 +156,18 @@ def validate_profile_transcript_validation(
         raise SystemExit(
             "transcript validation JSON does not match the shootout profile: "
             f"{payload.get('profile')!r} != {profile_path} ({transcript_validation_json})"
+        )
+    expected_profile_sha256 = canonical_profile_sha256(profile)
+    if payload.get("profileSha256") != expected_profile_sha256:
+        raise SystemExit(
+            "transcript validation JSON is stale for this profile: "
+            f"profileSha256={payload.get('profileSha256')!r}, expected {expected_profile_sha256} "
+            f"({transcript_validation_json})"
+        )
+    if not transcript_validation_rows_match_profile(profile_path, profile, transcript_validation_json, payload):
+        raise SystemExit(
+            "transcript validation JSON rows do not match the selected profile clips: "
+            f"{transcript_validation_json}"
         )
     by_source = {str(row.get("sourceRunId") or ""): row for row in transcript_validation_rows(payload) if row.get("sourceRunId")}
     missing: list[str] = []
@@ -299,7 +322,8 @@ def build_jobs(
                     "repeat": repeat,
                     "rendererStatus": "ready" if command_template else "needs_renderer_command",
                     "commandTemplateSource": "cli" if command_template else "runtime_env",
-                    "commandTemplateEnv": None if command_template else ENV_RENDER_COMMAND,
+                    "commandTemplateEnv": None if command_template else backend_render_command_env(backend),
+                    "commandTemplateFallbackEnv": None if command_template else ENV_RENDER_COMMAND,
                     "targetText": target_text,
                     "targetTextRaw": target_text_raw,
                     "targetScript": detect_chinese_script(target_text_raw),
@@ -311,6 +335,7 @@ def build_jobs(
                     "referenceAudio": str(reference["referenceAudio"]),
                     "promptTextFile": str(case_prompt_text_file),
                     "voiceProfileId": reference.get("voiceProfileId"),
+                    "profileSha256": reference.get("profileSha256"),
                     "profileClipId": reference.get("profileClipId"),
                     "targetCoverageFeatures": reference.get("targetCoverageFeatures"),
                     "matchedCoverageFeatures": reference.get("matchedCoverageFeatures"),
@@ -318,7 +343,11 @@ def build_jobs(
                     "matchedPronunciationPresetIds": reference.get("matchedPronunciationPresetIds"),
                     "outputWav": str(output_wav),
                 }
-                job["command"] = render_command(command_template, job)
+                job["command"] = (
+                    render_command(command_template, job)
+                    if command_template
+                    else f"runtime-env:{job['commandTemplateEnv']}|{ENV_RENDER_COMMAND}"
+                )
                 jobs.append(job)
 
     return jobs
@@ -336,6 +365,7 @@ def manifest_from_jobs(jobs: list[dict[str, Any]]) -> dict[str, Any]:
                 "rendererStatus": job["rendererStatus"],
                 "commandTemplateSource": job["commandTemplateSource"],
                 "commandTemplateEnv": job.get("commandTemplateEnv"),
+                "commandTemplateFallbackEnv": job.get("commandTemplateFallbackEnv"),
                 "referenceAudio": job["referenceAudio"],
                 "promptTextFile": job["promptTextFile"],
                 "targetTextFile": job["targetTextFile"],
@@ -344,6 +374,7 @@ def manifest_from_jobs(jobs: list[dict[str, Any]]) -> dict[str, Any]:
                 "textPreparation": job["textPreparation"],
                 "stabilitySeed": job["stabilitySeed"],
                 "voiceProfileId": job.get("voiceProfileId"),
+                "profileSha256": job.get("profileSha256"),
                 "profileClipId": job.get("profileClipId"),
                 "targetCoverageFeatures": job.get("targetCoverageFeatures"),
                 "matchedCoverageFeatures": job.get("matchedCoverageFeatures"),
@@ -353,6 +384,8 @@ def manifest_from_jobs(jobs: list[dict[str, Any]]) -> dict[str, Any]:
                 "command": job["command"],
                 "metadataJson": {
                     "plannedBy": "scripts/prepare_voice_backend_shootout.py",
+                    "voiceProfileId": job.get("voiceProfileId"),
+                    "profileSha256": job.get("profileSha256"),
                     "targetTextFile": job["targetTextFile"],
                     "targetTextRawFile": job["targetTextRawFile"],
                     "textPrepFile": job["textPrepFile"],
@@ -371,18 +404,30 @@ def write_env_render_helper(lines: list[str]) -> None:
     required_text_json = json.dumps(sorted(["target_text_file", "target_text"]))
     lines.extend(
         [
-            f'if [[ -z "${{{ENV_RENDER_COMMAND}:-}}" ]]; then',
-            "  cat >&2 <<'EOF'",
-            f"Missing renderer command template. Set {ENV_RENDER_COMMAND} to run this plan.",
+            "select_runtime_template() {",
+            "  local backend_env=\"$1\"",
+            "  local backend=\"$2\"",
+            "  local backend_template=\"${!backend_env:-}\"",
+            f"  local fallback_template=\"${{{ENV_RENDER_COMMAND}:-}}\"",
+            "  if [[ -n \"$backend_template\" ]]; then",
+            "    printf '%s\\n' \"$backend_template\"",
+            "    return 0",
+            "  fi",
+            "  if [[ -n \"$fallback_template\" ]]; then",
+            "    printf '%s\\n' \"$fallback_template\"",
+            "    return 0",
+            "  fi",
+            "  cat >&2 <<EOF",
+            "Missing renderer command template for backend ${backend}. Set ${backend_env} or ANYVOICE_BACKEND_RENDER_COMMAND to run this job.",
             "",
             "Example:",
-            f"{ENV_RENDER_COMMAND}='python render_backend.py --backend {{backend}} --text-file {{target_text_file}} --reference {{reference_audio}} --prompt {{prompt_text_file}} --out {{output_wav}}' ./render.sh",
+            "${backend_env}='python render_backend.py --backend {backend} --text-file {target_text_file} --reference {reference_audio} --prompt {prompt_text_file} --out {output_wav}' ./render.sh",
             "",
-            "Required placeholders: {output_wav}, {reference_audio}, and one of {target_text_file} or {target_text}.",
-            "Allowed placeholders: {backend}, {case_id}, {repeat}, {target_text}, {target_text_file}, {target_text_raw}, {target_text_raw_file}, {text_prep_file}, {reference_audio}, {prompt_text_file}, {output_wav}.",
+            "Required placeholders: {output_wav}, {reference_audio}, {prompt_text_file}, and one of {target_text_file} or {target_text}.",
+            "Allowed placeholders: {backend}, {case_id}, {repeat}, {target_text}, {target_text_file}, {target_text_raw}, {target_text_raw_file}, {text_prep_file}, {reference_audio}, {prompt_text_file}, {output_wav}, {seed}.",
             "EOF",
-            "  exit 64",
-            "fi",
+            "  return 64",
+            "}",
             "",
             "render_with_env_template() {",
             "  python3 - \"$@\" <<'PY'",
@@ -405,6 +450,7 @@ def write_env_render_helper(lines: list[str]) -> None:
             "    'reference_audio',",
             "    'prompt_text_file',",
             "    'output_wav',",
+            "    'seed',",
             "]",
             "values = {key: shlex.quote(value) for key, value in zip(keys, sys.argv[2:])}",
             "fields = set()",
@@ -422,6 +468,8 @@ def write_env_render_helper(lines: list[str]) -> None:
             "    raise SystemExit('command template must include {output_wav}')",
             "if 'reference_audio' not in fields:",
             "    raise SystemExit('command template must include {reference_audio}')",
+            "if 'prompt_text_file' not in fields:",
+            "    raise SystemExit('command template must include {prompt_text_file}')",
             "if not required_text.intersection(fields):",
             "    raise SystemExit('command template must include {target_text_file} or {target_text}')",
             "class Values(dict):",
@@ -452,14 +500,23 @@ def write_render_script(path: Path, jobs: list[dict[str, Any]], *, command_templ
         write_env_render_helper(lines)
     for job in jobs:
         lines.append(f"mkdir -p {shlex.quote(str(Path(job['outputWav']).parent))}")
+        lines.append(f"if [[ -s {shlex.quote(str(job['outputWav']))} ]]; then")
+        lines.append(f"  echo \"skip existing {shlex.quote(str(job['outputWav']))}\"")
+        lines.append("else")
         if command_template:
-            lines.append(str(job["command"]))
+            lines.append(f"  {str(job['command'])}")
         else:
+            backend_env = str(job.get("commandTemplateEnv") or backend_render_command_env(str(job["backend"])))
             lines.append(
-                "cmd=$(render_with_env_template "
+                "  template=$(select_runtime_template "
+                + f"{shlex.quote(backend_env)} {shlex.quote(str(job['backend']))}"
+                + ") || exit $?"
+            )
+            lines.append(
+                "  cmd=$(render_with_env_template "
                 + " ".join(
                     [
-                        f'"${{{ENV_RENDER_COMMAND}}}"',
+                        '"${template}"',
                         shlex.quote(str(job["backend"])),
                         shlex.quote(str(job["caseId"])),
                         shlex.quote(str(job["repeat"])),
@@ -471,12 +528,14 @@ def write_render_script(path: Path, jobs: list[dict[str, Any]], *, command_templ
                         shlex.quote(str(job["referenceAudio"])),
                         shlex.quote(str(job["promptTextFile"])),
                         shlex.quote(str(job["outputWav"])),
+                        shlex.quote("" if job.get("stabilitySeed") is None else str(job["stabilitySeed"])),
                     ]
                 )
                 + ")"
             )
-            lines.append('echo "+ $cmd"')
-            lines.append('eval "$cmd"')
+            lines.append('  echo "+ $cmd"')
+            lines.append('  eval "$cmd"')
+        lines.append("fi")
         lines.append("")
     write_text(path, "\n".join(lines))
     path.chmod(0o755)
@@ -493,6 +552,7 @@ def write_readme(
     command_template: str | None,
 ) -> None:
     backends = sorted({str(job["backend"]) for job in jobs})
+    candidate_backends = [backend for backend in backends if safe_backend_id(backend) != safe_backend_id(BASELINE_BACKEND)]
     case_ids = sorted({str(job["caseId"]) for job in jobs})
     register_cmd = [
         "python3",
@@ -502,6 +562,25 @@ def write_readme(
         str(report_dir),
     ]
     dry_register_cmd = [*register_cmd, "--dry-run"]
+    renderer_preflight_cmd = [
+        "python3",
+        "scripts/render_voice_backend_job.py",
+        "--preflight",
+        "--manifest",
+        str(manifest_path),
+    ]
+    backend_env_lines = "\n".join(f"- `{backend}`: `{backend_render_command_env(backend)}`" for backend in backends)
+    local_baseline_template = (
+        "python3 scripts/render_voice_backend_job.py --backend {backend} "
+        "--case-id {case_id} --repeat {repeat} --text-file {target_text_file} "
+        "--reference {reference_audio} --prompt {prompt_text_file} "
+        "--text-prep-file {text_prep_file} --seed {seed} --out {output_wav} "
+        "--skip-unsupported"
+    )
+    local_baseline_env_cmd = (
+        f"{backend_render_command_env(BASELINE_BACKEND)}={shlex.quote(local_baseline_template)} "
+        f"{shlex.quote(str(render_script))}"
+    )
     score_cmd = [
         "python3",
         "scripts/score_voice_regression.py",
@@ -514,6 +593,48 @@ def write_readme(
         str(report_dir / "score.json"),
         "--strict",
     ]
+    candidate_commands: list[str] = []
+    for backend in candidate_backends:
+        score_path = report_dir / f"{safe_backend_id(backend)}.score.json"
+        selection_path = report_dir / f"{safe_backend_id(backend)}.selection.json"
+        candidate_score_cmd = [
+            "python3",
+            "scripts/score_voice_regression.py",
+            str(report_dir / "report.json"),
+            "--asr-json",
+            str(report_dir / "asr.json"),
+            "--speaker-json",
+            str(report_dir / "speaker.json"),
+            "--baseline-clone-mode",
+            BASELINE_BACKEND,
+            "--candidate-clone-mode",
+            backend,
+            "--require-paired-improvement",
+            "--out",
+            str(score_path),
+            "--strict",
+        ]
+        candidate_select_cmd = [
+            "python3",
+            "scripts/select_voice_backend_candidate.py",
+            str(score_path),
+            "--candidate-clone-mode",
+            backend,
+            "--out",
+            str(selection_path),
+            "--strict",
+        ]
+        candidate_commands.extend(
+            [
+                f"### {backend}",
+                "",
+                "```bash",
+                shell_join(candidate_score_cmd),
+                shell_join(candidate_select_cmd),
+                "```",
+                "",
+            ]
+        )
     text = f"""# AnyVoice Backend Shootout
 
 Generated: {datetime.now(timezone.utc).isoformat()}
@@ -525,11 +646,29 @@ Planned renders: {len(jobs)}
 
 ## Render
 
+Preflight renderer envs, local adapters, and model cache before running the
+render script:
+
+```bash
+{shell_join(renderer_preflight_cmd)}
+```
+
 ```bash
 {shell_join([str(render_script)])}
 ```
 
-{"The generated render script is ready to run with the command template that was provided." if command_template else f"The generated render script requires `{ENV_RENDER_COMMAND}` at runtime. It exits before rendering if the env var is missing or if the template omits `{{output_wav}}`, `{{reference_audio}}`, and model-facing text via `{{target_text_file}}` or `{{target_text}}`."}
+{"The generated render script is ready to run with the command template that was provided." if command_template else f"The generated render script requires a backend-specific renderer env at runtime, falling back to `{ENV_RENDER_COMMAND}`. It skips already-rendered WAVs and exits before a missing job if neither env is set or if the template omits `{{output_wav}}`, `{{reference_audio}}`, `{{prompt_text_file}}`, and model-facing text via `{{target_text_file}}` or `{{target_text}}`."}
+
+Backend renderer envs:
+
+{backend_env_lines if backend_env_lines else "- none"}
+
+To fill the local VoxCPM2 baseline first while leaving IndexTTS2/F5-TTS rows
+missing until their renderers are configured:
+
+```bash
+{local_baseline_env_cmd}
+```
 
 External renderers should use `targetTextFile` / `{{target_text_file}}` for
 model input. The raw eval sentence is preserved separately as
@@ -561,6 +700,12 @@ Run ASR and speaker scoring first, then:
 ```
 
 Use `--baseline-clone-mode voxcpm2-hifi --candidate-clone-mode <backend> --require-paired-improvement` when the manifest includes both a baseline and candidate backend for the same cases.
+
+## Select Candidate
+
+Only keep a candidate if the paired score and selection proof pass:
+
+{chr(10).join(candidate_commands) if candidate_commands else "No non-baseline candidate backends were planned."}
 """
     write_text(path, text)
 
@@ -569,7 +714,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Prepare an executable AnyVoice backend shootout plan for IndexTTS2, F5-TTS, or another external renderer.",
     )
-    parser.add_argument("--backend", action="append", help="Backend id to plan. Can be repeated. Defaults to indextts2 and f5-tts.")
+    parser.add_argument("--backend", action="append", help="Backend id to plan. Can be repeated. Defaults to voxcpm2-hifi, indextts2, and f5-tts.")
     parser.add_argument("--eval-set", default=str(DEFAULT_EVAL_SET))
     parser.add_argument("--case", dest="case_ids", action="append", default=[])
     parser.add_argument("--tag", dest="tags", action="append", default=[])
@@ -605,7 +750,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     eval_path = Path(args.eval_set).expanduser().resolve()
     cases = select_cases(load_eval_set(eval_path), args.case_ids, args.tags, args.max_cases)
-    backends = args.backend or ["indextts2", "f5-tts"]
+    backends = args.backend or [BASELINE_BACKEND, "indextts2", "f5-tts"]
 
     profile_path: Path | None = None
     profile: dict[str, Any] | None = None
@@ -681,6 +826,44 @@ def main() -> None:
         eval_set=eval_path,
         command_template=args.command_template,
     )
+    candidate_backends = [backend for backend in backends if safe_backend_id(backend) != safe_backend_id(BASELINE_BACKEND)]
+    score_candidate_commands = {
+        backend: shell_join(
+            [
+                "python3",
+                "scripts/score_voice_regression.py",
+                str(report_dir / "report.json"),
+                "--asr-json",
+                str(report_dir / "asr.json"),
+                "--speaker-json",
+                str(report_dir / "speaker.json"),
+                "--baseline-clone-mode",
+                BASELINE_BACKEND,
+                "--candidate-clone-mode",
+                backend,
+                "--require-paired-improvement",
+                "--out",
+                str(report_dir / f"{safe_backend_id(backend)}.score.json"),
+                "--strict",
+            ]
+        )
+        for backend in candidate_backends
+    }
+    select_candidate_commands = {
+        backend: shell_join(
+            [
+                "python3",
+                "scripts/select_voice_backend_candidate.py",
+                str(report_dir / f"{safe_backend_id(backend)}.score.json"),
+                "--candidate-clone-mode",
+                backend,
+                "--out",
+                str(report_dir / f"{safe_backend_id(backend)}.selection.json"),
+                "--strict",
+            ]
+        )
+        for backend in candidate_backends
+    }
 
     print(
         json.dumps(
@@ -698,6 +881,15 @@ def main() -> None:
                 "stabilitySeed": args.seed,
                 "transcriptValidationJson": str(transcript_validation_json) if transcript_validation_json else None,
                 "nextCommands": {
+                    "rendererPreflight": shell_join(
+                        [
+                            "python3",
+                            "scripts/render_voice_backend_job.py",
+                            "--preflight",
+                            "--manifest",
+                            str(manifest_path),
+                        ]
+                    ),
                     "render": str(render_script),
                     "registerDryRun": shell_join(
                         [
@@ -718,6 +910,8 @@ def main() -> None:
                             str(report_dir),
                         ]
                     ),
+                    "scoreCandidates": score_candidate_commands,
+                    "selectCandidates": select_candidate_commands,
                 },
             },
             ensure_ascii=False,

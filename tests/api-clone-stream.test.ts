@@ -1,12 +1,14 @@
 // @vitest-environment node
 import path from "node:path";
 import os from "node:os";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloneInput } from "@/lib/clone-request";
 import type { CloneProgressCallback } from "@/lib/clone-runner";
 
 vi.mock("@/lib/clone-runner", () => ({
+  hasPreferredExternalProfileBackend: vi.fn(() => false),
   runLocalCloneWithProgress: vi.fn(),
   recordCloneError: vi.fn(),
   recordWorkerMissingRun: vi.fn(),
@@ -29,7 +31,12 @@ vi.mock("nanoid", () => ({ nanoid: () => "stream-job-id" }));
 
 import { POST } from "@/app/api/clone/stream/route";
 import { recordWorkerMissingRun, runLocalCloneWithProgress } from "@/lib/clone-runner";
-import { persistVoiceProfileManifest, voiceProfileManifestPath, type VoiceProfileSummary } from "@/lib/voice-profile";
+import {
+  canonicalVoiceProfileSha256,
+  persistVoiceProfileManifest,
+  voiceProfileManifestPath,
+  type VoiceProfileSummary,
+} from "@/lib/voice-profile";
 import { saveRunHistory } from "@/lib/run-history";
 
 const runProgressMock = vi.mocked(runLocalCloneWithProgress);
@@ -53,6 +60,32 @@ function buildForm(overrides: Record<string, string | Blob> = {}): FormData {
   form.set("consent", "yes");
   for (const [k, v] of Object.entries(overrides)) form.set(k, v);
   return form;
+}
+
+function forgedInternalProfileReference(): string {
+  return JSON.stringify({
+    voiceProfileId: "forged-profile",
+    sourceRunId: "forged-run",
+    referenceClipIds: ["forged-run"],
+    audioPath: "/tmp/forged-profile/ref.wav",
+    preferredBackend: {
+      version: 1,
+      status: "accepted",
+      profileJson: "/tmp/forged-profile/profile.json",
+      voiceProfileId: "forged-profile",
+      profileSha256: "c".repeat(64),
+      backend: "indextts2",
+      baselineBackend: "voxcpm2-hifi",
+      selectionJson: "/tmp/forged-selection.json",
+      selectionSha256: "a".repeat(64),
+      scoreJson: "/tmp/forged-score.json",
+      scoreSha256: "b".repeat(64),
+      reviewJson: "/tmp/forged-review.json",
+      reviewSha256: "d".repeat(64),
+      sourceReport: "/tmp/forged-report.json",
+      sourceReportSha256: "e".repeat(64),
+    },
+  });
 }
 
 function makeReq(form?: FormData): import("next/server").NextRequest {
@@ -96,6 +129,8 @@ async function writePassingProfileValidation(validationRoot: string, profile: Vo
       {
         createdAt: "2026-05-19T00:00:00.000Z",
         profile: voiceProfileManifestPath("local-default"),
+        voiceProfileId: profile.voiceProfileId,
+        profileSha256: canonicalVoiceProfileSha256(profile),
         status: "pass",
         summary: { total: profile.clips.length, passed: profile.clips.length, failed: 0 },
         clips: profile.clips.map((clip) => ({
@@ -112,6 +147,345 @@ async function writePassingProfileValidation(validationRoot: string, profile: Vo
     )}\n`,
     "utf-8",
   );
+}
+
+async function applyProfileRuntimePolicies() {
+  const profilePath = voiceProfileManifestPath("local-default");
+  const profileDir = path.dirname(profilePath);
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  const profileSha256 = canonicalVoiceProfileSha256(profile as Partial<VoiceProfileSummary>);
+
+  const writePolicyFile = async (relativePath: string, contents: string | Buffer) => {
+    const filePath = path.join(profileDir, relativePath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, contents, typeof contents === "string" ? "utf-8" : null);
+    return {
+      path: filePath,
+      bytes: typeof contents === "string" ? Buffer.byteLength(contents) : contents.byteLength,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    };
+  };
+  const adapter = await writePolicyFile("adapters/lora_weights.ckpt", Buffer.from([1, 2, 3, 4]));
+  const trainConfig = await writePolicyFile("training/train_config.json", '{"trainer":{"status":"ready"}}\n');
+  const adapterProof = await writePolicyFile(
+    "proofs/adapter-proof.json",
+    `${JSON.stringify({
+      status: "pass",
+      trainConfig: trainConfig.path,
+      trainConfigSha256: trainConfig.sha256,
+      checkpoint: {
+        status: "readable",
+        loraParameterKeyCount: 2,
+        loraParameterKeys: ["encoder.lora_A.weight", "encoder.lora_B.weight"],
+      },
+    })}\n`,
+  );
+  const backendOutput = await writePolicyFile("renders/indextts2.wav", Buffer.from("candidate wav\n"));
+  const baselineOutput = await writePolicyFile("renders/voxcpm2-hifi.wav", Buffer.from("baseline wav\n"));
+  const loraOutput = await writePolicyFile("renders/lora.wav", Buffer.from("lora wav\n"));
+  const loraReport = await writePolicyFile(
+    "proofs/lora-report.json",
+    `${JSON.stringify({
+      version: 1,
+      voiceProfile: {
+        voiceProfileId: "local-default",
+        profileSha256,
+      },
+      groups: [
+        {
+          cloneMode: "hifi",
+          voiceProfileId: "local-default",
+          profileSha256,
+          renders: [
+            {
+              status: "ready",
+              outputExists: true,
+              missingOutput: false,
+              outputWav: loraOutput.path,
+              outputBytes: loraOutput.bytes,
+              outputSha256: loraOutput.sha256,
+              voiceProfileId: "local-default",
+              profileSha256,
+              metadataJson: {
+                effectiveParams: {
+                  loraEnabled: true,
+                  loraPath: adapter.path,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    })}\n`,
+  );
+  const loraAsr = await writePolicyFile("proofs/lora-asr.json", '{"status":"pass"}\n');
+  const loraSpeaker = await writePolicyFile("proofs/lora-speaker.json", '{"status":"pass"}\n');
+  const loraScore = await writePolicyFile(
+    "proofs/lora-score.json",
+    `${JSON.stringify({
+      verdict: "pass",
+      sourceReport: loraReport.path,
+      sourceReportSha256: loraReport.sha256,
+      asrJson: loraAsr.path,
+      asrJsonSha256: loraAsr.sha256,
+      speakerJson: loraSpeaker.path,
+      speakerJsonSha256: loraSpeaker.sha256,
+      voiceProfile: {
+        voiceProfileId: "local-default",
+        profileSha256,
+      },
+      groups: [
+        {
+          cloneMode: "hifi",
+          voiceProfileId: "local-default",
+          profileSha256,
+          renders: [
+            {
+              status: "ready",
+              outputExists: true,
+              missingOutput: false,
+              outputWav: loraOutput.path,
+              outputBytes: loraOutput.bytes,
+              outputSha256: loraOutput.sha256,
+              voiceProfileId: "local-default",
+              profileSha256,
+            },
+          ],
+        },
+      ],
+    })}\n`,
+  );
+  const transcriptValidation = path.join(process.env.ANYVOICE_TRANSCRIPT_VALIDATION_ROOT ?? profileDir, "local-default.json");
+  const transcriptValidationBytes = await readFile(transcriptValidation);
+  const transcriptValidationSha256 = createHash("sha256").update(transcriptValidationBytes).digest("hex");
+
+  profile.loraPath = adapter.path;
+  profile.loraAdapter = {
+    version: 1,
+    status: "accepted",
+    profileJson: profilePath,
+    voiceProfileId: "local-default",
+    profileSha256,
+    path: profile.loraPath,
+    bytes: adapter.bytes,
+    sha256: adapter.sha256,
+    adapterProofJson: adapterProof.path,
+    adapterProofSha256: adapterProof.sha256,
+    qualityGateJson: path.join(profileDir, "proofs/lora-quality-gate.json"),
+    qualityGateSha256: "",
+    trainConfig: trainConfig.path,
+    trainConfigSha256: trainConfig.sha256,
+  };
+  const qualityGate = await writePolicyFile(
+    "proofs/lora-quality-gate.json",
+    `${JSON.stringify({
+      status: "pass",
+      dryRun: false,
+      inputs: {
+        profileJson: profilePath,
+        profileSha256,
+        cloneMode: "hifi",
+        requireSpeakerBackend: "speechbrain-ecapa",
+        skipProfileVerify: false,
+        skipTranscriptValidation: false,
+        loraPath: adapter.path,
+        transcriptValidationJson: transcriptValidation,
+        transcriptValidationSha256,
+      },
+      paths: {
+        report: loraReport.path,
+        asr: loraAsr.path,
+        speaker: loraSpeaker.path,
+        score: loraScore.path,
+      },
+      proofs: {
+        profileVerifyRequired: true,
+        profileVerifyPassed: true,
+        profileVerifySkipped: false,
+        transcriptValidationRequired: true,
+        transcriptValidationPassed: true,
+        transcriptValidationSkipped: false,
+        transcriptValidationJson: transcriptValidation,
+        transcriptValidationSha256,
+        speakerBackendRequirement: {
+          selected: "speechbrain-ecapa",
+          required: "speechbrain-ecapa",
+        },
+        loraAdapter: {
+          exists: true,
+          path: adapter.path,
+          bytes: adapter.bytes,
+          sha256: adapter.sha256,
+        },
+        artifacts: {
+          report: { path: loraReport.path, sha256: loraReport.sha256 },
+          asr: { path: loraAsr.path, sha256: loraAsr.sha256 },
+          speaker: { path: loraSpeaker.path, sha256: loraSpeaker.sha256 },
+          score: { path: loraScore.path, sha256: loraScore.sha256 },
+        },
+      },
+    })}\n`,
+  );
+  (profile.loraAdapter as Record<string, unknown>).qualityGateSha256 = qualityGate.sha256;
+  profile.preferredBackend = {
+    version: 1,
+    status: "accepted",
+    profileJson: profilePath,
+    voiceProfileId: "local-default",
+    profileSha256,
+    backend: "indextts2",
+    baselineBackend: "voxcpm2-hifi",
+    selectionJson: path.join(profileDir, "proofs/selection.json"),
+    selectionSha256: "",
+    scoreJson: path.join(profileDir, "proofs/score.json"),
+    scoreSha256: "",
+    reviewJson: path.join(profileDir, "proofs/review.json"),
+    reviewSha256: "",
+    sourceReport: path.join(profileDir, "proofs/source-report.json"),
+    sourceReportSha256: "",
+  };
+  const preferredBackend = profile.preferredBackend as Record<string, unknown>;
+  const report = await writePolicyFile(
+    "proofs/source-report.json",
+    `${JSON.stringify({
+      version: 1,
+      voiceProfile: {
+        voiceProfileId: preferredBackend.voiceProfileId,
+        profileSha256: preferredBackend.profileSha256,
+      },
+      groups: [
+        {
+          cloneMode: preferredBackend.backend,
+          voiceProfileId: preferredBackend.voiceProfileId,
+          profileSha256: preferredBackend.profileSha256,
+          renders: [
+            {
+              status: "ready",
+              externalBackend: true,
+              outputExists: true,
+              missingOutput: false,
+              outputWav: backendOutput.path,
+              outputBytes: backendOutput.bytes,
+              outputSha256: backendOutput.sha256,
+              voiceProfileId: preferredBackend.voiceProfileId,
+              profileSha256: preferredBackend.profileSha256,
+            },
+          ],
+        },
+      ],
+    })}\n`,
+  );
+  preferredBackend.sourceReportSha256 = report.sha256;
+  const review = await writePolicyFile(
+    "proofs/review.json",
+    `${JSON.stringify({
+      version: 1,
+      status: "pass",
+      reportPath: preferredBackend.sourceReport,
+      reportSha256: preferredBackend.sourceReportSha256,
+      stats: {
+        reportSha256: preferredBackend.sourceReportSha256,
+        rounds: 5,
+        reviewedRounds: 5,
+        candidateWins: 4,
+        baselineWins: 1,
+        ties: 0,
+        rerenders: 0,
+        candidateWinRate: 0.8,
+        minCandidateWinRate: 0.8,
+      },
+      choices: {
+        "winner-smoke-r01": "A",
+      },
+    })}\n`,
+  );
+  preferredBackend.reviewSha256 = review.sha256;
+  const score = await writePolicyFile(
+    "proofs/score.json",
+    `${JSON.stringify({
+      verdict: "pass",
+      sourceReport: preferredBackend.sourceReport,
+      sourceReportSha256: preferredBackend.sourceReportSha256,
+      voiceProfile: {
+        voiceProfileId: preferredBackend.voiceProfileId,
+        profileSha256: preferredBackend.profileSha256,
+      },
+      groups: [
+        {
+          cloneMode: preferredBackend.baselineBackend,
+          voiceProfileId: preferredBackend.voiceProfileId,
+          profileSha256: preferredBackend.profileSha256,
+          renders: [
+            {
+              voiceProfileId: preferredBackend.voiceProfileId,
+              profileSha256: preferredBackend.profileSha256,
+              status: "ready",
+              outputExists: true,
+              missingOutput: false,
+              outputWav: baselineOutput.path,
+              outputBytes: baselineOutput.bytes,
+              outputSha256: baselineOutput.sha256,
+            },
+          ],
+        },
+        {
+          cloneMode: preferredBackend.backend,
+          voiceProfileId: preferredBackend.voiceProfileId,
+          profileSha256: preferredBackend.profileSha256,
+          renders: [
+            {
+              voiceProfileId: preferredBackend.voiceProfileId,
+              profileSha256: preferredBackend.profileSha256,
+              status: "ready",
+              outputExists: true,
+              missingOutput: false,
+              outputWav: backendOutput.path,
+              outputBytes: backendOutput.bytes,
+              outputSha256: backendOutput.sha256,
+            },
+          ],
+        },
+      ],
+    })}\n`,
+  );
+  preferredBackend.scoreSha256 = score.sha256;
+  const selection = await writePolicyFile(
+    "proofs/selection.json",
+    `${JSON.stringify({
+      verdict: "accept",
+      accepted: true,
+      baselineCloneMode: preferredBackend.baselineBackend,
+      candidateCloneMode: preferredBackend.backend,
+      voiceProfile: {
+        voiceProfileId: preferredBackend.voiceProfileId,
+        profileSha256: preferredBackend.profileSha256,
+      },
+      scoreJson: preferredBackend.scoreJson,
+      scoreSha256: preferredBackend.scoreSha256,
+      reviewJson: preferredBackend.reviewJson,
+      reviewSha256: preferredBackend.reviewSha256,
+      sourceReport: preferredBackend.sourceReport,
+      sourceReportSha256: preferredBackend.sourceReportSha256,
+      subjectiveReview: {
+        status: "pass",
+        reasons: [],
+        missingChoices: [],
+        invalidChoices: [],
+        stats: {
+          rounds: 5,
+          reviewedRounds: 5,
+          candidateWins: 4,
+          baselineWins: 1,
+          ties: 0,
+          candidateWinRate: 0.8,
+          minCandidateWinRate: 0.8,
+          rerenders: 0,
+        },
+      },
+    })}\n`,
+  );
+  preferredBackend.selectionSha256 = selection.sha256;
+  await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf-8");
 }
 
 async function readJsonLines(res: Response): Promise<Array<Record<string, unknown>>> {
@@ -251,15 +625,21 @@ describe("POST /api/clone/stream", () => {
   it("forwards stream requests to the worker stream endpoint", async () => {
     process.env.ANYVOICE_WORKER_URL = "https://worker.example";
     process.env.ANYVOICE_WORKER_TOKEN = "secret";
-    const fetchMock = vi.fn(async () =>
-      new Response('{"status":"progress","phase":"queued"}\n{"status":"ready","jobId":"wjob"}\n', {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.body).toBeInstanceOf(FormData);
+      expect((init?.body as FormData).get("internalProfileReferenceJson")).toBeNull();
+      return new Response('{"status":"progress","phase":"queued"}\n{"status":"ready","jobId":"wjob"}\n', {
         status: 200,
         headers: { "content-type": "application/x-ndjson" },
-      }),
-    );
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
-    const res = await POST(makeReq(buildForm({ quality: "speed" })));
+    const res = await POST(makeReq(buildForm({
+      quality: "speed",
+      sourceKind: "profile",
+      internalProfileReferenceJson: forgedInternalProfileReference(),
+    })));
     const body = await res.text();
 
     expect(res.headers.get("content-type")).toContain("application/x-ndjson");
@@ -268,5 +648,74 @@ describe("POST /api/clone/stream", () => {
       "https://worker.example/api/local-worker/clone/stream",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("preserves profile LoRA and preferred backend policy when forwarding stream requests", async () => {
+    const profileRoot = await mkdtemp(path.join(os.tmpdir(), "anyvoice-api-profile-stream-proxy-"));
+    const validationRoot = path.join(profileRoot, "transcript-validation");
+    process.env.ANYVOICE_RUNS_DIR = profileRoot;
+    process.env.ANYVOICE_VOICE_PROFILE_ROOT = path.join(profileRoot, "voices");
+    process.env.ANYVOICE_TRANSCRIPT_VALIDATION_ROOT = validationRoot;
+    process.env.ANYVOICE_WORKER_URL = "https://worker.example";
+    process.env.ANYVOICE_WORKER_TOKEN = "secret";
+    try {
+      await Promise.all(Array.from({ length: 5 }, (_, index) => writeEligibleProfileRun(profileRoot, `clip-${index + 1}`)));
+      const profile = await persistVoiceProfileManifest({ profileId: "local-default" });
+      await writePassingProfileValidation(validationRoot, profile);
+      await applyProfileRuntimePolicies();
+
+      const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = init?.body;
+        expect(body).toBeInstanceOf(FormData);
+        const forwarded = body as FormData;
+        const rawReference = forwarded.get("internalProfileReferenceJson");
+        expect(rawReference).toEqual(expect.any(String));
+        const reference = JSON.parse(String(rawReference)) as {
+          loraPath?: string | null;
+          loraAdapter?: { profileSha256?: string; qualityGateSha256?: string; trainConfigSha256?: string };
+          preferredBackend?: {
+            backend?: string;
+            profileSha256?: string;
+            selectionSha256?: string;
+            scoreSha256?: string;
+            reviewSha256?: string;
+            sourceReportSha256?: string;
+          };
+        };
+        expect(reference.loraPath).toMatch(/adapters\/lora_weights\.ckpt$/);
+        expect(reference.loraAdapter).toMatchObject({
+          profileSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          adapterProofSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          qualityGateSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          trainConfigSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+        expect(reference.preferredBackend).toMatchObject({
+          backend: "indextts2",
+          profileSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          selectionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          scoreSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          reviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          sourceReportSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+        return new Response('{"status":"ready","jobId":"wjob"}\n', {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const form = new FormData();
+      form.set("useVoiceProfile", "yes");
+      form.set("targetText", "請用我的數位聲音說這句。");
+      form.set("consent", "yes");
+      const res = await POST(makeReq(form));
+      const body = await res.text();
+
+      expect(res.status, body).toBe(200);
+      expect(body).toContain('"jobId":"wjob"');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(profileRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -7,6 +7,7 @@ import {
   maxUploadBytes,
   modelId,
   normalizeTargetText,
+  profileBackendMode,
   runsRoot,
   shouldReturnWorkerMissing,
   stabilitySeed,
@@ -100,6 +101,12 @@ describe("clone config", () => {
     expect(voxcpmLoraPath({ ANYVOICE_VOXCPM_LORA_PATH: " /tmp/lora_weights.ckpt " })).toBe(
       "/tmp/lora_weights.ckpt",
     );
+  });
+
+  it("defaults profile backend mode to preferred and only opts into VoxCPM-first fallback explicitly", () => {
+    expect(profileBackendMode({})).toBe("preferred");
+    expect(profileBackendMode({ ANYVOICE_PROFILE_BACKEND_MODE: "voxcpm-first" })).toBe("voxcpm-first");
+    expect(profileBackendMode({ ANYVOICE_PROFILE_BACKEND_MODE: "fallback" })).toBe("preferred");
   });
 
   it("defaults to a fixed stability seed and allows explicit opt-out", () => {

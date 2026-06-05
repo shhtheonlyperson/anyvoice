@@ -6,12 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/book-synthesizer", () => ({ startBookSynthesis: vi.fn() }));
 vi.mock("@/lib/voice-profile", () => ({
-  buildVoiceProfileSummary: vi.fn(async () => ({
+  loadVoiceProfileManifest: vi.fn(async () => ({
     status: "ready",
     usable: true,
     studioGrade: true,
     voiceProfileId: "local-default",
     clips: [{ audioPath: "/ref.wav", transcriptRaw: "你好。" }],
+  })),
+}));
+vi.mock("@/lib/voice-profile-verify", () => ({
+  verifyVoiceProfileReadiness: vi.fn(async () => ({
+    status: "ready",
+    profile: "/tmp/profile.json",
   })),
 }));
 vi.mock("@/lib/book-extract", () => ({
@@ -24,7 +30,7 @@ vi.mock("@/lib/book-extract", () => ({
 import { GET as listBooks, POST as createBook } from "@/app/api/books/route";
 import { GET as getBook } from "@/app/api/books/[id]/route";
 import { POST as control } from "@/app/api/books/[id]/control/route";
-import { buildVoiceProfileSummary } from "@/lib/voice-profile";
+import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 import { startBookSynthesis } from "@/lib/book-synthesizer";
 import { ANYVOICE_USER_COOKIE } from "@/lib/user-session";
 
@@ -77,12 +83,22 @@ describe("/api/books", () => {
     expect(pausedJson.progress.status).toBe("paused");
   });
 
-  it("rejects book creation when the voice profile isn't ready", async () => {
-    vi.mocked(buildVoiceProfileSummary).mockResolvedValueOnce({
-      status: "needs_enrollment",
-      voiceProfileId: "local-default",
-      clips: [],
-    } as unknown as Awaited<ReturnType<typeof buildVoiceProfileSummary>>);
+  it("rejects book creation when the voice profile is not strict-ready", async () => {
+    vi.mocked(verifyVoiceProfileReadiness).mockResolvedValueOnce({
+      status: "blocked",
+      profile: "/tmp/profile.json",
+      summary: {
+        selectedClips: 1,
+        eligibleClips: 1,
+        manifestClips: 1,
+        totalDurationSec: 8,
+        missingCoverageFeatures: ["polyphones"],
+        minClips: 5,
+        minTotalDurationSec: 30,
+      },
+      checks: [],
+      nextCommands: {},
+    });
     const res = await createBook(postReq());
     expect(res.status).toBe(409);
     expect(vi.mocked(startBookSynthesis)).not.toHaveBeenCalled();

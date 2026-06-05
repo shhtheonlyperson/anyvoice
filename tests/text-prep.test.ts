@@ -168,10 +168,11 @@ describe("voice text preparation", () => {
   });
 
   it("suggests known risky pronunciation replacements from target text", () => {
-    expect(suggestPronunciationOverrides("請把重庆、银行、角色和 AnyVoice 唸準。")).toEqual([
+    expect(suggestPronunciationOverrides("請把重庆、银行、角色、乾淨和 AnyVoice 唸準。")).toEqual([
       { term: "重庆", replacement: "重 慶", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:chongqing" },
       { term: "银行", replacement: "銀 行", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:bank" },
       { term: "角色", replacement: "角 色", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:role" },
+      { term: "乾淨", replacement: "甘淨", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:ganjing" },
       { term: "AnyVoice", replacement: "Any Voice", reason: "brand", kind: "brand", source: "preset", presetId: "brand:anyvoice" },
     ]);
   });
@@ -187,20 +188,22 @@ describe("voice text preparation", () => {
       { term: "長樂", replacement: "長 樂", kind: "polyphone", presetId: "polyphone:changle" },
       { term: "行長", replacement: "行 長", kind: "polyphone", presetId: "polyphone:bank-president" },
     ]);
+    expect(detectPronunciationPresetIds("錄音品質要乾淨自然。")).toEqual(["polyphone:ganjing"]);
   });
 
   it("can auto-apply safe preset pronunciation replacements to model-facing text", () => {
-    const prepared = prepareVoiceText("請把重慶、銀行和 AnyVoice 唸準。", {
+    const prepared = prepareVoiceText("請把重慶、銀行、乾淨和 AnyVoice 唸準。", {
       autoApplyPresetPronunciations: true,
     });
-    expect(prepared.raw).toBe("請把重慶、銀行和 AnyVoice 唸準。");
-    expect(prepared.model).toBe("請把重 慶、銀 行和 Any Voice 唸準。");
+    expect(prepared.raw).toBe("請把重慶、銀行、乾淨和 AnyVoice 唸準。");
+    expect(prepared.model).toBe("請把重 慶、銀 行、甘淨和 Any Voice 唸準。");
     expect(prepared.operations).toContain("auto_apply_pronunciation_presets");
     expect(prepared.operations).toContain("apply_pronunciation_overrides");
     expect(prepared.pronunciationOverrides).toEqual([
       { term: "AnyVoice", replacement: "Any Voice", reason: "brand", kind: "brand", source: "preset", presetId: "brand:anyvoice", count: 1 },
       { term: "重慶", replacement: "重 慶", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:chongqing", count: 1 },
       { term: "銀行", replacement: "銀 行", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:bank", count: 1 },
+      { term: "乾淨", replacement: "甘淨", reason: "polyphone", kind: "polyphone", source: "preset", presetId: "polyphone:ganjing", count: 1 },
     ]);
   });
 

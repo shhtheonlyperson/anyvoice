@@ -8,13 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from voice_profile_next_step import transcript_validation_rows_match_profile
 from verify_voice_profile_ready import readiness_report as verify_profile_readiness_report
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_JSON = REPO_ROOT / ".anyvoice" / "voices" / "local-default" / "profile.json"
 DEFAULT_OUT_ROOT = REPO_ROOT / "generated" / "voice-lora-datasets"
-DEFAULT_LORA_MIN_CLIPS = 10
+DEFAULT_LORA_MIN_CLIPS = 7
 DEFAULT_LORA_MIN_TOTAL_DURATION_SEC = 60.0
 PRODUCT_PROOF_SPEAKER_BACKEND = "speechbrain-ecapa"
 
@@ -51,8 +52,37 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def same_resolved_path(raw_path: Any, expected_path: Path) -> bool:
-    return isinstance(raw_path, str) and Path(raw_path).expanduser().resolve() == expected_path.resolve()
+def canonical_profile_sha256(profile: dict[str, Any]) -> str:
+    payload = dict(profile)
+    payload.pop("createdAt", None)
+    payload.pop("loraPath", None)
+    payload.pop("loraAdapter", None)
+    payload.pop("preferredBackend", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def same_resolved_path(raw_path: Any, expected_path: Path, base_dir: Path | None = None) -> bool:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return False
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    return path.resolve() == expected_path.resolve()
+
+
+def valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
+
+
+def resolve_render_output_path(render: dict[str, Any], evidence_json_path: Path) -> Path | None:
+    raw_path = render.get("outputWav")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = evidence_json_path.parent / path
+    return path.resolve()
 
 
 def profile_clips(profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -144,6 +174,7 @@ def transcript_validation_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def validate_transcript_validation(
     *,
+    profile: dict[str, Any],
     profile_path: Path,
     rows: list[dict[str, Any]],
     validation_path: Path,
@@ -157,6 +188,17 @@ def validate_transcript_validation(
     if payload.get("status") != "pass":
         raise SystemExit(
             f"transcript validation JSON status is {payload.get('status')!r}; expected 'pass' ({validation_path})"
+        )
+    expected_profile_sha256 = canonical_profile_sha256(profile)
+    if payload.get("profileSha256") != expected_profile_sha256:
+        raise SystemExit(
+            "transcript validation JSON is stale for this profile: "
+            f"profileSha256={payload.get('profileSha256')!r}, expected {expected_profile_sha256} ({validation_path})"
+        )
+    if not transcript_validation_rows_match_profile(profile_path, profile, validation_path, payload):
+        raise SystemExit(
+            "transcript validation JSON rows do not match the selected profile clips: "
+            f"{validation_path}"
         )
 
     by_source = {str(row.get("sourceRunId") or ""): row for row in transcript_validation_rows(payload) if row.get("sourceRunId")}
@@ -217,7 +259,7 @@ def require_strict_ready_profile(
     )
 
 
-def is_product_proof_quality_gate(payload: dict[str, Any]) -> bool:
+def is_product_proof_quality_gate(payload: dict[str, Any], score: dict[str, Any]) -> bool:
     inputs = payload.get("inputs")
     proofs = payload.get("proofs")
     if not isinstance(inputs, dict) or not isinstance(proofs, dict):
@@ -230,22 +272,348 @@ def is_product_proof_quality_gate(payload: dict[str, Any]) -> bool:
     )
     commands = payload.get("commands") if isinstance(payload.get("commands"), dict) else {}
     score_command = str(commands.get("score") or "") if isinstance(commands, dict) else ""
+    paired = score.get("pairedComparison") if isinstance(score.get("pairedComparison"), dict) else {}
     return (
         inputs.get("cloneMode") == "both"
         and inputs.get("requireSpeakerBackend") == PRODUCT_PROOF_SPEAKER_BACKEND
         and speaker_ok
         and "require-paired-improvement" in score_command
+        and paired.get("verdict") == "pass"
+        and paired.get("baselineCloneMode") == "prompt"
+        and paired.get("candidateCloneMode") == "hifi"
     )
+
+
+def resolve_quality_gate_proof_path(raw_path: Any, quality_gate_path: Path) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = quality_gate_path.parent / path
+    return path.resolve()
+
+
+def quality_gate_transcript_validation_paths(
+    *,
+    inputs: dict[str, Any],
+    proofs: dict[str, Any],
+    paths: dict[str, Any],
+    quality_gate_path: Path,
+) -> list[Path]:
+    resolved: list[Path] = []
+    for raw_path in (
+        proofs.get("transcriptValidationJson"),
+        inputs.get("transcriptValidationJson"),
+        paths.get("profileTranscriptValidation"),
+    ):
+        path = resolve_quality_gate_proof_path(raw_path, quality_gate_path)
+        if path is not None:
+            resolved.append(path)
+    return resolved
+
+
+def quality_gate_transcript_validation_sha256s(*, inputs: dict[str, Any], proofs: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for raw_value in (
+        proofs.get("transcriptValidationSha256"),
+        inputs.get("transcriptValidationSha256"),
+    ):
+        if isinstance(raw_value, str) and raw_value.strip():
+            values.append(raw_value.strip())
+    return values
+
+
+def validate_quality_gate_transcript_proof(
+    *,
+    payload: dict[str, Any],
+    profile: dict[str, Any],
+    profile_path: Path,
+    profile_sha256: str,
+    quality_gate_path: Path,
+) -> None:
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {}
+    proofs = payload.get("proofs") if isinstance(payload.get("proofs"), dict) else {}
+    paths = payload.get("paths") if isinstance(payload.get("paths"), dict) else {}
+    proof_paths = quality_gate_transcript_validation_paths(
+        inputs=inputs,
+        proofs=proofs,
+        paths=paths,
+        quality_gate_path=quality_gate_path,
+    )
+    if not proof_paths:
+        raise SystemExit(f"quality gate JSON is missing transcript validation proof path ({quality_gate_path})")
+    transcript_validation_path = proof_paths[0]
+    if any(path != transcript_validation_path for path in proof_paths[1:]):
+        raise SystemExit(f"quality gate JSON transcript validation proof paths disagree ({quality_gate_path})")
+    proof_sha256s = quality_gate_transcript_validation_sha256s(inputs=inputs, proofs=proofs)
+    if not proof_sha256s or any(value != proof_sha256s[0] for value in proof_sha256s[1:]):
+        raise SystemExit(f"quality gate JSON is missing or has inconsistent transcript validation SHA-256 proof ({quality_gate_path})")
+    if sha256_file(transcript_validation_path) != proof_sha256s[0]:
+        raise SystemExit(
+            "quality gate transcript validation proof SHA-256 no longer matches the file: "
+            f"{transcript_validation_path} ({quality_gate_path})"
+        )
+    transcript_validation = load_json_object(transcript_validation_path, "quality gate transcript validation JSON")
+    if transcript_validation.get("status") != "pass":
+        raise SystemExit(
+            "quality gate transcript validation proof is not passing: "
+            f"status={transcript_validation.get('status')!r} ({transcript_validation_path})"
+        )
+    if not same_resolved_path(transcript_validation.get("profile"), profile_path):
+        raise SystemExit(
+            "quality gate transcript validation proof does not match the profile: "
+            f"{transcript_validation.get('profile')!r} != {profile_path} ({transcript_validation_path})"
+        )
+    if transcript_validation.get("profileSha256") != profile_sha256:
+        raise SystemExit(
+            "quality gate transcript validation proof is stale for this profile: "
+            f"profileSha256={transcript_validation.get('profileSha256')!r}, expected {profile_sha256} ({transcript_validation_path})"
+        )
+    if not transcript_validation_rows_match_profile(profile_path, profile, transcript_validation_path, transcript_validation):
+        raise SystemExit(
+            "quality gate transcript validation proof rows do not match the profile: "
+            f"{transcript_validation_path} ({quality_gate_path})"
+        )
+
+
+def profile_evidence_errors(
+    label: str,
+    value: Any,
+    *,
+    voice_profile_id: str | None,
+    profile_sha256: str | None,
+) -> list[str]:
+    evidence = value if isinstance(value, dict) else {}
+    errors: list[str] = []
+    if voice_profile_id and evidence.get("voiceProfileId") != voice_profile_id:
+        errors.append(f"{label}.voiceProfileId")
+    if profile_sha256 and evidence.get("profileSha256") != profile_sha256:
+        errors.append(f"{label}.profileSha256")
+    return errors
+
+
+def group_profile_evidence_errors(
+    root_label: str,
+    groups: Any,
+    *,
+    voice_profile_id: str | None,
+    profile_sha256: str | None,
+) -> tuple[list[str], int]:
+    if not isinstance(groups, list):
+        return [f"{root_label}.groups"], 0
+
+    errors: list[str] = []
+    matched_renders = 0
+    for group_index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
+        group_label = f"{root_label}.groups[{group_index}]"
+        errors.extend(
+            profile_evidence_errors(
+                group_label,
+                group,
+                voice_profile_id=voice_profile_id,
+                profile_sha256=profile_sha256,
+            )
+        )
+        renders = group.get("renders")
+        if not isinstance(renders, list):
+            continue
+        for render_index, render in enumerate(renders):
+            if not isinstance(render, dict):
+                continue
+            matched_renders += 1
+            errors.extend(
+                profile_evidence_errors(
+                    f"{group_label}.renders[{render_index}]",
+                    render,
+                    voice_profile_id=voice_profile_id,
+                    profile_sha256=profile_sha256,
+                )
+            )
+    return errors, matched_renders
+
+
+def validate_report_score_profile_evidence(
+    *,
+    report: dict[str, Any],
+    score: dict[str, Any],
+    voice_profile_id: str | None,
+    profile_sha256: str | None,
+    label: str,
+) -> None:
+    errors: list[str] = []
+    errors.extend(
+        profile_evidence_errors(
+            "score.voiceProfile",
+            score.get("voiceProfile"),
+            voice_profile_id=voice_profile_id,
+            profile_sha256=profile_sha256,
+        )
+    )
+    score_errors, score_render_count = group_profile_evidence_errors(
+        "score",
+        score.get("groups"),
+        voice_profile_id=voice_profile_id,
+        profile_sha256=profile_sha256,
+    )
+    errors.extend(score_errors)
+    if score_render_count <= 0:
+        errors.append("score.profile_render_evidence")
+
+    errors.extend(
+        profile_evidence_errors(
+            "sourceReport.voiceProfile",
+            report.get("voiceProfile"),
+            voice_profile_id=voice_profile_id,
+            profile_sha256=profile_sha256,
+        )
+    )
+    report_errors, report_render_count = group_profile_evidence_errors(
+        "sourceReport",
+        report.get("groups"),
+        voice_profile_id=voice_profile_id,
+        profile_sha256=profile_sha256,
+    )
+    errors.extend(report_errors)
+    if report_render_count <= 0:
+        errors.append("sourceReport.profile_render_evidence")
+
+    if errors:
+        raise SystemExit(f"{label} profile evidence does not match the current profile: {', '.join(errors)}")
+
+
+def ready_render_output_evidence_errors(root_label: str, groups: Any, evidence_json_path: Path) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(groups, list):
+        return [f"{root_label}.groups"]
+    for group_index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
+        case = group.get("case") if isinstance(group.get("case"), dict) else {}
+        case_id = str(case.get("id") or group.get("caseId") or group_index)
+        clone_mode = str(group.get("cloneMode") or root_label)
+        renders = group.get("renders") if isinstance(group.get("renders"), list) else []
+        for render_index, render in enumerate(renders):
+            if not isinstance(render, dict) or render.get("status") != "ready":
+                continue
+            repeat = render.get("repeat")
+            render_label = (
+                f"{clone_mode}/{case_id}#r{repeat}" if repeat is not None else f"{clone_mode}/{case_id}#{render_index}"
+            )
+            if render.get("outputExists") is not True or render.get("missingOutput") is True:
+                errors.append(f"{root_label}_ready_render_output_missing:{render_label}")
+            if not isinstance(render.get("outputBytes"), int) or int(render.get("outputBytes") or 0) <= 0:
+                errors.append(f"{root_label}_ready_render_output_bytes_missing:{render_label}")
+            if not valid_sha256(render.get("outputSha256")):
+                errors.append(f"{root_label}_ready_render_output_sha256_missing:{render_label}")
+            output_path = resolve_render_output_path(render, evidence_json_path)
+            if output_path is None:
+                errors.append(f"{root_label}_ready_render_output_path_missing:{render_label}")
+                continue
+            try:
+                actual_bytes = output_path.stat().st_size
+                actual_sha256 = sha256_file(output_path)
+            except OSError:
+                errors.append(f"{root_label}_ready_render_output_file_missing:{render_label}")
+                continue
+            if isinstance(render.get("outputBytes"), int) and int(render["outputBytes"]) != actual_bytes:
+                errors.append(f"{root_label}_ready_render_output_bytes_mismatch:{render_label}")
+            if valid_sha256(render.get("outputSha256")) and render.get("outputSha256") != actual_sha256:
+                errors.append(f"{root_label}_ready_render_output_sha256_mismatch:{render_label}")
+    return errors
+
+
+def validate_quality_gate_artifact_proof(
+    *,
+    payload: dict[str, Any],
+    quality_gate_path: Path,
+    voice_profile_id: str | None,
+    profile_sha256: str | None,
+) -> dict[str, Any]:
+    proofs = payload.get("proofs") if isinstance(payload.get("proofs"), dict) else {}
+    paths = payload.get("paths") if isinstance(payload.get("paths"), dict) else {}
+    artifacts = proofs.get("artifacts") if isinstance(proofs.get("artifacts"), dict) else {}
+    resolved: dict[str, tuple[Path, str]] = {}
+
+    for key in ("report", "asr", "speaker", "score"):
+        path = resolve_quality_gate_proof_path(paths.get(key), quality_gate_path)
+        artifact = artifacts.get(key) if isinstance(artifacts.get(key), dict) else None
+        if path is None:
+            raise SystemExit(f"quality gate JSON is missing {key} artifact path ({quality_gate_path})")
+        if artifact is None:
+            raise SystemExit(f"quality gate JSON is missing {key} artifact proof metadata ({quality_gate_path})")
+        artifact_path = resolve_quality_gate_proof_path(artifact.get("path"), quality_gate_path)
+        if artifact_path is None or artifact_path != path:
+            raise SystemExit(f"quality gate JSON {key} artifact proof path does not match paths.{key} ({quality_gate_path})")
+        proof_sha256 = artifact.get("sha256")
+        if not isinstance(proof_sha256, str) or not proof_sha256.strip():
+            raise SystemExit(f"quality gate JSON is missing {key} artifact SHA-256 proof ({quality_gate_path})")
+        try:
+            actual_sha256 = sha256_file(path)
+        except OSError as exc:
+            raise SystemExit(f"quality gate JSON {key} artifact is missing or unreadable: {path}") from exc
+        if actual_sha256 != proof_sha256:
+            raise SystemExit(
+                f"quality gate JSON {key} artifact SHA-256 no longer matches the file: "
+                f"{path} ({quality_gate_path})"
+            )
+        resolved[key] = (path, actual_sha256)
+
+    score_path, _score_sha256 = resolved["score"]
+    score = load_json_object(score_path, "quality gate score JSON")
+    if score.get("verdict") != "pass":
+        raise SystemExit(
+            f"quality gate score JSON verdict is {score.get('verdict')!r}; expected 'pass' ({score_path})"
+        )
+    report_path, report_sha256 = resolved["report"]
+    report = load_json_object(report_path, "quality gate source report JSON")
+    asr_path, asr_sha256 = resolved["asr"]
+    speaker_path, speaker_sha256 = resolved["speaker"]
+    if not same_resolved_path(score.get("sourceReport"), report_path, score_path.parent):
+        raise SystemExit(f"quality gate score JSON sourceReport does not match paths.report ({score_path})")
+    if score.get("sourceReportSha256") != report_sha256:
+        raise SystemExit(f"quality gate score JSON sourceReportSha256 no longer matches paths.report ({score_path})")
+    if not same_resolved_path(score.get("asrJson"), asr_path, score_path.parent):
+        raise SystemExit(f"quality gate score JSON asrJson does not match paths.asr ({score_path})")
+    if score.get("asrJsonSha256") != asr_sha256:
+        raise SystemExit(f"quality gate score JSON asrJsonSha256 no longer matches paths.asr ({score_path})")
+    if not same_resolved_path(score.get("speakerJson"), speaker_path, score_path.parent):
+        raise SystemExit(f"quality gate score JSON speakerJson does not match paths.speaker ({score_path})")
+    if score.get("speakerJsonSha256") != speaker_sha256:
+        raise SystemExit(f"quality gate score JSON speakerJsonSha256 no longer matches paths.speaker ({score_path})")
+    validate_report_score_profile_evidence(
+        report=report,
+        score=score,
+        voice_profile_id=voice_profile_id,
+        profile_sha256=profile_sha256,
+        label="quality gate score/report",
+    )
+    output_errors = ready_render_output_evidence_errors("score", score.get("groups"), score_path)
+    output_errors.extend(ready_render_output_evidence_errors("sourceReport", report.get("groups"), report_path))
+    if output_errors:
+        raise SystemExit(
+            "quality gate score/report does not prove ready render output files: "
+            + ", ".join(output_errors)
+        )
+    return score
 
 
 def validate_quality_gate(*, profile_path: Path, quality_gate_path: Path, require_product_proof: bool) -> None:
     payload = load_json_object(quality_gate_path, "quality gate JSON")
     inputs = payload.get("inputs")
-    if not isinstance(inputs, dict) or not same_resolved_path(inputs.get("profileJson"), profile_path):
+    if not isinstance(inputs, dict) or not same_resolved_path(inputs.get("profileJson"), profile_path, quality_gate_path.parent):
         profile_json = inputs.get("profileJson") if isinstance(inputs, dict) else None
         raise SystemExit(
             "quality gate JSON does not match the profile: "
             f"{quality_gate_path} is for {profile_json!r}, expected {profile_path}"
+        )
+    profile = load_json_object(profile_path, "profile JSON")
+    expected_profile_sha256 = canonical_profile_sha256(profile)
+    if inputs.get("profileSha256") != expected_profile_sha256:
+        raise SystemExit(
+            "quality gate JSON is stale for this profile: "
+            f"profileSha256={inputs.get('profileSha256')!r}, expected {expected_profile_sha256} ({quality_gate_path})"
         )
     if payload.get("status") != "pass" or payload.get("dryRun") is not False:
         raise SystemExit(
@@ -259,18 +627,34 @@ def validate_quality_gate(*, profile_path: Path, quality_gate_path: Path, requir
         inputs.get("skipProfileVerify") is True
         or proofs.get("profileVerifyRequired") is not True
         or proofs.get("profileVerifyPassed") is not True
+        or proofs.get("profileVerifySkipped") is True
     ):
         raise SystemExit(f"quality gate JSON did not prove profile verification passed ({quality_gate_path})")
     if (
         inputs.get("skipTranscriptValidation") is True
         or proofs.get("transcriptValidationRequired") is not True
         or proofs.get("transcriptValidationPassed") is not True
+        or proofs.get("transcriptValidationSkipped") is True
     ):
         raise SystemExit(f"quality gate JSON did not prove transcript validation passed ({quality_gate_path})")
-    if require_product_proof and not is_product_proof_quality_gate(payload):
+    validate_quality_gate_transcript_proof(
+        payload=payload,
+        profile=profile,
+        profile_path=profile_path,
+        profile_sha256=expected_profile_sha256,
+        quality_gate_path=quality_gate_path,
+    )
+    voice_profile_id = str(profile.get("voiceProfileId") or "").strip() or None
+    score = validate_quality_gate_artifact_proof(
+        payload=payload,
+        quality_gate_path=quality_gate_path,
+        voice_profile_id=voice_profile_id,
+        profile_sha256=expected_profile_sha256,
+    )
+    if require_product_proof and not is_product_proof_quality_gate(payload, score):
         raise SystemExit(
             "quality gate JSON is not a paired product-proof gate: expected clone-mode both, "
-            f"required speaker backend {PRODUCT_PROOF_SPEAKER_BACKEND}, and paired improvement scoring ({quality_gate_path})"
+            f"required speaker backend {PRODUCT_PROOF_SPEAKER_BACKEND}, and passing paired improvement scoring ({quality_gate_path})"
         )
 
 
@@ -377,10 +761,14 @@ def materialize_dataset(
     write_jsonl(out_dir / "manifest.val.jsonl", manifests["val"])
     write_jsonl(out_dir / "manifest.all.jsonl", manifests["all"])
 
+    transcript_validation_sha256 = sha256_file(transcript_validation_json) if transcript_validation_json else None
+    quality_gate_sha256 = sha256_file(quality_gate_json) if quality_gate_json else None
+
     metadata = {
         "version": 1,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "profilePath": str(profile_path),
+        "profileSha256": canonical_profile_sha256(profile),
         "voiceProfileId": speaker_id,
         "profileStatus": profile.get("status"),
         "copyAudio": copy_audio,
@@ -390,7 +778,9 @@ def materialize_dataset(
         "totalDurationSec": round(sum(float(row["durationSec"]) for row in manifests["all"]), 3),
         "proofs": {
             "transcriptValidationJson": str(transcript_validation_json) if transcript_validation_json else None,
+            "transcriptValidationSha256": transcript_validation_sha256,
             "qualityGateJson": str(quality_gate_json) if quality_gate_json else None,
+            "qualityGateSha256": quality_gate_sha256,
             "productProofQualityGateRequired": product_proof_quality_gate_required,
             "strictProfileProof": strict_profile_proof,
             "bypass": {
@@ -464,6 +854,7 @@ def main() -> None:
             else (profile_path.parent / "transcript-validation.json").resolve()
         )
         validate_transcript_validation(
+            profile=profile,
             profile_path=profile_path,
             rows=rows,
             validation_path=transcript_validation_json,

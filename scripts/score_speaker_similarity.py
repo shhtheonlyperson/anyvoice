@@ -63,6 +63,52 @@ def report_renders(report: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def profile_reference_rows(profile_path: Path | None) -> dict[str, list[dict[str, Any]]]:
+    if profile_path is None:
+        return {}
+    profile = load_json(profile_path)
+    if not isinstance(profile, dict):
+        raise SystemExit(f"profile JSON is not an object: {profile_path}")
+    voice_profile_id = str(profile.get("voiceProfileId") or "").strip()
+    if not voice_profile_id:
+        raise SystemExit(f"profile JSON is missing voiceProfileId: {profile_path}")
+    clips = profile.get("clips") if isinstance(profile.get("clips"), list) else []
+    clip_by_id = {
+        str(clip.get("sourceRunId") or "").strip(): clip
+        for clip in clips
+        if isinstance(clip, dict) and str(clip.get("sourceRunId") or "").strip()
+    }
+    reference_ids = [
+        str(item).strip()
+        for item in profile.get("referenceClipIds", [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    selected_clips = [clip_by_id[reference_id] for reference_id in reference_ids if reference_id in clip_by_id] if reference_ids else clips
+    references: list[dict[str, Any]] = []
+    for reference_id in reference_ids:
+        if reference_id not in clip_by_id:
+            references.append(
+                {
+                    "sourceRunId": reference_id,
+                    "audioPath": None,
+                    "error": "referenceClipId not found in profile clips",
+                }
+            )
+    for clip in selected_clips:
+        if not isinstance(clip, dict):
+            continue
+        audio_path = clip.get("audioPath")
+        source_run_id = str(clip.get("sourceRunId") or "").strip()
+        if isinstance(audio_path, str) and audio_path.strip():
+            references.append(
+                {
+                    "sourceRunId": source_run_id,
+                    "audioPath": str(resolve_path(audio_path, profile_path.parent)),
+                }
+            )
+    return {voice_profile_id: references}
+
+
 def resolve_path(path: str, base: Path) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_absolute():
@@ -330,6 +376,7 @@ def main() -> None:
     parser.add_argument("--out", help="Speaker similarity JSON path. Defaults to <report-dir>/speaker.json.")
     parser.add_argument("--backend", choices=("auto", *BACKENDS), default="auto")
     parser.add_argument("--model", help="Optional model name/path for model-based speaker backends.")
+    parser.add_argument("--profile-json", help="Optional profile manifest; when provided, also compare each render against selected profile clips.")
     parser.add_argument("--sample-rate", type=int, default=DEFAULT_SR)
     parser.add_argument("--max-duration-sec", type=float, default=30.0)
     parser.add_argument("--limit", type=int, help="Score only the first N renders.")
@@ -363,6 +410,7 @@ def main() -> None:
     report_path = Path(args.report).expanduser().resolve()
     report = load_json(report_path)
     rows = report_renders(report if isinstance(report, dict) else {})
+    profile_references = profile_reference_rows(Path(args.profile_json).expanduser().resolve() if args.profile_json else None)
     if args.limit is not None:
         rows = rows[: max(0, args.limit)]
     if not rows:
@@ -384,6 +432,9 @@ def main() -> None:
             "outputWav": str(output_path),
             "referenceAudio": reference_raw,
             "speakerSimilarity": None,
+            "profileReferenceSimilarities": None,
+            "profileSpeakerSimilarityAvg": None,
+            "profileSpeakerSimilarityMin": None,
             "backend": backend,
             "error": None,
         }
@@ -395,6 +446,16 @@ def main() -> None:
         reference_path = resolve_path(reference_raw, base)
         result["referenceAudio"] = str(reference_path)
         if args.dry_run:
+            references = profile_references.get(str(row.get("voiceProfileId") or ""), [])
+            if references:
+                result["profileReferenceSimilarities"] = [
+                    {
+                        "sourceRunId": reference.get("sourceRunId"),
+                        "referenceAudio": reference.get("audioPath"),
+                        "speakerSimilarity": None,
+                    }
+                    for reference in references
+                ]
             similarity_rows.append(result)
             continue
         if not output_path.exists():
@@ -410,7 +471,43 @@ def main() -> None:
         try:
             if embed is None:
                 raise RuntimeError("speaker similarity backend unavailable")
-            result["speakerSimilarity"] = cosine(embed(reference_path), embed(output_path))
+            output_embedding = embed(output_path)
+            result["speakerSimilarity"] = cosine(embed(reference_path), output_embedding)
+            references = profile_references.get(str(row.get("voiceProfileId") or ""), [])
+            if references:
+                profile_rows: list[dict[str, Any]] = []
+                profile_failures = 0
+                for reference in references:
+                    raw_audio = reference.get("audioPath")
+                    reference_row = {
+                        "sourceRunId": reference.get("sourceRunId"),
+                        "referenceAudio": raw_audio,
+                        "speakerSimilarity": None,
+                        "error": None,
+                    }
+                    if not isinstance(raw_audio, str) or not raw_audio.strip():
+                        reference_row["error"] = "missing profile reference audio"
+                        profile_failures += 1
+                    else:
+                        profile_audio = Path(raw_audio).expanduser().resolve()
+                        if not profile_audio.exists():
+                            reference_row["error"] = f"missing profile reference audio: {profile_audio}"
+                            profile_failures += 1
+                        else:
+                            reference_row["referenceAudio"] = str(profile_audio)
+                            reference_row["speakerSimilarity"] = cosine(embed(profile_audio), output_embedding)
+                    profile_rows.append(reference_row)
+                profile_values = [
+                    float(item["speakerSimilarity"])
+                    for item in profile_rows
+                    if isinstance(item.get("speakerSimilarity"), (int, float))
+                ]
+                result["profileReferenceSimilarities"] = profile_rows
+                result["profileSpeakerSimilarityAvg"] = round(sum(profile_values) / len(profile_values), 6) if profile_values else None
+                result["profileSpeakerSimilarityMin"] = round(min(profile_values), 6) if profile_values else None
+                if profile_failures:
+                    result["error"] = f"profile reference scoring failed for {profile_failures} clip(s)"
+                    failures += profile_failures
         except Exception as exc:  # noqa: BLE001
             result["error"] = str(exc)
             failures += 1
@@ -435,6 +532,17 @@ def main() -> None:
             "failed": failures,
             "avgSpeakerSimilarity": round(sum(scored_values) / len(scored_values), 6) if scored_values else None,
             "minSpeakerSimilarity": round(min(scored_values), 6) if scored_values else None,
+            "profileReferenceScored": sum(
+                len(
+                    [
+                        item
+                        for item in row.get("profileReferenceSimilarities", []) or []
+                        if isinstance(item, dict) and isinstance(item.get("speakerSimilarity"), (int, float))
+                    ]
+                )
+                for row in similarity_rows
+                if isinstance(row.get("profileReferenceSimilarities"), list)
+            ),
         },
     }
     out_path = Path(args.out).expanduser().resolve() if args.out else report_path.parent / "speaker.json"

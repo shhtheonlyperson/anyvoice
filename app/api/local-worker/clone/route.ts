@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     return json({ status: "error", message: "multipart form data required" }, { status: 400 });
   }
 
-  const input = parseCloneForm(form);
+  const input = parseCloneForm(form, { allowInternalProfileReference: true });
   if (isCloneInputError(input)) {
     return json(input.body, { status: input.statusCode });
   }

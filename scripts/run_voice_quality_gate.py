@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -88,6 +89,64 @@ def asr_python_default(synthesis_python: str) -> str:
 def resolved_env_path(key: str) -> str | None:
     value = local_env_value(key)
     return str(Path(value).expanduser().resolve()) if value else None
+
+
+def file_sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def canonical_profile_sha256(profile_path: Path | None) -> str | None:
+    if profile_path is None:
+        return None
+    profile = load_json_object(profile_path)
+    if not profile:
+        return None
+    payload = dict(profile)
+    payload.pop("createdAt", None)
+    payload.pop("loraPath", None)
+    payload.pop("loraAdapter", None)
+    payload.pop("preferredBackend", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def lora_adapter_evidence(lora_path: str | None) -> dict[str, Any] | None:
+    if not lora_path:
+        return None
+    path = Path(lora_path)
+    evidence: dict[str, Any] = {"path": str(path)}
+    try:
+        stat_result = path.stat()
+    except OSError as exc:
+        return {**evidence, "exists": False, "error": str(exc)}
+    return {
+        **evidence,
+        "exists": True,
+        "bytes": stat_result.st_size,
+        "sha256": file_sha256(path),
+    }
+
+
+def artifact_evidence(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "sha256": file_sha256(path),
+    }
 
 
 def speaker_backend_status(speaker_python: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -406,6 +465,8 @@ def main() -> None:
         ]
         if args.speaker_model:
             speaker_cmd.extend(["--model", args.speaker_model])
+        if args.profile_json:
+            speaker_cmd.extend(["--profile-json", str(Path(args.profile_json).expanduser())])
         if args.dry_run:
             speaker_cmd.append("--dry-run")
         step = run_step("speaker_similarity", speaker_cmd)
@@ -454,9 +515,13 @@ def main() -> None:
             status = "failed"
 
     parsed_outputs = {step["name"]: parse_json_stdout(step) for step in steps}
-    profile_json = str(Path(args.profile_json).expanduser().resolve()) if args.profile_json else None
+    profile_path = Path(args.profile_json).expanduser().resolve() if args.profile_json else None
+    profile_json = str(profile_path) if profile_path else None
+    profile_sha256 = canonical_profile_sha256(profile_path)
+    transcript_validation_sha256 = file_sha256(profile_transcript_validation_json) if profile_transcript_validation_json else None
     reference_audio = str(Path(args.reference_audio).expanduser().resolve()) if args.reference_audio else None
     prompt_text_file = str(Path(args.prompt_text_file).expanduser().resolve()) if args.prompt_text_file else None
+    lora_path = resolved_env_path("ANYVOICE_VOXCPM_LORA_PATH")
     profile_gate = bool(args.profile_json)
     profile_verify_required = profile_gate and not args.skip_profile_verify
     transcript_validation_required = profile_gate and not args.skip_transcript_validation
@@ -482,6 +547,7 @@ def main() -> None:
         "dryRun": args.dry_run,
         "inputs": {
             "profileJson": profile_json,
+            "profileSha256": profile_sha256,
             "referenceAudio": reference_audio,
             "promptTextFile": prompt_text_file,
             "cloneMode": args.clone_mode,
@@ -492,13 +558,14 @@ def main() -> None:
             "speakerPython": args.speaker_python,
             "hotWorkerUrl": args.hot_worker_url or None,
             "modelId": args.model_id,
-            "loraPath": resolved_env_path("ANYVOICE_VOXCPM_LORA_PATH"),
+            "loraPath": lora_path,
             "stabilitySeed": args.seed,
             "evalSet": str(Path(args.eval_set).expanduser().resolve()),
             "case": args.case,
             "tag": args.tag,
             "maxCases": args.max_cases,
             "transcriptValidationJson": str(profile_transcript_validation_json) if profile_transcript_validation_json else None,
+            "transcriptValidationSha256": transcript_validation_sha256,
             "skipProfileVerify": args.skip_profile_verify,
             "skipTranscriptValidation": args.skip_transcript_validation,
             "profileGateBypass": profile_gate_bypass,
@@ -516,6 +583,7 @@ def main() -> None:
             "transcriptValidationRequired": transcript_validation_required,
             "transcriptValidationSkipped": transcript_validation_skipped,
             "transcriptValidationJson": str(profile_transcript_validation_json) if profile_transcript_validation_json else None,
+            "transcriptValidationSha256": transcript_validation_sha256,
             "transcriptValidationPassed": (
                 (not profile_gate)
                 or (
@@ -529,6 +597,13 @@ def main() -> None:
             "strictProfileProofRequired": strict_profile_proof_required,
             "strictProfileProofPassed": strict_profile_proof_passed,
             "speakerBackendRequirement": speaker_backend_requirement,
+            "loraAdapter": lora_adapter_evidence(lora_path),
+            "artifacts": {
+                "report": artifact_evidence(report_path),
+                "asr": artifact_evidence(asr_path),
+                "speaker": artifact_evidence(speaker_path),
+                "score": artifact_evidence(score_path),
+            },
         },
         "paths": {
             "outDir": str(out_dir),

@@ -169,6 +169,7 @@ const POLYPHONE_GROUPS = [
   { terms: ["長樂", "长乐"], replacement: "長 樂", presetId: "polyphone:changle" },
   { terms: ["行長", "行长"], replacement: "行 長", presetId: "polyphone:bank-president" },
   { terms: ["長大", "长大"], replacement: "長 大", presetId: "polyphone:grow-up" },
+  { terms: ["乾淨"], replacement: "甘淨", presetId: "polyphone:ganjing" },
 ] as const;
 
 const POLYPHONE_TERMS = POLYPHONE_GROUPS.flatMap((group) => [...group.terms]);

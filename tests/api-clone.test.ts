@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/clone-runner", () => ({
+  hasPreferredExternalProfileBackend: vi.fn(() => false),
   runLocalClone: vi.fn(),
   recordCloneError: vi.fn(),
   recordWorkerMissingRun: vi.fn(),
@@ -32,7 +33,12 @@ import {
   runLocalClone,
   workerMissingPayload,
 } from "@/lib/clone-runner";
-import { persistVoiceProfileManifest, voiceProfileManifestPath, type VoiceProfileSummary } from "@/lib/voice-profile";
+import {
+  canonicalVoiceProfileSha256,
+  persistVoiceProfileManifest,
+  voiceProfileManifestPath,
+  type VoiceProfileSummary,
+} from "@/lib/voice-profile";
 import { saveRunHistory } from "@/lib/run-history";
 
 const runMock = vi.mocked(runLocalClone);
@@ -52,6 +58,32 @@ function buildForm(overrides: Record<string, string | Blob> = {}): FormData {
   form.set("consent", "yes");
   for (const [k, v] of Object.entries(overrides)) form.set(k, v);
   return form;
+}
+
+function forgedInternalProfileReference(): string {
+  return JSON.stringify({
+    voiceProfileId: "forged-profile",
+    sourceRunId: "forged-run",
+    referenceClipIds: ["forged-run"],
+    audioPath: "/tmp/forged-profile/ref.wav",
+    preferredBackend: {
+      version: 1,
+      status: "accepted",
+      profileJson: "/tmp/forged-profile/profile.json",
+      voiceProfileId: "forged-profile",
+      profileSha256: "c".repeat(64),
+      backend: "indextts2",
+      baselineBackend: "voxcpm2-hifi",
+      selectionJson: "/tmp/forged-selection.json",
+      selectionSha256: "a".repeat(64),
+      scoreJson: "/tmp/forged-score.json",
+      scoreSha256: "b".repeat(64),
+      reviewJson: "/tmp/forged-review.json",
+      reviewSha256: "d".repeat(64),
+      sourceReport: "/tmp/forged-report.json",
+      sourceReportSha256: "e".repeat(64),
+    },
+  });
 }
 
 function makeReq(form?: FormData, init?: RequestInit): import("next/server").NextRequest {
@@ -105,6 +137,7 @@ async function writePassingProfileValidation(validationRoot: string, profile: Vo
       {
         createdAt: "2026-05-19T00:00:00.000Z",
         profile: voiceProfileManifestPath("local-default"),
+        profileSha256: canonicalVoiceProfileSha256(profile),
         status: "pass",
         summary: { total: profile.clips.length, passed: profile.clips.length, failed: 0 },
         clips: profile.clips.map((clip) => ({
@@ -186,6 +219,34 @@ describe("POST /api/clone", () => {
     expect(body.jobId).toBe("test-job-id");
     expect(runMock).toHaveBeenCalledTimes(1);
     expect(saveHistoryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores client-supplied internal profile references on the public route", async () => {
+    runMock.mockResolvedValue({
+      status: "ready",
+      jobId: "test-job-id",
+      modelId: "openbmb/VoxCPM2",
+      audioUrl: "/api/runs/test-job-id/audio",
+      referenceQuality: {
+        grade: "B",
+        durationSec: 5,
+        snrDb: 25,
+        clippingRatio: 0,
+        vadActiveRatio: 0.8,
+        warnings: [],
+      },
+      targetLanguage: "en",
+      effectiveParams: { timesteps: 32, cfgValue: 1.2, denoise: false, qualityPreset: "balanced", cloneMode: "hifi" },
+    });
+
+    const res = await POST(makeReq(buildForm({
+      sourceKind: "profile",
+      internalProfileReferenceJson: forgedInternalProfileReference(),
+    })));
+
+    expect(res.status).toBe(200);
+    expect(runMock).toHaveBeenCalledTimes(1);
+    expect(runMock.mock.calls[0][1].profileReference).toBeUndefined();
   });
 
   it("can synthesize from a ready voice profile without an uploaded voice", async () => {
@@ -273,14 +334,19 @@ describe("POST /api/clone", () => {
   it("forwards to worker and returns JSON body when proxy is configured", async () => {
     process.env.ANYVOICE_WORKER_URL = "https://worker.example";
     process.env.ANYVOICE_WORKER_TOKEN = "secret";
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ status: "ready", jobId: "wjob" }), {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.body).toBeInstanceOf(FormData);
+      expect((init?.body as FormData).get("internalProfileReferenceJson")).toBeNull();
+      return new Response(JSON.stringify({ status: "ready", jobId: "wjob" }), {
         status: 200,
         headers: { "content-type": "application/json" },
-      }),
-    );
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
-    const res = await POST(makeReq(buildForm()));
+    const res = await POST(makeReq(buildForm({
+      sourceKind: "profile",
+      internalProfileReferenceJson: forgedInternalProfileReference(),
+    })));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.jobId).toBe("wjob");

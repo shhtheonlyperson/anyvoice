@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -12,6 +13,33 @@ const script = path.join(process.cwd(), "scripts", "prepare_voice_lora_dataset.p
 
 let tmpRoot: string;
 const coverage = ["zh_hant", "numbers_dates", "latin_terms", "polyphones", "punctuation_rhythm"];
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function canonicalProfileSha256(profilePath: string): Promise<string> {
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  delete profile.createdAt;
+  delete profile.loraPath;
+  delete profile.loraAdapter;
+  delete profile.preferredBackend;
+  return createHash("sha256").update(canonicalJson(profile)).digest("hex");
+}
+
+async function fileSha256(filePath: string): Promise<string> {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+}
 
 async function writeProfile({
   ready = true,
@@ -78,8 +106,14 @@ async function writeProfile({
   return profilePath;
 }
 
-async function writeTranscriptValidation(profilePath: string, { status = "pass" }: { status?: string } = {}): Promise<string> {
-  const validationPath = path.join(tmpRoot, "transcript-validation.json");
+async function writeTranscriptValidation(
+  profilePath: string,
+  {
+    profileSha256,
+    status = "pass",
+    validationPath = path.join(tmpRoot, "transcript-validation.json"),
+  }: { profileSha256?: string; status?: string; validationPath?: string } = {},
+): Promise<string> {
   const profile = JSON.parse(await readFile(profilePath, "utf-8")) as {
     clips: Array<{ sourceRunId: string; transcriptRaw: string; audioPath: string }>;
   };
@@ -89,6 +123,7 @@ async function writeTranscriptValidation(profilePath: string, { status = "pass" 
     `${JSON.stringify({
       version: 1,
       profile: profilePath,
+      profileSha256: profileSha256 ?? (await canonicalProfileSha256(profilePath)),
       status,
       summary: { total: profile.clips.length, passed, failed: profile.clips.length - passed },
       clips: profile.clips.map((clip, index) => ({
@@ -128,6 +163,134 @@ async function writeQualityGate(
   const gateDir = path.join(tmpRoot, "quality-gate");
   await mkdir(gateDir, { recursive: true });
   const qualityGatePath = path.join(gateDir, "quality-gate.json");
+  const reportPath = path.join(gateDir, "report.json");
+  const asrPath = path.join(gateDir, "asr.json");
+  const speakerPath = path.join(gateDir, "speaker.json");
+  const scorePath = path.join(gateDir, "score.json");
+  const transcriptValidationJson = path.join(tmpRoot, "transcript-validation.json");
+  const sampleAudio = Buffer.from("quality gate sample wav\n");
+  const sampleHifiAudio = Buffer.from("quality gate hifi sample wav\n");
+  const sampleWav = path.join(gateDir, "sample.wav");
+  const sampleHifiWav = path.join(gateDir, "sample-hifi.wav");
+  await writeFile(sampleWav, sampleAudio);
+  await writeFile(sampleHifiWav, sampleHifiAudio);
+  const sampleProof = {
+    outputExists: true,
+    missingOutput: false,
+    outputBytes: sampleAudio.byteLength,
+    outputSha256: createHash("sha256").update(sampleAudio).digest("hex"),
+  };
+  const sampleHifiProof = {
+    outputExists: true,
+    missingOutput: false,
+    outputBytes: sampleHifiAudio.byteLength,
+    outputSha256: createHash("sha256").update(sampleHifiAudio).digest("hex"),
+  };
+  const transcriptValidationSha256 = await fileSha256(transcriptValidationJson);
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as { voiceProfileId?: string };
+  const profileSha256 = await canonicalProfileSha256(profilePath);
+  const profileEvidence = { voiceProfileId: profile.voiceProfileId, profileSha256 };
+  await writeFile(
+    reportPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        voiceProfile: profileEvidence,
+          groups: [
+            {
+              ...profileEvidence,
+              cloneMode: cloneMode === "both" ? "prompt" : "hifi",
+            case: { id: "zh_hant_polyphones", text: "重慶角色" },
+            renders: [{ ...profileEvidence, repeat: 1, status: "ready", outputWav: "sample.wav", ...sampleProof }],
+          },
+          ...(cloneMode === "both"
+            ? [
+                {
+                  ...profileEvidence,
+                  cloneMode: "hifi",
+                  case: { id: "zh_hant_polyphones", text: "重慶角色" },
+                  renders: [{ ...profileEvidence, repeat: 1, status: "ready", outputWav: "sample-hifi.wav", ...sampleHifiProof }],
+                },
+              ]
+              : []),
+          ],
+        },
+        null,
+        2,
+    )}\n`,
+    "utf-8",
+  );
+  await writeFile(asrPath, `${JSON.stringify({ "hifi/zh_hant_polyphones/r01": "重慶角色" }, null, 2)}\n`, "utf-8");
+  await writeFile(
+    speakerPath,
+    `${JSON.stringify({ version: 1, backend: "speechbrain-ecapa", summary: { total: 1, scored: 1, failed: 0 } }, null, 2)}\n`,
+    "utf-8",
+  );
+  const reportSha256 = await fileSha256(reportPath);
+  const asrSha256 = await fileSha256(asrPath);
+  const speakerSha256 = await fileSha256(speakerPath);
+  await writeFile(
+    scorePath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        verdict: "pass",
+        sourceReport: reportPath,
+        sourceReportSha256: reportSha256,
+        asrJson: asrPath,
+        asrJsonSha256: asrSha256,
+        speakerJson: speakerPath,
+        speakerJsonSha256: speakerSha256,
+        voiceProfile: profileEvidence,
+        groups: [
+          {
+            ...profileEvidence,
+            cloneMode: cloneMode === "both" ? "prompt" : "hifi",
+            renders: [
+              {
+                ...profileEvidence,
+                repeat: 1,
+                status: "ready",
+                outputWav: sampleWav,
+                ...sampleProof,
+              },
+            ],
+          },
+          ...(cloneMode === "both"
+            ? [
+                {
+                  ...profileEvidence,
+                  cloneMode: "hifi",
+                  renders: [
+                    {
+                      ...profileEvidence,
+                      repeat: 1,
+                      status: "ready",
+                      outputWav: sampleHifiWav,
+                      ...sampleHifiProof,
+                    },
+                  ],
+                },
+              ]
+            : []),
+        ],
+        ...(cloneMode === "both"
+          ? {
+              pairedComparison: {
+                verdict: "pass",
+                baselineCloneMode: "prompt",
+                candidateCloneMode: "hifi",
+                summary: { pairs: 1, passingPairs: 1, reviewPairs: 0 },
+              },
+            }
+          : {}),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+  const scoreSha256 = await fileSha256(scorePath);
   await writeFile(
     qualityGatePath,
     `${JSON.stringify({
@@ -136,9 +299,12 @@ async function writeQualityGate(
       dryRun,
       inputs: {
         profileJson: profilePath,
+        profileSha256,
         cloneMode,
         repeats: 3,
         requireSpeakerBackend: cloneMode === "both" ? "speechbrain-ecapa" : null,
+        transcriptValidationJson,
+        transcriptValidationSha256,
         skipProfileVerify,
         skipTranscriptValidation,
       },
@@ -148,11 +314,19 @@ async function writeQualityGate(
         profileVerifyPassed,
         transcriptValidationRequired: !skipTranscriptValidation,
         transcriptValidationSkipped: skipTranscriptValidation,
+        transcriptValidationJson,
+        transcriptValidationSha256,
         transcriptValidationPassed,
         speakerBackendRequirement:
           cloneMode === "both"
             ? { requested: "auto", selected: "speechbrain-ecapa", required: "speechbrain-ecapa" }
             : { requested: "auto", selected: "mfcc-cosine", required: null },
+        artifacts: {
+          report: { path: reportPath, sha256: reportSha256 },
+          asr: { path: asrPath, sha256: asrSha256 },
+          speaker: { path: speakerPath, sha256: speakerSha256 },
+          score: { path: scorePath, sha256: scoreSha256 },
+        },
       },
       commands: {
         score:
@@ -160,11 +334,74 @@ async function writeQualityGate(
             ? "python3 scripts/score_voice_regression.py --baseline-clone-mode prompt --candidate-clone-mode hifi --require-paired-improvement"
             : "python3 scripts/score_voice_regression.py",
       },
-      paths: { qualityGate: qualityGatePath },
+      paths: {
+        qualityGate: qualityGatePath,
+        report: reportPath,
+        asr: asrPath,
+        speaker: speakerPath,
+        score: scorePath,
+        profileTranscriptValidation: transcriptValidationJson,
+      },
     }, null, 2)}\n`,
     "utf-8",
   );
   return qualityGatePath;
+}
+
+async function pointQualityGateAtTranscriptValidation(qualityGatePath: string, transcriptValidationPath: string): Promise<void> {
+  const transcriptValidationSha256 = await fileSha256(transcriptValidationPath);
+  const gate = JSON.parse(await readFile(qualityGatePath, "utf-8"));
+  gate.inputs.transcriptValidationJson = transcriptValidationPath;
+  gate.inputs.transcriptValidationSha256 = transcriptValidationSha256;
+  gate.proofs.transcriptValidationJson = transcriptValidationPath;
+  gate.proofs.transcriptValidationSha256 = transcriptValidationSha256;
+  gate.paths.profileTranscriptValidation = transcriptValidationPath;
+  await writeFile(qualityGatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function tamperQualityGateAsrArtifact(qualityGatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(qualityGatePath, "utf-8"));
+  await writeFile(gate.paths.asr, `${JSON.stringify({ stale: "changed after score" }, null, 2)}\n`, "utf-8");
+}
+
+async function pointQualityGateScoreAtStaleAsrHash(qualityGatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(qualityGatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.asrJsonSha256 = "0".repeat(64);
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(qualityGatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function makeQualityGatePortable(qualityGatePath: string, profilePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(qualityGatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  const scoreDir = path.dirname(gate.paths.score);
+  score.sourceReport = path.relative(scoreDir, gate.paths.report);
+  score.asrJson = path.relative(scoreDir, gate.paths.asr);
+  score.speakerJson = path.relative(scoreDir, gate.paths.speaker);
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.inputs.profileJson = path.relative(path.dirname(qualityGatePath), profilePath);
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(qualityGatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function pointQualityGateScoreAtStaleProfileEvidence(qualityGatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(qualityGatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  score.voiceProfile.profileSha256 = "0".repeat(64);
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(qualityGatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+}
+
+async function removeQualityGateScorePairedComparison(qualityGatePath: string): Promise<void> {
+  const gate = JSON.parse(await readFile(qualityGatePath, "utf-8"));
+  const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+  delete score.pairedComparison;
+  await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+  gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+  await writeFile(qualityGatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
 }
 
 beforeEach(async () => {
@@ -218,10 +455,43 @@ describe("prepare_voice_lora_dataset.py", () => {
     const metadata = JSON.parse(await readFile(path.join(outDir, "dataset.json"), "utf-8"));
     expect(metadata.proofs).toMatchObject({
       transcriptValidationJson: await realpath(transcriptValidation),
+      transcriptValidationSha256: await fileSha256(transcriptValidation),
       qualityGateJson: await realpath(qualityGate),
+      qualityGateSha256: await fileSha256(qualityGate),
       strictProfileProof: {
         status: "strict_ready",
       },
+    });
+  });
+
+  it("accepts portable product-proof quality gates with score-relative artifact paths", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath, { cloneMode: "both" });
+    await makeQualityGatePortable(qualityGate, profilePath);
+    const outDir = path.join(tmpRoot, "portable-product-proof-dataset");
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      profilePath,
+      "--transcript-validation-json",
+      transcriptValidation,
+      "--quality-gate-json",
+      qualityGate,
+      "--require-product-proof-quality-gate",
+      "--out-dir",
+      outDir,
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("written");
+    expect(payload.totalClips).toBe(10);
+
+    const metadata = JSON.parse(await readFile(path.join(outDir, "dataset.json"), "utf-8"));
+    expect(metadata.proofs).toMatchObject({
+      qualityGateJson: await realpath(qualityGate),
+      productProofQualityGateRequired: true,
     });
   });
 
@@ -339,6 +609,34 @@ describe("prepare_voice_lora_dataset.py", () => {
     await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rejects quality gates captured before the current profile manifest", async () => {
+    const profilePath = await writeProfile();
+    await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+    profile.auditMarker = "profile changed after quality gate";
+    await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf-8");
+    const currentTranscriptValidation = await writeTranscriptValidation(profilePath);
+    const outDir = path.join(tmpRoot, "stale-gate-dataset");
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        currentTranscriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate JSON is stale for this profile"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects quality gates that skipped profile or transcript proof", async () => {
     const profilePath = await writeProfile();
     const transcriptValidation = await writeTranscriptValidation(profilePath);
@@ -361,6 +659,237 @@ describe("prepare_voice_lora_dataset.py", () => {
       ]),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("quality gate JSON did not prove transcript validation passed"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose transcript proof says it was skipped", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const gate = JSON.parse(await readFile(qualityGate, "utf-8"));
+    gate.proofs.transcriptValidationSkipped = true;
+    await writeFile(qualityGate, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+    const outDir = path.join(tmpRoot, "contradictory-skipped-proof-dataset");
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate JSON did not prove transcript validation passed"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose profile proof says it was skipped", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const gate = JSON.parse(await readFile(qualityGate, "utf-8"));
+    gate.proofs.profileVerifySkipped = true;
+    await writeFile(qualityGate, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+    const outDir = path.join(tmpRoot, "contradictory-skipped-profile-proof-dataset");
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate JSON did not prove profile verification passed"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates that omit transcript validation proof JSON", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const gate = JSON.parse(await readFile(qualityGate, "utf-8"));
+    delete gate.inputs.transcriptValidationJson;
+    delete gate.proofs.transcriptValidationJson;
+    delete gate.paths.profileTranscriptValidation;
+    await writeFile(qualityGate, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+    const outDir = path.join(tmpRoot, "missing-gate-transcript-proof-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate JSON is missing transcript validation proof path"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects transcript validation JSON with stale profile hash evidence", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath, { profileSha256: "0".repeat(64) });
+    const qualityGate = await writeQualityGate(profilePath);
+    const outDir = path.join(tmpRoot, "stale-transcript-validation-profile-hash-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("transcript validation JSON is stale for this profile"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose transcript validation proof rows are stale", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const staleValidation = path.join(tmpRoot, "quality-gate-stale-transcript-validation.json");
+    const validation = JSON.parse(await readFile(transcriptValidation, "utf-8"));
+    validation.clips[1].expectedTranscript = "這是一段已經過期的逐字稿。";
+    await writeFile(staleValidation, `${JSON.stringify(validation, null, 2)}\n`, "utf-8");
+    await pointQualityGateAtTranscriptValidation(qualityGate, staleValidation);
+    const outDir = path.join(tmpRoot, "stale-gate-transcript-validation-rows-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate transcript validation proof rows do not match the profile"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose transcript validation proof file changed", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const validation = JSON.parse(await readFile(transcriptValidation, "utf-8"));
+    validation.mutatedAfterQualityGate = true;
+    await writeFile(transcriptValidation, `${JSON.stringify(validation, null, 2)}\n`, "utf-8");
+    const outDir = path.join(tmpRoot, "mutated-gate-transcript-proof-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate transcript validation proof SHA-256 no longer matches the file"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose ASR artifact file changed", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    await tamperQualityGateAsrArtifact(qualityGate);
+    const outDir = path.join(tmpRoot, "mutated-gate-asr-artifact-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate JSON asr artifact SHA-256 no longer matches the file"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose score JSON consumed a stale ASR hash", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    await pointQualityGateScoreAtStaleAsrHash(qualityGate);
+    const outDir = path.join(tmpRoot, "stale-score-asr-hash-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate score JSON asrJsonSha256 no longer matches paths.asr"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose score JSON carries stale profile evidence", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    await pointQualityGateScoreAtStaleProfileEvidence(qualityGate);
+    const outDir = path.join(tmpRoot, "stale-score-profile-evidence-dataset");
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("score.voiceProfile.profileSha256"),
     });
     await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -412,6 +941,66 @@ describe("prepare_voice_lora_dataset.py", () => {
       },
       dryRun: true,
     });
+  });
+
+  it("rejects product-proof gates whose score artifact lacks paired comparison proof", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const productGate = await writeQualityGate(profilePath, { cloneMode: "both" });
+    await removeQualityGateScorePairedComparison(productGate);
+    const outDir = path.join(tmpRoot, "missing-paired-score-product-proof-dataset");
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        productGate,
+        "--require-product-proof-quality-gate",
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate JSON is not a paired product-proof gate"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects quality gates whose score omits ready render output proof", async () => {
+    const profilePath = await writeProfile();
+    const transcriptValidation = await writeTranscriptValidation(profilePath);
+    const qualityGate = await writeQualityGate(profilePath);
+    const gate = JSON.parse(await readFile(qualityGate, "utf-8"));
+    const score = JSON.parse(await readFile(gate.paths.score, "utf-8"));
+    const render = score.groups[0].renders[0];
+    delete render.outputExists;
+    delete render.missingOutput;
+    delete render.outputBytes;
+    delete render.outputSha256;
+    await writeFile(gate.paths.score, `${JSON.stringify(score, null, 2)}\n`, "utf-8");
+    gate.proofs.artifacts.score.sha256 = await fileSha256(gate.paths.score);
+    await writeFile(qualityGate, `${JSON.stringify(gate, null, 2)}\n`, "utf-8");
+    const outDir = path.join(tmpRoot, "missing-score-render-output-proof-dataset");
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--quality-gate-json",
+        qualityGate,
+        "--out-dir",
+        outDir,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("quality gate score/report does not prove ready render output files"),
+    });
+    await expect(stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("allows explicit proof bypasses for dry-run migration handoffs", async () => {

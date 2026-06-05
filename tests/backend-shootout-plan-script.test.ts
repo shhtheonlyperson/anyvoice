@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -55,10 +56,38 @@ afterEach(async () => {
   await rm(tmpRoot, { recursive: true, force: true });
 });
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function canonicalProfileSha256(profilePath: string): Promise<string> {
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  delete profile.createdAt;
+  delete profile.loraPath;
+  delete profile.loraAdapter;
+  delete profile.preferredBackend;
+  return createHash("sha256").update(canonicalJson(profile)).digest("hex");
+}
+
 async function writeTranscriptValidation(
   profilePath: string,
   sourceRunIds: string[],
-  { status = "pass", failedSourceRunId = "" }: { status?: string; failedSourceRunId?: string } = {},
+  {
+    status = "pass",
+    failedSourceRunId = "",
+    profileSha256,
+    staleSourceRunId = "",
+  }: { status?: string; failedSourceRunId?: string; profileSha256?: string; staleSourceRunId?: string } = {},
 ): Promise<string> {
   const validationPath = path.join(path.dirname(profilePath), "transcript-validation.json");
   const profile = JSON.parse(await readFile(profilePath, "utf-8")) as {
@@ -70,6 +99,7 @@ async function writeTranscriptValidation(
     `${JSON.stringify({
       version: 1,
       profile: profilePath,
+      profileSha256: profileSha256 ?? (await canonicalProfileSha256(profilePath)),
       status,
       summary: {
         total: sourceRunIds.length,
@@ -80,7 +110,8 @@ async function writeTranscriptValidation(
         const clip = clipById.get(sourceRunId);
         return {
           sourceRunId,
-          expectedTranscript: clip?.transcriptRaw ?? "",
+          expectedTranscript:
+            sourceRunId === staleSourceRunId ? `${clip?.transcriptRaw ?? ""} stale` : clip?.transcriptRaw ?? "",
           audioPath: clip?.audioPath ?? "",
           verdict: sourceRunId === failedSourceRunId ? "fail" : "pass",
           cer: { rate: sourceRunId === failedSourceRunId ? 0.5 : 0 },
@@ -174,9 +205,15 @@ describe("prepare_voice_backend_shootout.py", () => {
       manifest: string;
       jobs: string;
       renderScript: string;
+      readme: string;
       renders: number;
       rendererStatus: string;
-      nextCommands: { registerDryRun: string };
+      nextCommands: {
+        rendererPreflight: string;
+        registerDryRun: string;
+        scoreCandidates: Record<string, string>;
+        selectCandidates: Record<string, string>;
+      };
     };
     expect(payload.renders).toBe(2);
     expect(payload.rendererStatus).toBe("ready");
@@ -226,6 +263,13 @@ describe("prepare_voice_backend_shootout.py", () => {
     expect(registeredReport.groups[0].renders[0].textPreparation.targetText.model).toContain("重 慶、銀 行");
     expect(registeredReport.groups[0].renders[0].targetTextRawFile).toMatch(/raw\.txt$/);
     expect(payload.nextCommands.registerDryRun).toContain("register_voice_backend_renders.py");
+    expect(payload.nextCommands.rendererPreflight).toContain("render_voice_backend_job.py --preflight --manifest");
+    expect(payload.nextCommands.scoreCandidates.indextts2).toContain("score_voice_regression.py");
+    expect(payload.nextCommands.scoreCandidates.indextts2).toContain("--baseline-clone-mode voxcpm2-hifi");
+    expect(payload.nextCommands.scoreCandidates.indextts2).toContain("--candidate-clone-mode indextts2");
+    expect(payload.nextCommands.selectCandidates.indextts2).toContain("select_voice_backend_candidate.py");
+    expect(payload.nextCommands.selectCandidates.indextts2).toContain("--candidate-clone-mode indextts2");
+    expect(await readFile(payload.readme, "utf-8")).toContain("## Select Candidate");
   });
 
   it("turns no-template plans into fail-clear env-template render scripts", async () => {
@@ -260,24 +304,40 @@ describe("prepare_voice_backend_shootout.py", () => {
     expect(jobs.jobs[0]).toMatchObject({
       rendererStatus: "needs_renderer_command",
       commandTemplateSource: "runtime_env",
-      commandTemplateEnv: "ANYVOICE_BACKEND_RENDER_COMMAND",
-      command: "runtime-env:ANYVOICE_BACKEND_RENDER_COMMAND",
+      commandTemplateEnv: "ANYVOICE_BACKEND_RENDER_COMMAND_INDEXTTS2",
+      commandTemplateFallbackEnv: "ANYVOICE_BACKEND_RENDER_COMMAND",
+      command: "runtime-env:ANYVOICE_BACKEND_RENDER_COMMAND_INDEXTTS2|ANYVOICE_BACKEND_RENDER_COMMAND",
     });
 
     const renderScript = await readFile(payload.renderScript, "utf-8");
     expect(renderScript).toContain("ANYVOICE_BACKEND_RENDER_COMMAND");
+    expect(renderScript).toContain("ANYVOICE_BACKEND_RENDER_COMMAND_INDEXTTS2");
+    expect(renderScript).toContain("skip existing");
     expect(renderScript).toContain("seed");
-    expect(renderScript).toContain("exit 64");
+    expect(renderScript).toContain("return 64");
+    const readme = await readFile(path.join(outDir, "README.md"), "utf-8");
+    expect(readme).toContain("render_voice_backend_job.py --preflight --manifest");
+    expect(readme).toContain("scripts/render_voice_backend_job.py");
+    expect(readme).toContain("--skip-unsupported");
+    expect(readme).toContain("ANYVOICE_BACKEND_RENDER_COMMAND_VOXCPM2_HIFI='python3 scripts/render_voice_backend_job.py");
+    expect(readme).toContain("ANYVOICE_BACKEND_RENDER_COMMAND_INDEXTTS2");
 
     await expect(execFileAsync("bash", [payload.renderScript])).rejects.toMatchObject({
       code: 64,
-      stderr: expect.stringContaining("ANYVOICE_BACKEND_RENDER_COMMAND"),
+      stderr: expect.stringContaining("ANYVOICE_BACKEND_RENDER_COMMAND_INDEXTTS2"),
     });
 
     await execFileAsync("bash", [payload.renderScript], {
       env: {
         ...process.env,
-        ANYVOICE_BACKEND_RENDER_COMMAND: `${python} -c "from pathlib import Path; import sys; Path(sys.argv[3]).write_bytes(b'RIFF')" {target_text_file} {reference_audio} {output_wav}`,
+        ANYVOICE_BACKEND_RENDER_COMMAND: `${python} -c "from pathlib import Path; import sys; Path(sys.argv[4]).write_bytes(b'RIFF')" {target_text_file} {reference_audio} {prompt_text_file} {output_wav}`,
+      },
+    });
+    expect(await readFile(jobs.jobs[0].outputWav, "utf-8")).toBe("RIFF");
+    await execFileAsync("bash", [payload.renderScript], {
+      env: {
+        ...process.env,
+        ANYVOICE_BACKEND_RENDER_COMMAND_INDEXTTS2: `${python} -c "raise SystemExit('should have skipped existing output')" {target_text_file} {reference_audio} {prompt_text_file} {output_wav}`,
       },
     });
     expect(await readFile(jobs.jobs[0].outputWav, "utf-8")).toBe("RIFF");
@@ -354,6 +414,33 @@ describe("prepare_voice_backend_shootout.py", () => {
       ]),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("{output_wav}"),
+    });
+  });
+
+  it("rejects renderer command templates that omit the exact prompt transcript file", async () => {
+    const reference = path.join(tmpRoot, "reference.wav");
+    await writeFile(reference, Buffer.from([1, 2, 3]));
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--backend",
+        "indextts2",
+        "--case",
+        "zh_hant_polyphones",
+        "--repeats",
+        "1",
+        "--reference-audio",
+        reference,
+        "--prompt-text",
+        "這是參考音逐字稿。",
+        "--command-template",
+        "python render.py --text-file {target_text_file} --reference {reference_audio} --out {output_wav}",
+        "--out-dir",
+        path.join(tmpRoot, "missing-prompt-template-shootout"),
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("{prompt_text_file}"),
     });
   });
 
@@ -502,6 +589,58 @@ describe("prepare_voice_backend_shootout.py", () => {
       ]),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("transcript validation JSON must pass"),
+    });
+  });
+
+  it("rejects transcript validation JSON with stale profile hash evidence", async () => {
+    const { profilePath, sourceRunIds } = await writeReadyProfile("stale-validation-hash-profile");
+    const transcriptValidation = await writeTranscriptValidation(profilePath, sourceRunIds, {
+      profileSha256: "0".repeat(64),
+    });
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--backend",
+        "f5-tts",
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--case",
+        "mixed_en_zh_models",
+        "--dry-run",
+        "--out-dir",
+        path.join(tmpRoot, "stale-validation-hash-shootout"),
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("transcript validation JSON is stale for this profile"),
+    });
+  });
+
+  it("rejects transcript validation JSON with stale selected clip rows", async () => {
+    const { profilePath, sourceRunIds } = await writeReadyProfile("stale-validation-row-profile");
+    const transcriptValidation = await writeTranscriptValidation(profilePath, sourceRunIds, {
+      staleSourceRunId: sourceRunIds[0],
+    });
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--backend",
+        "f5-tts",
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        transcriptValidation,
+        "--case",
+        "mixed_en_zh_models",
+        "--dry-run",
+        "--out-dir",
+        path.join(tmpRoot, "stale-validation-row-shootout"),
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("transcript validation JSON rows do not match the selected profile clips"),
     });
   });
 

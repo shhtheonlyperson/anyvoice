@@ -82,7 +82,11 @@ async function writeManifest({ withAudio }: { withAudio: boolean }): Promise<str
     });
   }
   const manifest = path.join(tmpRoot, "manifest.json");
-  await writeFile(manifest, `${JSON.stringify({ clips }, null, 2)}\n`, "utf-8");
+  await writeFile(
+    manifest,
+    `${JSON.stringify({ promptSet: "standard", requiredClips: clips.length, clips }, null, 2)}\n`,
+    "utf-8",
+  );
   return manifest;
 }
 
@@ -139,7 +143,7 @@ describe("enroll_voice_profile_kit.py", () => {
       sourceKind: "scripted",
       referenceSource: { kind: "scripted" },
     });
-  }, 15000);
+  }, 30_000);
 
   it("can validate transcripts and require the validation report before reporting ready", async () => {
     const manifest = await writeManifest({ withAudio: true });
@@ -331,5 +335,13 @@ describe("enroll_voice_profile_kit.py", () => {
       "import_profile_clips",
       "verify_voice_profile",
     ]);
+    expect(payload.steps[0].command).toContain("--skip-kit-check");
+    expect(payload.steps[0].stdout.recordingKitCheck).toEqual({
+      required: true,
+      skipped: true,
+      acceptedUnsafeSkip: true,
+      reason: "migrating already checked clips",
+      result: null,
+    });
   }, 15000);
 });

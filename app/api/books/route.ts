@@ -3,7 +3,8 @@ import { extractBook } from "@/lib/book-extract";
 import { segmentBook } from "@/lib/book-segment";
 import { createBook, listBooks } from "@/lib/book-job";
 import { startBookSynthesis } from "@/lib/book-synthesizer";
-import { buildVoiceProfileSummary } from "@/lib/voice-profile";
+import { loadVoiceProfileManifest } from "@/lib/voice-profile";
+import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 
 export const runtime = "nodejs";
@@ -32,13 +33,17 @@ export async function POST(req: NextRequest) {
   const file = form.get("file");
   if (!(file instanceof File)) return fail(400, "upload an .epub or .pdf file");
 
-  // The book is read in the chosen voice — require at least a *usable* voice to
-  // start (studio-grade is recommended for long-form but not hard-required).
-  const profileId = String(form.get("profileId") || "").trim() || undefined;
-  const profile = await buildVoiceProfileSummary(profileId ? { profileId } : undefined);
-  if (!profile.usable || profile.clips.length === 0) {
-    return fail(409, "build your voice first: a usable voice profile is required to synthesize a book");
+  const profileId = String(form.get("profileId") || "").trim() || "local-default";
+  let verification;
+  try {
+    verification = await verifyVoiceProfileReadiness({ profileId, requireTranscriptValidation: true });
+  } catch {
+    verification = null;
   }
+  if (verification?.status !== "ready") {
+    return fail(409, "build your voice first: a strict-ready voice profile is required to synthesize a book");
+  }
+  const profile = await loadVoiceProfileManifest(verification.profile);
 
   let extracted;
   try {

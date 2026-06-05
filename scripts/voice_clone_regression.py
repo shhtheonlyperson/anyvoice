@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import array
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -111,6 +115,7 @@ POLYPHONE_GROUPS = [
     {"terms": ["長樂", "长乐"], "replacement": "長 樂", "presetId": "polyphone:changle"},
     {"terms": ["行長", "行长"], "replacement": "行 長", "presetId": "polyphone:bank-president"},
     {"terms": ["長大", "长大"], "replacement": "長 大", "presetId": "polyphone:grow-up"},
+    {"terms": ["乾淨"], "replacement": "甘淨", "presetId": "polyphone:ganjing"},
 ]
 POLYPHONE_TERMS = [term for group in POLYPHONE_GROUPS for term in group["terms"]]
 PRONUNCIATION_DELIMITERS = ["=>", "->", "＝", "=", "：", ":"]
@@ -153,6 +158,16 @@ PRONUNCIATION_SUGGESTIONS = [
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def canonical_profile_sha256(profile: dict[str, Any]) -> str:
+    payload = dict(profile)
+    payload.pop("createdAt", None)
+    payload.pop("loraPath", None)
+    payload.pop("loraAdapter", None)
+    payload.pop("preferredBackend", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def default_stability_seed() -> int | None:
@@ -678,10 +693,21 @@ def clip_coverage_features(clip: dict[str, Any]) -> list[str]:
 
 
 def clip_pronunciation_preset_ids(clip: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    ids: list[str] = []
     raw = clip.get("pronunciationPresetIds")
     if isinstance(raw, list):
-        return [str(preset_id) for preset_id in raw if isinstance(preset_id, str) and preset_id]
-    return pronunciation_preset_ids(str(clip.get("transcriptRaw") or ""))
+        for preset_id in raw:
+            if not isinstance(preset_id, str) or not preset_id or preset_id in seen:
+                continue
+            seen.add(preset_id)
+            ids.append(preset_id)
+    for preset_id in pronunciation_preset_ids(str(clip.get("transcriptRaw") or "")):
+        if preset_id in seen:
+            continue
+        seen.add(preset_id)
+        ids.append(preset_id)
+    return ids
 
 
 def select_profile_clip(profile: dict[str, Any], target_text: str) -> dict[str, Any]:
@@ -696,9 +722,10 @@ def select_profile_clip(profile: dict[str, Any], target_text: str) -> dict[str, 
         return {
             "missing": len(target_pronunciation_preset_ids) - len(matched),
             "matched": matched,
+            "priority": sum(target_pronunciation_preset_ids.index(preset_id) for preset_id in matched),
         }
 
-    def clip_sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, int, int]:
+    def clip_sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, int, int, int]:
         index, clip = item
         transcript = str(clip.get("transcriptRaw") or "")
         clip_script = str(clip.get("transcriptScript") or detect_chinese_script(transcript))
@@ -707,6 +734,7 @@ def select_profile_clip(profile: dict[str, Any], target_text: str) -> dict[str, 
         return (
             script_score(target_script, clip_script),
             int(pronunciation["missing"]),
+            int(pronunciation["priority"]) if pronunciation["matched"] else 0,
             coverage["missing"],
             -len(pronunciation["matched"]),
             -len(coverage["matched"]),
@@ -725,6 +753,18 @@ def select_profile_clip(profile: dict[str, Any], target_text: str) -> dict[str, 
     }
 
 
+def profile_pronunciation_preset_ids(profile: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    ids: list[str] = []
+    for clip in profile_clips(profile):
+        for preset_id in clip_pronunciation_preset_ids(clip):
+            if preset_id in seen:
+                continue
+            seen.add(preset_id)
+            ids.append(preset_id)
+    return ids
+
+
 def reference_for_case(
     *,
     case: dict[str, Any],
@@ -740,6 +780,7 @@ def reference_for_case(
             "promptText": prompt_text,
             "profileClipId": None,
             "voiceProfileId": None,
+            "profileSha256": None,
         }
 
     if profile_path is None:
@@ -765,10 +806,12 @@ def reference_for_case(
         "promptText": transcript,
         "profileClipId": source_run_id,
         "voiceProfileId": str(profile.get("voiceProfileId") or ""),
+        "profileSha256": canonical_profile_sha256(profile),
         "targetCoverageFeatures": selection["targetCoverageFeatures"],
         "matchedCoverageFeatures": selection["matchedCoverageFeatures"],
         "targetPronunciationPresetIds": selection["targetPronunciationPresetIds"],
         "matchedPronunciationPresetIds": selection["matchedPronunciationPresetIds"],
+        "profilePronunciationPresetIds": profile_pronunciation_preset_ids(profile),
     }
 
 
@@ -811,12 +854,36 @@ def call_hot_worker(url: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 def load_wav(path: Path) -> tuple[Any, int]:
     import numpy as np
-    import soundfile as sf
 
-    data, sr = sf.read(str(path), always_2d=False, dtype="float32")
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    return np.asarray(data, dtype="float32"), int(sr)
+    try:
+        import soundfile as sf
+
+        data, sr = sf.read(str(path), always_2d=False, dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        return np.asarray(data, dtype="float32"), int(sr)
+    except ModuleNotFoundError:
+        with wave.open(str(path), "rb") as handle:
+            channels = handle.getnchannels()
+            sample_width = handle.getsampwidth()
+            sr = handle.getframerate()
+            frames = handle.getnframes()
+            raw = handle.readframes(frames)
+        if sample_width != 2 or channels <= 0 or sr <= 0:
+            raise RuntimeError("wave fallback only supports 16-bit PCM WAV")
+        usable_bytes = len(raw) - (len(raw) % sample_width)
+        samples = array.array("h")
+        samples.frombytes(raw[:usable_bytes])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if channels > 1:
+            values = [
+                sum(samples[index : index + channels]) / float(channels)
+                for index in range(0, len(samples) - (len(samples) % channels), channels)
+            ]
+        else:
+            values = samples
+        return np.asarray(values, dtype="float32") / 32768.0, int(sr)
 
 
 def wav_metrics(path: Path) -> dict[str, Any]:
@@ -833,7 +900,7 @@ def wav_metrics(path: Path) -> dict[str, Any]:
             "sampleRate": sr,
             "durationSec": round(float(data.size) / float(sr), 3),
             "peak": round(peak, 6),
-            "rmsDbfs": round(20.0 * np.log10(max(rms, 1e-12)), 3),
+            "rmsDbfs": round(20.0 * math.log10(max(rms, 1e-12)), 3),
             "clippingRatio": round(float(np.mean(np.abs(data) >= 0.99)), 6),
         }
     except Exception as exc:  # noqa: BLE001
@@ -860,12 +927,14 @@ def pairwise_corr(a_path: Path, b_path: Path) -> float | None:
         return None
 
 
-def stability_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def stability_summary(rows: list[dict[str, Any]], min_successful_repeats: int = 3) -> dict[str, Any]:
     usable = [row for row in rows if row.get("audioMetrics", {}).get("available")]
-    if len(usable) < 2:
+    if len(usable) < min_successful_repeats:
         return {
             "verdict": "review",
-            "reason": "need_at_least_two_successful_repeats",
+            "reason": "need_three_successful_repeats",
+            "successfulRepeats": len(usable),
+            "minSuccessfulRepeats": min_successful_repeats,
         }
 
     durations = [float(row["audioMetrics"]["durationSec"]) for row in usable]
@@ -896,6 +965,8 @@ def stability_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "durationSpanPct": round(duration_span_pct, 3),
         "rmsSpanDb": round(rms_span_db, 3),
         "minPairwiseWaveformCorr": min_corr,
+        "successfulRepeats": len(usable),
+        "minSuccessfulRepeats": min_successful_repeats,
     }
 
 
@@ -977,19 +1048,38 @@ def build_blind_rounds(report: dict[str, Any]) -> list[dict[str, Any]]:
 def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
     html_path = report_path.with_suffix(".html")
     expected_review_path = report_path.parent / "review.json"
+    blind_rounds = build_blind_rounds(report)
+    review_rounds: list[dict[str, Any]] = []
+    labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for round_item in blind_rounds:
+        case = round_item["case"]
+        case_id = str(case.get("id") or "case")
+        repeat = int(round_item["repeat"])
+        round_meta: dict[str, Any] = {
+            "choiceKey": f"winner-{case_id}-r{repeat:02d}",
+            "caseId": case_id,
+            "repeat": repeat,
+            "candidateLabel": None,
+            "baselineLabel": None,
+        }
+        for index, sample in enumerate(round_item["samples"]):
+            label = labels[index]
+            clone_mode = str(sample.get("cloneMode") or "")
+            if clone_mode == "hifi":
+                round_meta["candidateLabel"] = label
+            elif clone_mode == "prompt":
+                round_meta["baselineLabel"] = label
+        review_rounds.append(round_meta)
     review_metadata = {
         "version": 1,
         "reportPath": str(report_path.resolve()),
         "reportSha256": file_sha256(report_path),
         "expectedSaveAs": str(expected_review_path.resolve()),
-        "choiceKeys": [
-            f"winner-{str(round_item['case'].get('id') or 'case')}-r{int(round_item['repeat']):02d}"
-            for round_item in build_blind_rounds(report)
-        ],
+        "choiceKeys": [str(round_item["choiceKey"]) for round_item in review_rounds],
+        "rounds": review_rounds,
     }
     rows: list[str] = []
-    labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    for round_item in build_blind_rounds(report):
+    for round_item in blind_rounds:
         case = round_item["case"]
         case_id = str(case.get("id") or "case")
         repeat = int(round_item["repeat"])
@@ -1000,7 +1090,8 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
             "<section class='case-review'>"
             f"<h2>{html.escape(case_id)}</h2>"
             f"<p class='target'>{html.escape(str(case.get('text') or ''))}</p>"
-            f"<fieldset data-case-id='{html.escape(case_id, quote=True)}' data-repeat='{repeat}'>"
+            f"<fieldset data-case-id='{html.escape(case_id, quote=True)}' data-repeat='{repeat}' "
+            f"data-choice-key='{html.escape(winner_name, quote=True)}'>"
             f"<legend>Round {repeat}</legend>"
             "<div class='samples'>"
         )
@@ -1054,6 +1145,7 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
     section { border-top: 1px solid #ddd; padding: 20px 0; }
     h1, h2, h3 { margin: 0 0 8px; }
     fieldset { border: 1px solid #d8d8d8; border-radius: 8px; padding: 16px; }
+    fieldset.current-round { border-color: #0a7; box-shadow: 0 0 0 2px color-mix(in srgb, #0a7 24%, transparent); }
     legend { padding: 0 6px; font-weight: 700; }
     .target { font-size: 18px; }
     .samples { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 12px 0; }
@@ -1065,7 +1157,13 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
     summary { cursor: pointer; font-weight: 700; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
     button { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+    .review-summary { position: sticky; top: 0; z-index: 1; display: grid; gap: 8px; border: 1px solid #d8d8d8; border-radius: 8px; padding: 12px; margin: 18px 0; background: Canvas; }
+    .review-summary strong { font-size: 16px; }
+    .review-meter { height: 10px; border-radius: 999px; background: color-mix(in srgb, CanvasText 12%, Canvas); overflow: hidden; }
+    .review-meter span { display: block; height: 100%; width: 0%; background: #0a7; transition: width 160ms ease; }
+    .review-progress-detail { font-size: 14px; opacity: 0.78; }
     #review-json { min-height: 160px; }
+    #save-status { min-height: 1.4em; font-size: 14px; opacity: 0.78; }
     audio { width: 100%; }
   </style>
 </head>
@@ -1073,22 +1171,36 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
   <h1>AnyVoice Blind A/B Review</h1>
   <p>Listen before opening the reveal key. The sibling JSON contains the metrics; this page captures subjective pronunciation, speaker identity, and stability preference.</p>
   <p><strong>Expected save path:</strong> <code>""" + html.escape(str(expected_review_path.resolve())) + """</code></p>
+  <aside class="review-summary" aria-live="polite">
+    <strong id="review-progress-title">0 / 0 rounds reviewed</strong>
+    <div class="review-meter" aria-hidden="true"><span id="review-progress-bar"></span></div>
+    <div id="review-progress-detail" class="review-progress-detail"></div>
+  </aside>
   <form id="review-form">
 """
         + "\n".join(rows)
         + """
     <div class="toolbar">
       <button type="button" id="export-review">Export review JSON</button>
+      <button type="button" id="save-review">Save review.json</button>
       <button type="button" id="download-review">Download review.json</button>
+      <button type="button" id="next-unanswered">Next unanswered</button>
       <button type="reset">Clear choices</button>
     </div>
+    <p id="save-status"></p>
     <textarea id="review-json" readonly placeholder="Review JSON appears here after export."></textarea>
   </form>
   <script>
     const form = document.getElementById("review-form");
     const output = document.getElementById("review-json");
+    const saveStatus = document.getElementById("save-status");
+    const progressTitle = document.getElementById("review-progress-title");
+    const progressDetail = document.getElementById("review-progress-detail");
+    const progressBar = document.getElementById("review-progress-bar");
     const storageKey = `anyvoice-review:${location.pathname}`;
     const reviewMetadata = """ + json.dumps(review_metadata, ensure_ascii=False) + """;
+    const minimumReviewedRounds = Math.min(7, (reviewMetadata.rounds || []).length);
+    let lastAutoSavedPayloadKey = "";
 
     function collect() {
       const data = {};
@@ -1110,34 +1222,201 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
       } catch {}
     }
 
-    form.addEventListener("input", () => {
-      localStorage.setItem(storageKey, JSON.stringify(collect()));
-    });
-    form.addEventListener("reset", () => {
-      setTimeout(() => {
-        localStorage.removeItem(storageKey);
-        output.value = "";
-      }, 0);
-    });
+    function fieldsetForChoice(choiceKey) {
+      return form.querySelector(`fieldset[data-choice-key="${CSS.escape(String(choiceKey))}"]`);
+    }
+
+    function currentMissingKey() {
+      return reviewStats(collect()).missingChoices[0] || null;
+    }
+
+    function setCurrentRound(choiceKey) {
+      for (const fieldset of form.querySelectorAll("fieldset.current-round")) {
+        fieldset.classList.remove("current-round");
+      }
+      const fieldset = choiceKey ? fieldsetForChoice(choiceKey) : null;
+      if (fieldset) fieldset.classList.add("current-round");
+      return fieldset;
+    }
+
+    function goToChoice(choiceKey) {
+      const fieldset = setCurrentRound(choiceKey);
+      if (fieldset) fieldset.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+
+    function goToNextUnanswered() {
+      goToChoice(currentMissingKey());
+    }
+
+    function chooseCurrent(value) {
+      const key = currentMissingKey();
+      if (!key) return;
+      const fieldset = fieldsetForChoice(key);
+      if (!fieldset) return;
+      const input = fieldset.querySelector(`input[type="radio"][name="${CSS.escape(key)}"][value="${CSS.escape(value)}"]`);
+      if (!input) return;
+      input.checked = true;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      goToNextUnanswered();
+    }
+
+    function pauseAllAudio() {
+      for (const audio of form.querySelectorAll("audio")) {
+        audio.pause();
+      }
+    }
+
+    function playCurrentSample(index) {
+      const key = currentMissingKey();
+      const fieldset = key ? fieldsetForChoice(key) : form.querySelector("fieldset.current-round");
+      if (!fieldset) return;
+      const samples = [...fieldset.querySelectorAll("audio")];
+      const audio = samples[index];
+      if (!audio) return;
+      pauseAllAudio();
+      void audio.play();
+    }
+
+    function reviewStats(choices) {
+      let candidateWins = 0;
+      let baselineWins = 0;
+      let ties = 0;
+      let rerenders = 0;
+      let reviewedRounds = 0;
+      const missingChoices = [];
+      const unreviewedChoices = [];
+      const invalidChoices = [];
+      for (const round of reviewMetadata.rounds || []) {
+        const key = String(round.choiceKey || "");
+        const value = choices[key];
+        if (!value) {
+          unreviewedChoices.push(key);
+          continue;
+        }
+        reviewedRounds += 1;
+        if (value === "rerender") rerenders += 1;
+        else if (value === "tie") ties += 1;
+        else if (value === round.candidateLabel) candidateWins += 1;
+        else if (value === round.baselineLabel) baselineWins += 1;
+        else invalidChoices.push({ choiceKey: key, value });
+      }
+      if (reviewedRounds < minimumReviewedRounds) {
+        missingChoices.push(...unreviewedChoices.slice(0, minimumReviewedRounds - reviewedRounds));
+      }
+      const totalReportRounds = (reviewMetadata.rounds || []).length;
+      const rounds = reviewedRounds;
+      const candidateWinRate = rounds ? Math.round((candidateWins / rounds) * 10000) / 10000 : 0;
+      return {
+        stats: {
+          rounds,
+          reviewedRounds,
+          candidateWins,
+          baselineWins,
+          ties,
+          rerenders,
+          candidateWinRate,
+          minCandidateWinRate: 0.8,
+          reportSha256: reviewMetadata.reportSha256,
+          totalReportRounds,
+          minimumReviewedRounds,
+        },
+        missingChoices,
+        unreviewedChoices,
+        invalidChoices,
+      };
+    }
+    function updateProgress() {
+      const payload = reviewPayload();
+      const stats = payload.stats;
+      const remaining = payload.missingChoices.length;
+      const pct = stats.minimumReviewedRounds ? Math.min(100, Math.round((stats.reviewedRounds / stats.minimumReviewedRounds) * 100)) : 0;
+      progressTitle.textContent = `${stats.reviewedRounds} / ${stats.minimumReviewedRounds} minimum rounds reviewed`;
+      progressBar.style.width = `${pct}%`;
+      const winRatePct = Math.round(stats.candidateWinRate * 100);
+      const passText = payload.status === "pass" ? "ready to save" : `${remaining} needed, candidate wins ${stats.candidateWins}, baseline wins ${stats.baselineWins}, candidate win rate ${winRatePct}%`;
+      progressDetail.textContent = `${passText}. ${stats.totalReportRounds} total rounds exist; this export records selected rounds only. Draft choices are saved in this browser.`;
+      output.value = JSON.stringify(payload, null, 2);
+      setCurrentRound(payload.missingChoices[0] || null);
+      maybeAutoSave(payload);
+      return payload;
+    }
     function reviewPayload() {
+      const choices = collect();
+      const summary = reviewStats(choices);
+      const reasons = [];
+      if (summary.missingChoices.length || summary.invalidChoices.length || summary.stats.rerenders) {
+        reasons.push("subjective_review_incomplete_or_rerender");
+      }
+      if (summary.stats.baselineWins > summary.stats.candidateWins) {
+        reasons.push("subjective_review_baseline_preferred_over_candidate");
+      }
       return {
         version: 1,
+        reviewScope: "selected",
+        minimumReviewedRounds,
+        status: reasons.length ? "review" : "pass",
+        reasons,
         report: reviewMetadata.reportPath,
         reportPath: reviewMetadata.reportPath,
         reportSha256: reviewMetadata.reportSha256,
         expectedSaveAs: reviewMetadata.expectedSaveAs,
         choiceKeys: reviewMetadata.choiceKeys,
         reviewedAt: new Date().toISOString(),
-        choices: collect(),
+        stats: summary.stats,
+        missingChoices: summary.missingChoices,
+        invalidChoices: summary.invalidChoices,
+        choices,
       };
     }
     function exportReview() {
-      const text = JSON.stringify(reviewPayload(), null, 2);
+      const text = JSON.stringify(updateProgress(), null, 2);
       output.value = text;
       return text;
     }
+    async function saveReview({ auto = false } = {}) {
+      const text = exportReview();
+      saveStatus.textContent = auto ? "Auto-saving..." : "Saving...";
+      try {
+        const response = await fetch("/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: text + "\\n",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        saveStatus.textContent = `${auto ? "Auto-saved" : "Saved"} ${payload.path || reviewMetadata.expectedSaveAs}`;
+      } catch (error) {
+        saveStatus.textContent = `Save failed: ${error && error.message ? error.message : error}. Use Download review.json instead.`;
+      }
+    }
+    function maybeAutoSave(payload) {
+      if (!payload || payload.status !== "pass") return;
+      const payloadKey = JSON.stringify({
+        status: payload.status,
+        choices: payload.choices,
+        stats: payload.stats,
+        reportSha256: payload.reportSha256,
+      });
+      if (payloadKey === lastAutoSavedPayloadKey) return;
+      lastAutoSavedPayloadKey = payloadKey;
+      void saveReview({ auto: true });
+    }
+    form.addEventListener("input", () => {
+      localStorage.setItem(storageKey, JSON.stringify(collect()));
+      updateProgress();
+    });
+    form.addEventListener("reset", () => {
+      setTimeout(() => {
+        localStorage.removeItem(storageKey);
+        output.value = "";
+        updateProgress();
+      }, 0);
+    });
     document.getElementById("export-review").addEventListener("click", () => {
       exportReview();
+    });
+    document.getElementById("save-review").addEventListener("click", () => {
+      void saveReview();
     });
     document.getElementById("download-review").addEventListener("click", () => {
       const text = exportReview();
@@ -1151,7 +1430,28 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
       link.remove();
       URL.revokeObjectURL(url);
     });
+    document.getElementById("next-unanswered").addEventListener("click", () => {
+      goToNextUnanswered();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      const key = event.key.toLowerCase();
+      if (key === "a") chooseCurrent("A");
+      else if (key === "b") chooseCurrent("B");
+      else if (key === "t") chooseCurrent("tie");
+      else if (key === "r") chooseCurrent("rerender");
+      else if (key === "n") goToNextUnanswered();
+      else if (key === "s") void saveReview();
+      else if (key === "1") playCurrentSample(0);
+      else if (key === "2") playCurrentSample(1);
+      else if (key === "p") pauseAllAudio();
+      else return;
+      event.preventDefault();
+    });
     restore();
+    updateProgress();
   </script>
 </body>
 </html>
@@ -1159,6 +1459,33 @@ def write_html_report(report_path: Path, report: dict[str, Any]) -> Path:
         encoding="utf-8",
     )
     return html_path
+
+
+def render_failures(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for group in groups:
+        case = group.get("case") if isinstance(group.get("case"), dict) else {}
+        renders = group.get("renders") if isinstance(group.get("renders"), list) else []
+        for render in renders:
+            if not isinstance(render, dict):
+                continue
+            status = str(render.get("status") or "")
+            missing_output = bool(render.get("missingOutput"))
+            output_exists = render.get("outputExists")
+            if status == "ready" and not missing_output and output_exists is not False:
+                continue
+            failures.append(
+                {
+                    "caseId": case.get("id"),
+                    "cloneMode": group.get("cloneMode"),
+                    "repeat": render.get("repeat"),
+                    "status": status,
+                    "message": render.get("message"),
+                    "outputWav": render.get("outputWav"),
+                    "missingOutput": missing_output,
+                }
+            )
+    return failures
 
 
 def render_case(
@@ -1177,10 +1504,12 @@ def render_case(
     stability_seed: int | None,
     profile_clip_id: str | None,
     voice_profile_id: str | None,
+    profile_sha256: str | None,
     target_coverage_features: list[str] | None,
     matched_coverage_features: list[str] | None,
     target_pronunciation_preset_ids: list[str] | None,
     matched_pronunciation_preset_ids: list[str] | None,
+    profile_pronunciation_preset_ids: list[str] | None,
 ) -> dict[str, Any]:
     repeat_dir = out_dir / clone_mode / case["id"] / f"r{repeat:02d}"
     repeat_dir.mkdir(parents=True, exist_ok=True)
@@ -1251,10 +1580,12 @@ def render_case(
         "stabilitySeed": stability_seed,
         "profileClipId": profile_clip_id,
         "voiceProfileId": voice_profile_id,
+        "profileSha256": profile_sha256,
         "targetCoverageFeatures": target_coverage_features,
         "matchedCoverageFeatures": matched_coverage_features,
         "targetPronunciationPresetIds": target_pronunciation_preset_ids,
         "matchedPronunciationPresetIds": matched_pronunciation_preset_ids,
+        "profilePronunciationPresetIds": profile_pronunciation_preset_ids,
         "outputWav": str(output_wav),
         "metadata": str(metadata_file),
         "status": "dry_run" if dry_run else "pending",
@@ -1262,6 +1593,7 @@ def render_case(
     if dry_run:
         return result
 
+    started_at = time.perf_counter()
     if hot_worker_url:
         try:
             metadata = call_hot_worker(
@@ -1281,19 +1613,27 @@ def render_case(
             )
             result["hotWorkerMetadata"] = metadata
         except Exception as exc:  # noqa: BLE001
+            result["renderSeconds"] = round(time.perf_counter() - started_at, 3)
             result["status"] = "error"
             result["message"] = str(exc)
             return result
     else:
         proc = subprocess.run(cmd, capture_output=True, text=True)
+        result["renderSeconds"] = round(time.perf_counter() - started_at, 3)
         result["returnCode"] = proc.returncode
         result["stderr"] = proc.stderr[-4000:]
         if proc.returncode != 0:
             result["status"] = "error"
             result["message"] = proc.stderr.strip() or proc.stdout.strip() or "render failed"
             return result
+    if "renderSeconds" not in result:
+        result["renderSeconds"] = round(time.perf_counter() - started_at, 3)
 
     result["status"] = "ready"
+    result["outputExists"] = output_wav.exists()
+    result["missingOutput"] = not output_wav.exists()
+    result["outputBytes"] = output_wav.stat().st_size if output_wav.exists() else None
+    result["outputSha256"] = file_sha256(output_wav) if output_wav.exists() else None
     result["audioMetrics"] = wav_metrics(output_wav)
     try:
         result["metadataJson"] = json.loads(metadata_file.read_text(encoding="utf-8"))
@@ -1473,16 +1813,20 @@ def main() -> None:
                     stability_seed=args.seed,
                     profile_clip_id=reference["profileClipId"],
                     voice_profile_id=reference["voiceProfileId"],
+                    profile_sha256=reference.get("profileSha256"),
                     target_coverage_features=reference.get("targetCoverageFeatures"),
                     matched_coverage_features=reference.get("matchedCoverageFeatures"),
                     target_pronunciation_preset_ids=reference.get("targetPronunciationPresetIds"),
                     matched_pronunciation_preset_ids=reference.get("matchedPronunciationPresetIds"),
+                    profile_pronunciation_preset_ids=reference.get("profilePronunciationPresetIds"),
                 )
                 for repeat in range(1, max(1, args.repeats) + 1)
             ]
             groups.append(
                 {
                     "cloneMode": mode,
+                    "voiceProfileId": reference.get("voiceProfileId"),
+                    "profileSha256": reference.get("profileSha256"),
                     "case": case,
                     "renders": renders,
                     "stability": {} if args.dry_run else stability_summary(renders),
@@ -1497,6 +1841,7 @@ def main() -> None:
         "voiceProfile": {
             "path": str(profile_path),
             "voiceProfileId": profile.get("voiceProfileId"),
+            "profileSha256": canonical_profile_sha256(profile),
             "referenceClipIds": profile.get("referenceClipIds"),
             "profileProof": profile_proof,
         } if profile and profile_path else None,
@@ -1512,7 +1857,23 @@ def main() -> None:
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     html_path = write_html_report(report_path, report)
 
-    print(json.dumps({"report": str(report_path), "html": str(html_path), "groups": len(groups)}, ensure_ascii=False))
+    payload = {"report": str(report_path), "html": str(html_path), "groups": len(groups)}
+    failures = [] if args.dry_run else render_failures(groups)
+    if failures:
+        print(
+            json.dumps(
+                {
+                    **payload,
+                    "status": "error",
+                    "failedRenders": len(failures),
+                    "failures": failures[:10],
+                },
+                ensure_ascii=False,
+            )
+        )
+        raise SystemExit(2)
+
+    print(json.dumps(payload, ensure_ascii=False))
 
 
 if __name__ == "__main__":

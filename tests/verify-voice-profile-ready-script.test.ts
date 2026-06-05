@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -101,15 +102,40 @@ async function profileClips(profilePath: string): Promise<ProfileFixtureClip[]> 
   return profile.clips;
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+async function canonicalProfileSha256(profilePath: string): Promise<string> {
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  delete profile.createdAt;
+  delete profile.loraPath;
+  delete profile.loraAdapter;
+  delete profile.preferredBackend;
+  return createHash("sha256").update(canonicalJson(profile), "utf-8").digest("hex");
+}
+
 async function writeTranscriptValidation(
   profilePath: string,
   validationPath: string,
   {
     reportProfilePath = profilePath,
+    profileSha256,
     staleSourceRunId = "",
     wrongAudioSourceRunId = "",
     failedSourceRunId = "",
-  }: { reportProfilePath?: string; staleSourceRunId?: string; wrongAudioSourceRunId?: string; failedSourceRunId?: string } = {},
+  }: { reportProfilePath?: string; profileSha256?: string; staleSourceRunId?: string; wrongAudioSourceRunId?: string; failedSourceRunId?: string } = {},
 ): Promise<void> {
   const clips = await profileClips(profilePath);
   const failed = failedSourceRunId ? 1 : 0;
@@ -117,6 +143,7 @@ async function writeTranscriptValidation(
     validationPath,
     `${JSON.stringify({
       profile: reportProfilePath,
+      ...(profileSha256 ? { profileSha256 } : {}),
       status: failed ? "blocked" : "pass",
       summary: { total: clips.length, passed: clips.length - failed, failed },
       clips: clips.map((clip) => ({
@@ -166,6 +193,7 @@ describe("verify_voice_profile_ready.py", () => {
     expect(payload.nextCommands.importProfileClips).toContain("scripts/import_voice_profile_clips.py");
     expect(payload.nextCommands.regression).toContain("scripts/voice_clone_regression.py");
     expect(payload.nextCommands.backendShootout).toContain("scripts/prepare_voice_backend_shootout.py");
+    expect(payload.nextCommands.backendShootout).toContain("--backend voxcpm2-hifi");
     expect(payload.nextCommands.backendShootout).toContain("--backend indextts2 --backend f5-tts");
     expect(payload.nextCommands.registerBackendRenders).toContain("scripts/register_voice_backend_renders.py");
     expect(payload.nextCommands.validateTranscripts).toContain("scripts/validate_voice_profile_transcripts.py");
@@ -176,7 +204,7 @@ describe("verify_voice_profile_ready.py", () => {
     expect(payload.nextCommands.verifyProfileStrict).toContain(path.join("profile", "transcript-validation.json"));
     expect(payload.nextCommands.loraDataset).toContain("scripts/prepare_voice_lora_dataset.py");
     expect(payload.nextCommands.loraDataset).toContain("--require-product-proof-quality-gate");
-    expect(payload.nextCommands.loraDataset).toContain("--min-clips 10");
+    expect(payload.nextCommands.loraDataset).toContain("--min-clips 7");
     expect(payload.nextCommands.loraDataset).toContain("--min-total-duration-sec 60.0");
     expect(payload.recordingPrescription).toMatchObject({
       status: "satisfied",
@@ -355,14 +383,38 @@ describe("verify_voice_profile_ready.py", () => {
 
   it("can require passing ASR transcript validation before reporting ready", async () => {
     const profilePath = await writeProfile();
-    await expect(
-      execFileAsync(python, [script, "--profile-json", profilePath, "--require-transcript-validation"]),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining("transcript validation is required"),
-    });
+    try {
+      await execFileAsync(python, [script, "--profile-json", profilePath, "--require-transcript-validation"]);
+      throw new Error("expected transcript validation blocker");
+    } catch (error) {
+      const stdout = (error as { stdout?: string }).stdout ?? "";
+      expect(stdout).toContain("transcript validation is required");
+      const blockedPayload = JSON.parse(stdout);
+      expect(blockedPayload.status).toBe("blocked");
+      expect(blockedPayload.recordingPrescription).toMatchObject({
+        status: "satisfied",
+        clipsNeeded: 0,
+        missingCoverageFeatures: [],
+        missingPronunciationPresetIds: [],
+      });
+      expect(blockedPayload.recordingPrescription.message).toContain("Recording coverage is satisfied");
+      expect(blockedPayload.recordingPrescription.message).not.toContain("Record 0");
+    }
+
+    try {
+      await execFileAsync(python, [script, "--profile-json", profilePath, "--require-transcript-validation", "--human"]);
+      throw new Error("expected transcript validation blocker");
+    } catch (error) {
+      const stdout = (error as { stdout?: string }).stdout ?? "";
+      expect(stdout).toContain("Next proof:");
+      expect(stdout).toContain("Resolve failed check(s): transcript_validation");
+      expect(stdout).toContain("scripts/validate_voice_profile_transcripts.py");
+      expect(stdout).not.toContain("Next recording:");
+      expect(stdout).not.toContain("Record 0");
+    }
 
     const validationPath = path.join(tmpRoot, "validation.json");
-    await writeTranscriptValidation(profilePath, validationPath);
+    await writeTranscriptValidation(profilePath, validationPath, { profileSha256: await canonicalProfileSha256(profilePath) });
     const { stdout } = await execFileAsync(python, [
       script,
       "--profile-json",
@@ -377,6 +429,25 @@ describe("verify_voice_profile_ready.py", () => {
     expect(payload.nextCommands.qualityGate).toContain(validationPath);
     expect(payload.checks.find((row: { check: string }) => row.check === "transcript_validation")).toMatchObject({
       ok: true,
+    });
+  });
+
+  it("rejects transcript validation JSON that omits profile hash evidence", async () => {
+    const profilePath = await writeProfile();
+    const validationPath = path.join(tmpRoot, "missing-profile-hash-validation.json");
+    await writeTranscriptValidation(profilePath, validationPath);
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        validationPath,
+        "--require-transcript-validation",
+      ]),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('"profileShaMatches": false'),
     });
   });
 
@@ -400,12 +471,34 @@ describe("verify_voice_profile_ready.py", () => {
     });
   });
 
+  it("rejects transcript validation JSON bound to a stale profile hash", async () => {
+    const profilePath = await writeProfile();
+    const validationPath = path.join(tmpRoot, "stale-profile-hash-validation.json");
+    await writeTranscriptValidation(profilePath, validationPath, { profileSha256: "0".repeat(64) });
+
+    await expect(
+      execFileAsync(python, [
+        script,
+        "--profile-json",
+        profilePath,
+        "--transcript-validation-json",
+        validationPath,
+        "--require-transcript-validation",
+      ]),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('"profileShaMatches": false'),
+    });
+  });
+
   it("includes an exact re-record command when ASR rejects a selected clip transcript", async () => {
     const profilePath = await writeProfile({
       recordingKitClipIds: Array.from({ length: 5 }, (_, index) => `profile-clip-${String(index + 1).padStart(2, "0")}`),
     });
     const validationPath = path.join(tmpRoot, "failed-validation.json");
-    await writeTranscriptValidation(profilePath, validationPath, { failedSourceRunId: "clip-2" });
+    await writeTranscriptValidation(profilePath, validationPath, {
+      failedSourceRunId: "clip-2",
+      profileSha256: await canonicalProfileSha256(profilePath),
+    });
 
     await expect(
       execFileAsync(python, [

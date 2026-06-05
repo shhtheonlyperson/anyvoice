@@ -99,9 +99,29 @@ describe("profile enrollment", () => {
     expect(result.body.message).toMatch(/Traditional Chinese|mixed Chinese/);
   });
 
-  it("accepts short shared-form Chinese transcripts (zh_unknown) at ingest", () => {
+  it("rejects short shared-form Chinese transcripts (zh_unknown) as unproven profile evidence", () => {
     const result = parseVoiceProfileEnrollmentForm(form({ promptTranscript: "早安你好" }));
-    expect(isVoiceProfileEnrollmentError(result)).toBe(false);
+    expect(isVoiceProfileEnrollmentError(result)).toBe(true);
+    if (!isVoiceProfileEnrollmentError(result)) throw new Error("expected error");
+    expect(result.statusCode).toBe(400);
+    expect(result.body.message).toMatch(/unproven Chinese|zh_unknown/);
+  });
+
+  it("rejects browser captures with mic processing still enabled", () => {
+    const result = parseVoiceProfileEnrollmentForm(
+      form({
+        browserCaptureSettings: JSON.stringify({
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: false,
+        }),
+      }),
+    );
+    expect(isVoiceProfileEnrollmentError(result)).toBe(true);
+    if (!isVoiceProfileEnrollmentError(result)) throw new Error("expected error");
+    expect(result.statusCode).toBe(400);
+    expect(result.body.message).toMatch(/microphone processing/);
+    expect(result.body.message).toMatch(/echoCancellation/);
   });
 
   it("writes enrollment run files and parses analyzer quality", async () => {
@@ -119,10 +139,20 @@ describe("profile enrollment", () => {
       }) as never,
     );
 
-    const input = parseVoiceProfileEnrollmentForm(form());
+    const input = parseVoiceProfileEnrollmentForm(
+      form({
+        browserCaptureSettings: JSON.stringify({
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          sampleRate: 48000,
+          channelCount: 1,
+        }),
+      }),
+    );
     expect(isVoiceProfileEnrollmentError(input)).toBe(false);
     if (isVoiceProfileEnrollmentError(input)) throw new Error("expected input");
-    const result = await enrollVoiceProfileClip("enrollJob1", input);
+    const result = await enrollVoiceProfileClip("enrollJob1", { ...input, recordingKitClipId: "profile-clip-09" });
 
     expect(result.status).toBe("enrolled");
     expect(result.referenceQuality.grade).toBe("B");
@@ -130,7 +160,20 @@ describe("profile enrollment", () => {
     const request = JSON.parse(await readFile(path.join(runDir, "request.json"), "utf-8"));
     expect(request.status).toBe("profile_enrollment");
     expect(request.sourceKind).toBe("scripted");
+    expect(request.recordingKitClipId).toBe("profile-clip-09");
     expect(request.referenceSource.kind).toBe("scripted");
+    expect(request.browserCaptureSettings).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: 48000,
+      channelCount: 1,
+    });
+    expect(request.referenceSource.browserCaptureSettings).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
     expect(await readFile(path.join(runDir, "prompt-transcript.raw.txt"), "utf-8")).toBe("請錄製穩定聲音。");
 
     const args = spawnMock.mock.calls[0][1] as string[];

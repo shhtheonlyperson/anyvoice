@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -21,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_JSON = REPO_ROOT / ".anyvoice" / "voices" / "local-default" / "profile.json"
 DEFAULT_REQUIRED_COVERAGE_FEATURES = ["zh_hant", "numbers_dates", "latin_terms", "polyphones", "punctuation_rhythm"]
 DEFAULT_PASSING_GRADES = ["A", "B"]
-PRODUCT_CAPTURE_CLIPS = 10
+PRODUCT_CAPTURE_CLIPS = 7
 PRODUCT_CAPTURE_DURATION_SEC = 60.0
 PRODUCT_PROMPT_SET = "extended"
 
@@ -36,6 +37,23 @@ def load_profile(path: Path) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise SystemExit(f"voice profile is not a JSON object: {path}")
     return parsed
+
+
+def canonical_profile_sha256(profile: dict[str, Any]) -> str:
+    payload = dict(profile)
+    payload.pop("createdAt", None)
+    payload.pop("loraPath", None)
+    payload.pop("loraAdapter", None)
+    payload.pop("preferredBackend", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def profile_sha256_for_path(profile_path: Path) -> str | None:
+    try:
+        return canonical_profile_sha256(load_profile(profile_path))
+    except SystemExit:
+        return None
 
 
 def profile_clips(profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -108,10 +126,11 @@ def clip_coverage(clips: list[dict[str, Any]]) -> set[str]:
 
 
 def clip_pronunciation_preset_ids(clip: dict[str, Any]) -> set[str]:
+    ids = set(pronunciation_preset_ids(str(clip.get("transcriptRaw") or "")))
     raw = clip.get("pronunciationPresetIds")
     if isinstance(raw, list):
-        return {str(item) for item in raw if isinstance(item, str)}
-    return set(pronunciation_preset_ids(str(clip.get("transcriptRaw") or "")))
+        ids.update(str(item) for item in raw if isinstance(item, str))
+    return ids
 
 
 def profile_pronunciation_preset_ids(clips: list[dict[str, Any]]) -> set[str]:
@@ -182,6 +201,14 @@ def check_transcript_validation(
 
     payload = load_profile(transcript_validation_json)
     profile_matches = same_resolved_path(payload.get("profile"), profile_path, transcript_validation_json.parent)
+    expected_profile_sha256 = profile_sha256_for_path(profile_path)
+    validation_profile_sha256 = payload.get("profileSha256")
+    profile_sha_matches = (
+        expected_profile_sha256 is not None
+        and isinstance(validation_profile_sha256, str)
+        and bool(validation_profile_sha256.strip())
+        and validation_profile_sha256 == expected_profile_sha256
+    )
     rows = transcript_validation_rows(payload)
     by_source = {str(row.get("sourceRunId") or ""): row for row in rows if row.get("sourceRunId")}
     missing: list[str] = []
@@ -228,7 +255,7 @@ def check_transcript_validation(
             if repair_command:
                 failed_row["repairCommand"] = repair_command
             failed.append(failed_row)
-    ok = profile_matches and not missing and not failed and not stale and payload.get("status") == "pass"
+    ok = profile_matches and profile_sha_matches and not missing and not failed and not stale and payload.get("status") == "pass"
     return check(
         "transcript_validation",
         ok,
@@ -239,6 +266,9 @@ def check_transcript_validation(
             "validationJson": str(transcript_validation_json),
             "profile": payload.get("profile"),
             "profileMatches": profile_matches,
+            "profileSha256": validation_profile_sha256,
+            "expectedProfileSha256": expected_profile_sha256,
+            "profileShaMatches": profile_sha_matches,
             "missing": missing,
             "failed": failed[:10],
             "stale": stale[:10],
@@ -351,6 +381,8 @@ def recording_prescription(
     eligible_count: int,
     min_clip_duration: float,
     max_clip_duration: float,
+    total_duration_sec: float,
+    min_total_duration_sec: float,
     missing_coverage: list[str],
     missing_pronunciation_preset_ids: list[str],
     rejection_reasons: list[dict[str, Any]],
@@ -358,21 +390,34 @@ def recording_prescription(
     recommended_duration = min(max_clip_duration, max(min_clip_duration + 2, 8.0))
     active_voice_target = min(min_clip_duration, recommended_duration * 0.65)
     clips_needed = max(0, min_clips - selected_count)
+    duration_needed = max(0.0, min_total_duration_sec - total_duration_sec)
+    missing_recording_items = [*missing_coverage, *missing_pronunciation_preset_ids]
+    needs_recording = clips_needed > 0 or duration_needed > 0.001 or bool(missing_recording_items)
     top_rejection = rejection_reasons[0]["reason"] if rejection_reasons else ""
-    if status == "ready":
+    if not needs_recording:
         message = "Profile is ready. Run regression and transcript validation before trusting production use."
+        if status != "ready":
+            message = "Recording coverage is satisfied; resolve the failed proof/check gate before trusting production use."
     elif top_rejection == "too_short" or (clips_needed > 0 and selected_count == 0):
         message = (
             f"Record {clips_needed or min_clips} full guided profile clips; target {recommended_duration:.0f}-{max_clip_duration:.0f}s "
             f"each with at least {active_voice_target:.1f}s active voice."
         )
     else:
+        recording_steps = []
+        if clips_needed > 0:
+            recording_steps.append(f"{clips_needed} more qualified profile clip(s)")
+        if duration_needed > 0.001:
+            recording_steps.append(f"at least {duration_needed:.1f}s more selected audio")
+        if missing_recording_items:
+            recording_steps.append(f"coverage: {', '.join(missing_recording_items)}")
         message = (
-            f"Record {clips_needed} more qualified profile clip(s) and fill missing coverage: "
-            f"{', '.join([*missing_coverage, *missing_pronunciation_preset_ids]) if missing_coverage or missing_pronunciation_preset_ids else 'none'}."
+            f"Record {' and '.join(recording_steps)}."
+            if recording_steps
+            else "Recording coverage is satisfied; resolve the failed proof/check gate before trusting production use."
         )
     return {
-        "status": "satisfied" if status == "ready" else "needs_recording",
+        "status": "needs_recording" if needs_recording else "satisfied",
         "clipsNeeded": clips_needed,
         "selectedClips": selected_count,
         "eligibleClips": eligible_count,
@@ -381,6 +426,9 @@ def recording_prescription(
             "recommended": recommended_duration,
             "max": max_clip_duration,
             "activeVoiceTarget": round(active_voice_target, 1),
+            "selected": round(total_duration_sec, 3),
+            "minTotal": min_total_duration_sec,
+            "needed": round(duration_needed, 3),
         },
         "missingCoverageFeatures": missing_coverage,
         "missingPronunciationPresetIds": missing_pronunciation_preset_ids,
@@ -621,6 +669,8 @@ def readiness_report(
             eligible_count=eligible_count,
             min_clip_duration=min_clip_duration,
             max_clip_duration=max_clip_duration,
+            total_duration_sec=total_duration,
+            min_total_duration_sec=min_total_duration_sec,
             missing_coverage=missing_coverage,
             missing_pronunciation_preset_ids=missing_pronunciation_preset_ids,
             rejection_reasons=rejection_reasons,
@@ -674,6 +724,8 @@ def readiness_report(
                 profile_arg,
                 "--transcript-validation-json",
                 effective_transcript_validation_arg,
+                "--backend",
+                "voxcpm2-hifi",
                 "--backend",
                 "indextts2",
                 "--backend",
@@ -762,10 +814,18 @@ def print_human(report: dict[str, Any]) -> None:
         print(f"- {marker} {row['check']}: {row['message']}")
     prescription = report.get("recordingPrescription")
     if report["status"] != "ready" and isinstance(prescription, dict):
-        print("\nNext recording:")
-        print(f"- {prescription.get('message')}")
-        print(f"- Prompt manifest: {prescription.get('promptManifest')}")
-        print(f"- Kit command: {report['nextCommands']['recordingKit']}")
+        if prescription.get("status") == "needs_recording":
+            print("\nNext recording:")
+            print(f"- {prescription.get('message')}")
+            print(f"- Prompt manifest: {prescription.get('promptManifest')}")
+            print(f"- Kit command: {report['nextCommands']['recordingKit']}")
+        else:
+            failed_checks = [str(row.get("check")) for row in report["checks"] if not row.get("ok")]
+            print("\nNext proof:")
+            if failed_checks:
+                print(f"- Resolve failed check(s): {', '.join(failed_checks)}")
+            print(f"- Transcript validation: {report['nextCommands']['validateTranscripts']}")
+            print(f"- Strict verification: {report['nextCommands']['verifyProfileStrict']}")
     if report["status"] == "ready":
         print("\nNext:")
         print(report["nextCommands"]["qualityGate"])

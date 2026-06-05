@@ -30,13 +30,20 @@ function reportJson(outputWav: string) {
           minPairwiseWaveformCorr: 0.91,
         },
         renders: [
-          {
+          ...[1, 2, 3].map((repeat) => ({
             caseId: "zh_hant_polyphones",
             cloneMode: "hifi",
-            repeat: 1,
+            repeat,
             status: "ready",
             outputWav,
-          },
+            audioMetrics: {
+              available: true,
+              durationSec: 1,
+              clippingRatio: 0,
+              rmsDbfs: -18,
+              peak: 0.4,
+            },
+          })),
         ],
       },
     ],
@@ -79,7 +86,7 @@ describe("transcribe_voice_regression.py", () => {
     const { stdout } = await execFileAsync(python, [script, reportPath, "--dry-run", "--out", outPath]);
     expect(JSON.parse(stdout)).toMatchObject({
       backend: "dry-run",
-      total: 1,
+      total: 3,
       transcribed: 0,
       failed: 0,
     });
@@ -147,8 +154,8 @@ out_dir.mkdir(parents=True, exist_ok=True)
     );
     expect(JSON.parse(stdout)).toMatchObject({
       backend: "whisper-cli",
-      total: 1,
-      transcribed: 1,
+      total: 3,
+      transcribed: 3,
       failed: 0,
     });
 

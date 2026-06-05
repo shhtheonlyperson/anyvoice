@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { canonicalVoiceProfileSha256 } from "@/lib/voice-profile";
 
 const execFileAsync = promisify(execFile);
 
@@ -87,7 +88,13 @@ function execErrorOutput(error: unknown, field: "stdout" | "stderr"): string {
 async function latestTranscriptValidationForProfile(profileJson: string): Promise<string | null> {
   const root = transcriptValidationRoot();
   const normalizedProfile = path.resolve(profileJson);
-  const matches: Array<{ path: string; createdAt: string }> = [];
+  let expectedProfileSha256: string | null = null;
+  try {
+    expectedProfileSha256 = canonicalVoiceProfileSha256(JSON.parse(await readFile(normalizedProfile, "utf-8")));
+  } catch {
+    expectedProfileSha256 = null;
+  }
+  const matches: Array<{ path: string; createdAt: string; profileRank: number }> = [];
   const seen = new Set<string>();
   const addCandidate = async (file: string) => {
     const resolved = path.resolve(file);
@@ -95,11 +102,19 @@ async function latestTranscriptValidationForProfile(profileJson: string): Promis
     seen.add(resolved);
     try {
       const raw = await readFile(resolved, "utf-8");
-      const parsed = JSON.parse(raw) as { profile?: unknown; createdAt?: unknown };
+      const parsed = JSON.parse(raw) as { profile?: unknown; createdAt?: unknown; profileSha256?: unknown };
       if (typeof parsed.profile !== "string" || path.resolve(parsed.profile) !== normalizedProfile) return;
+      const profileSha256 = typeof parsed.profileSha256 === "string" ? parsed.profileSha256.trim() : "";
+      const profileRank =
+        profileSha256 && expectedProfileSha256
+          ? profileSha256 === expectedProfileSha256
+            ? 0
+            : 2
+          : 1;
       matches.push({
         path: resolved,
         createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
+        profileRank,
       });
     } catch {
       // Ignore missing, partial, or unrelated report files.
@@ -120,7 +135,10 @@ async function latestTranscriptValidationForProfile(profileJson: string): Promis
   }
 
   if (matches.length === 0) return null;
-  matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  matches.sort((a, b) => {
+    if (a.profileRank !== b.profileRank) return a.profileRank - b.profileRank;
+    return b.createdAt.localeCompare(a.createdAt);
+  });
   return matches[0].path;
 }
 

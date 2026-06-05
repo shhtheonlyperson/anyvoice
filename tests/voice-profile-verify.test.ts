@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { canonicalVoiceProfileSha256 } from "@/lib/voice-profile";
 import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 
 const originalEnv = { ...process.env };
@@ -85,6 +86,10 @@ async function validationRowsForProfile(profilePath: string) {
   }));
 }
 
+async function profileSha256(profilePath: string): Promise<string> {
+  return canonicalVoiceProfileSha256(JSON.parse(await readFile(profilePath, "utf-8")));
+}
+
 beforeEach(async () => {
   tmpRoot = await mkdtemp(path.join(os.tmpdir(), "anyvoice-profile-verify-"));
   profileRoot = path.join(tmpRoot, "voices");
@@ -143,6 +148,7 @@ describe("verifyVoiceProfileReadiness", () => {
       `${JSON.stringify({
         createdAt: "2026-01-02T00:00:00.000Z",
         profile: profilePath,
+        profileSha256: await profileSha256(profilePath),
         status: "pass",
         summary: { total: 5, passed: 5, failed: 0 },
         clips: await validationRowsForProfile(profilePath),
@@ -164,6 +170,43 @@ describe("verifyVoiceProfileReadiness", () => {
       `${JSON.stringify({
         createdAt: "2026-01-03T00:00:00.000Z",
         profile: profilePath,
+        profileSha256: await profileSha256(profilePath),
+        status: "pass",
+        summary: { total: 5, passed: 5, failed: 0 },
+        clips: await validationRowsForProfile(profilePath),
+      })}\n`,
+      "utf-8",
+    );
+
+    const report = await verifyVoiceProfileReadiness({ profileId: "local-test" });
+    expect(report.status).toBe("ready");
+    expect(report.checks.find((check) => check.check === "transcript_validation")).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("prefers current-profile validation over a newer stale report", async () => {
+    const profilePath = await writeReadyProfile();
+    const validationRoot = process.env.ANYVOICE_TRANSCRIPT_VALIDATION_ROOT!;
+    await mkdir(validationRoot, { recursive: true });
+    await writeFile(
+      path.join(validationRoot, "local-test-current.json"),
+      `${JSON.stringify({
+        createdAt: "2026-01-02T00:00:00.000Z",
+        profile: profilePath,
+        profileSha256: await profileSha256(profilePath),
+        status: "pass",
+        summary: { total: 5, passed: 5, failed: 0 },
+        clips: await validationRowsForProfile(profilePath),
+      })}\n`,
+      "utf-8",
+    );
+    await writeFile(
+      path.join(validationRoot, "local-test-stale-newer.json"),
+      `${JSON.stringify({
+        createdAt: "2026-01-03T00:00:00.000Z",
+        profile: profilePath,
+        profileSha256: "0".repeat(64),
         status: "pass",
         summary: { total: 5, passed: 5, failed: 0 },
         clips: await validationRowsForProfile(profilePath),
