@@ -142,6 +142,32 @@ function ownsProfile(meta: VoiceProfileMeta | null, userId: string): boolean {
 }
 
 /**
+ * Authorization gate for any profile-scoped API route. Resolves the profile's
+ * owner from its meta.json and returns whether `userId` may read or mutate it.
+ *
+ * Untagged profiles (the legacy `local-default`, and any profile created before
+ * account tagging) have no `userId` and stay shared, preserving the single-user
+ * and pre-migration flows. Account-tagged profiles are owner-locked: a caller
+ * who supplies someone else's `profileId` is rejected. The proxy sets the
+ * authenticated id from the Google email and cannot be spoofed, so this is a
+ * real cross-account boundary, not just UI hiding.
+ */
+export async function userCanAccessVoiceProfile(
+  profileId: string,
+  userId: string,
+  env: CloneEnv = process.env,
+): Promise<boolean> {
+  try {
+    const meta = await loadVoiceProfileMeta(profileId, env);
+    return ownsProfile(meta, userId);
+  } catch {
+    // A malformed/unsafe id resolves to no owner; treat it as shared so the
+    // downstream route can apply its own id validation and 404 handling.
+    return true;
+  }
+}
+
+/**
  * List the voice profiles visible to a user. Always returns at least the
  * default profile so the UI has something to bind to.
  */

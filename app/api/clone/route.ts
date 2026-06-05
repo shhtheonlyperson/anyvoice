@@ -17,6 +17,7 @@ import {
   saveRunHistory,
 } from "@/lib/run-history";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 import { isWorkerProxyConfigured, workerAuthHeaders, workerCloneUrl, workerToken } from "@/lib/worker-proxy";
 
 export const runtime = "nodejs";
@@ -76,6 +77,12 @@ export async function POST(req: NextRequest) {
     form = await req.formData();
   } catch {
     return withAnyVoiceUserCookie(json({ status: "error", message: "multipart form data required" }, { status: 400 }), session);
+  }
+
+  const requestedProfileId = String(form.get("profileId") || "").trim();
+  if (requestedProfileId) {
+    const denied = await guardVoiceProfileAccess(session, requestedProfileId);
+    if (denied) return denied;
   }
 
   const input = await parseCloneFormWithProfile(form);

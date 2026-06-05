@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 import { getVoiceCloneGoalAudit } from "@/lib/voice-clone-goal-audit";
 
 export const runtime = "nodejs";
@@ -22,6 +23,8 @@ async function readProfileId(req: NextRequest): Promise<string> {
 export async function POST(req: NextRequest) {
   const session = getOrCreateAnyVoiceUserSession(req);
   const profileId = await readProfileId(req);
+  const denied = await guardVoiceProfileAccess(session, profileId);
+  if (denied) return denied;
   try {
     const audit = await getVoiceCloneGoalAudit({ profileId });
     return withAnyVoiceUserCookie(json({ audit }), session);
