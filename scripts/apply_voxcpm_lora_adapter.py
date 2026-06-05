@@ -151,8 +151,26 @@ def require_dict(payload: dict[str, Any], key: str, label: str) -> dict[str, Any
     return value
 
 
-def validate_train_config_manifest_binding(train_config_path: Path) -> None:
+def validate_train_config_manifest_binding(
+    train_config_path: Path,
+    *,
+    profile_sha256: str,
+) -> None:
     config = load_json(train_config_path, "LoRA train config")
+    # The proof's datasetProofs are operator-editable JSON, but the train config
+    # is hash-bound to the proof via trainConfigSha256. Re-derive the dataset
+    # profile binding from the hash-bound config so a stale proof cannot keep a
+    # genuine trainConfigSha256 while hand-editing datasetProofs.profileSha256 to
+    # the current profile.
+    config_dataset_proofs = (
+        config.get("datasetProofs") if isinstance(config.get("datasetProofs"), dict) else {}
+    )
+    if config_dataset_proofs.get("profileSha256") != profile_sha256:
+        raise SystemExit(
+            "LoRA train config dataset profile hash does not match this profile: "
+            f"profileSha256={config_dataset_proofs.get('profileSha256')!r}, expected {profile_sha256} "
+            f"({train_config_path})"
+        )
     dataset_path = resolve_config_path(config.get("datasetJson"), train_config_path.parent)
     if dataset_path is None:
         raise SystemExit(f"LoRA train config is missing datasetJson: {train_config_path}")
@@ -196,6 +214,19 @@ def validate_adapter_proof(
     if not same_path(proof.get("profilePath"), profile_path, proof_path.parent):
         raise SystemExit(f"adapter proof does not match profile: {proof.get('profilePath')!r} != {profile_path}")
     dataset_proofs = proof.get("datasetProofs") if isinstance(proof.get("datasetProofs"), dict) else {}
+    # An unsafe-bypassed dataset skipped the paired product proof / transcript
+    # validation and is migration/debug only. It must never satisfy the apply or
+    # runtime gate, even if a crafted config also set the product-proof marker.
+    unsafe_dataset_markers = [
+        key
+        for key in ("acceptedUnsafeDataset", "transcriptValidationSkipped", "qualityGateSkipped", "unsafeExport")
+        if dataset_proofs.get(key) is True
+    ]
+    if unsafe_dataset_markers:
+        raise SystemExit(
+            "adapter proof comes from an unsafe-bypassed dataset and cannot be applied: "
+            + ", ".join(unsafe_dataset_markers)
+        )
     if dataset_proofs.get("productProofQualityGateRequired") is not True:
         raise SystemExit("adapter proof does not preserve paired product-proof dataset evidence")
     if dataset_proofs.get("profileSha256") != profile_sha256:
@@ -211,7 +242,10 @@ def validate_adapter_proof(
             "adapter proof trainConfigSha256 does not match trainConfig: "
             f"trainConfigSha256={expected_train_config_sha256!r}, expected {actual_train_config_sha256}"
         )
-    validate_train_config_manifest_binding(train_config_path)
+    validate_train_config_manifest_binding(
+        train_config_path,
+        profile_sha256=profile_sha256,
+    )
     adapter_path = adapter_path_from_proof(proof, proof_path)
     if not adapter_path.is_file():
         raise SystemExit(f"LoRA adapter file is missing: {adapter_path}")

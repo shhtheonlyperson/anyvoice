@@ -1484,7 +1484,11 @@ async function writeLoraArtifacts(
   }
 }
 
-async function writeMinimalBoundTrainConfig(trainConfig: string, adapterPath: string): Promise<void> {
+async function writeMinimalBoundTrainConfig(
+  trainConfig: string,
+  adapterPath: string,
+  profileSha256: string,
+): Promise<void> {
   const datasetDir = path.join(path.dirname(trainConfig), "dataset");
   await mkdir(datasetDir, { recursive: true });
   const manifestRow = {
@@ -1525,6 +1529,11 @@ async function writeMinimalBoundTrainConfig(trainConfig: string, adapterPath: st
       {
         version: 1,
         datasetJson,
+        datasetProofs: {
+          acceptedUnsafeDataset: false,
+          profileSha256,
+          productProofQualityGateRequired: true,
+        },
         manifests: {
           train: trainManifest,
           val: valManifest,
@@ -7301,7 +7310,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7352,7 +7361,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7399,7 +7408,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7562,7 +7571,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7613,7 +7622,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7666,7 +7675,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7718,7 +7727,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7770,7 +7779,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7822,7 +7831,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7874,7 +7883,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7923,7 +7932,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -7972,7 +7981,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -8030,7 +8039,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -8129,7 +8138,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     await writeFile(
       adapterProof,
       `${JSON.stringify(
@@ -8210,7 +8219,7 @@ describe("audit_voice_clone_goal.py", () => {
     const adapterProof = path.join(outputDir, "adapter-proof.json");
     const trainConfig = path.join(outputDir, "train_config.json");
     await writeFile(adapterPath, "fake adapter\n", "utf-8");
-    await writeMinimalBoundTrainConfig(trainConfig, adapterPath);
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, await canonicalProfileSha256(profile));
     const trainConfigSha256 = await sha256File(trainConfig);
     await writeFile(
       adapterProof,
@@ -8247,6 +8256,65 @@ describe("audit_voice_clone_goal.py", () => {
       ]),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("adapter proof dataset profile hash does not match this profile"),
+    });
+    const persisted = JSON.parse(await readFile(profile, "utf-8")) as { loraAdapter?: unknown; loraPath?: unknown };
+    expect(persisted.loraAdapter).toBeUndefined();
+    expect(persisted.loraPath).toBeNull();
+  });
+
+  it("refuses to apply a LoRA adapter when the hash-bound train config profile hash is stale", async () => {
+    const profile = await writeReadyProfile();
+    const profileSha256 = await canonicalProfileSha256(profile);
+    const outputDir = path.join(tmpRoot, "lora-apply-stale-config", "output");
+    await mkdir(outputDir, { recursive: true });
+    const adapterPath = path.join(outputDir, "lora_weights.ckpt");
+    const adapterProof = path.join(outputDir, "adapter-proof.json");
+    const trainConfig = path.join(outputDir, "train_config.json");
+    await writeFile(adapterPath, "fake adapter\n", "utf-8");
+    // Build a correctly-bound config, then drift only the config's own dataset
+    // profile hash. The proof keeps a genuine trainConfigSha256 and a correct
+    // datasetProofs.profileSha256, so this can only be caught by re-deriving the
+    // profile binding from the hash-bound train config.
+    await writeMinimalBoundTrainConfig(trainConfig, adapterPath, profileSha256);
+    const staleConfig = JSON.parse(await readFile(trainConfig, "utf-8"));
+    staleConfig.datasetProofs.profileSha256 = "0".repeat(64);
+    await writeFile(trainConfig, `${JSON.stringify(staleConfig, null, 2)}\n`, "utf-8");
+    const trainConfigSha256 = await sha256File(trainConfig);
+    await writeFile(
+      adapterProof,
+      `${JSON.stringify(
+        {
+          version: 1,
+          status: "pass",
+          ...readableLoraCheckpointProof(),
+          adapter: { path: adapterPath, bytes: "fake adapter\n".length, sha256: sha256Text("fake adapter\n") },
+          datasetProofs: {
+            acceptedUnsafeDataset: false,
+            productProofQualityGateRequired: true,
+            profileSha256,
+          },
+          profilePath: profile,
+          trainConfig,
+          trainConfigSha256,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+    const loraQualityGate = await writeLoraQualityGate(profile, adapterPath);
+
+    await expect(
+      execFileAsync(python, [
+        applyLoraAdapterScript,
+        adapterProof,
+        "--quality-gate-json",
+        loraQualityGate,
+        "--profile-json",
+        profile,
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("LoRA train config dataset profile hash does not match this profile"),
     });
     const persisted = JSON.parse(await readFile(profile, "utf-8")) as { loraAdapter?: unknown; loraPath?: unknown };
     expect(persisted.loraAdapter).toBeUndefined();

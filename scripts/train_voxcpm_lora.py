@@ -385,6 +385,19 @@ def run_training(config: dict[str, Any], paths: dict[str, Path], args: argparse.
     )
     forward_fields = set(inspect.signature(accelerator.unwrap(model).forward).parameters)
 
+    # The model's `progress` argument is a normalized [0, 1] training-schedule
+    # signal. Estimate the total optimizer-step count so epoch-based runs (the
+    # default, where --max-steps is unset) feed a real ramp instead of the raw
+    # step counter divided by 1.
+    try:
+        steps_per_epoch = max(1, len(loader) // grad_accum)
+    except TypeError:
+        steps_per_epoch = 1
+    if args.max_steps is not None:
+        total_steps = max(1, int(args.max_steps))
+    else:
+        total_steps = max(1, epochs * steps_per_epoch)
+
     global_step = 0
     optimizer_steps = 0
     last_loss = None
@@ -395,7 +408,7 @@ def run_training(config: dict[str, Any], paths: dict[str, Path], args: argparse.
             packed = batch_processor(batch)
             model_inputs = {key: value for key, value in packed.items() if key in forward_fields}
             with accelerator.autocast():
-                output = model(**model_inputs, progress=float(global_step) / float(args.max_steps or 1))
+                output = model(**model_inputs, progress=min(1.0, float(global_step) / float(total_steps)))
                 loss = output["loss/diff"] + float(args.stop_loss_weight) * output["loss/stop"]
                 scaled_loss = loss / grad_accum
             accelerator.backward(scaled_loss)
