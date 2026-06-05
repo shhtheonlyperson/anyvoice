@@ -1737,18 +1737,24 @@ async function parseHotWorkerStream(
     if (payload) onProgress?.(payload);
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      consumeLine(buffer.slice(0, newlineIndex));
-      buffer = buffer.slice(newlineIndex + 1);
-      newlineIndex = buffer.indexOf("\n");
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        consumeLine(buffer.slice(0, newlineIndex));
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
+      }
+      if (done) break;
     }
-    if (done) break;
+    if (buffer.trim()) consumeLine(buffer);
+  } finally {
+    // Release the underlying connection even when consumeLine throws on a
+    // worker `type=error` line, so a failed stream does not leak the socket.
+    await reader.cancel().catch(() => {});
   }
-  if (buffer.trim()) consumeLine(buffer);
 
   if (!response.ok) {
     throw new Error("hot worker request failed");
