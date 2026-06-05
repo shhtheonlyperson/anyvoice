@@ -176,4 +176,14 @@ describe("POST /api/voice-profile/enroll/youtube", () => {
       expect.objectContaining({ sourceKind: "uploaded", promptTranscript: "這是一段測試聲音。" }),
     );
   });
+
+  it("rejects typed transcript overrides whose Chinese script is unproven", async () => {
+    stubDownload({ withCaptions: false });
+    const res = await POST(
+      makeReq({ url: "https://youtu.be/dQw4w9WgXcQ", consent: "yes", transcriptOverride: "早安你好" }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/unproven Chinese|zh_unknown/);
+    expect(enrollMock).not.toHaveBeenCalled();
+  });
 });

@@ -10,6 +10,14 @@ export interface VoiceCloneGoalAuditStage {
   ok: boolean;
   message: string;
   missingClips?: string[];
+  pendingExternalRecordings?: Array<{
+    id?: string;
+    index?: number;
+    audioPath?: string;
+    sourceAudioPath?: string;
+  }>;
+  pendingExternalRecordingCount?: number;
+  missingExternalRecordingSourceCount?: number;
   firstMissingClip?: {
     id: string;
     index?: number;
@@ -19,6 +27,13 @@ export interface VoiceCloneGoalAuditStage {
     coverageFeatures?: string[];
     errors?: string[];
     recordCommand?: string;
+  };
+  firstFailedClip?: {
+    id: string;
+    index?: number;
+    audioPath?: string;
+    checks?: string[];
+    errors?: string[];
   };
   recordingPreflight?: {
     status?: string;
@@ -65,17 +80,77 @@ export interface VoiceCloneGoalAuditStage {
   stats?: Record<string, unknown>;
 }
 
+export interface VoiceCloneGoalCompletionRequirement {
+  id: string;
+  stageId: string;
+  order: number;
+  requirement: string;
+  status: VoiceCloneGoalAuditStage["status"];
+  ok: boolean;
+  message?: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface VoiceCloneGoalProfileReferenceRecordingCommand {
+  presetId?: string;
+  clipId?: string;
+  transcript?: string;
+  recordCommand?: string;
+}
+
+export interface VoiceCloneGoalQualityGateProbeCommand {
+  caseId?: string;
+  command?: string;
+  proofScope?: string;
+  verdict?: string;
+  pronunciationVerdict?: string;
+  speakerIdentityVerdict?: string;
+  profileReferenceVerdict?: string;
+  asrSamples?: Array<{
+    repeat?: number;
+    asrTranscript?: string;
+    scoringTarget?: string;
+  }>;
+}
+
+export interface VoiceCloneGoalQualityGateRepairAction {
+  kind?: string;
+  priority?: number;
+  status?: string;
+  reason?: string;
+  command?: string;
+  caseId?: string;
+  clipIds?: string[];
+  presetIds?: string[];
+  dependsOn?: string;
+  blockedUntil?: string | null;
+  proofScope?: string;
+  verdict?: string;
+  pronunciationVerdict?: string;
+  speakerIdentityVerdict?: string;
+  profileReferenceVerdict?: string;
+  asrSamples?: VoiceCloneGoalQualityGateProbeCommand["asrSamples"];
+}
+
 export interface VoiceCloneGoalAuditReport {
   status: "complete" | "blocked" | string;
   complete: boolean;
   profileJson: string;
   kitManifest: string;
   stages: VoiceCloneGoalAuditStage[];
+  completionRequirements: VoiceCloneGoalCompletionRequirement[];
   firstBlocker?: VoiceCloneGoalAuditStage | null;
+  firstIncompleteRequirement?: VoiceCloneGoalCompletionRequirement | null;
   nextBriefCommand?: string | null;
   nextOpenCueSheetCommand?: string | null;
   nextMicrophoneSmokeTestCommand?: string | null;
   nextNormalizeExternalRecordingsCommand?: string | null;
+  nextNormalizePresentExternalRecordingsCommand?: string | null;
+  nextProfileReferenceRecordingCommands?: VoiceCloneGoalProfileReferenceRecordingCommand[];
+  nextProfileReferenceRecordingBatchCommand?: string | null;
+  nextPostProfileReferenceRecordingProofCommand?: string | null;
+  nextQualityGateProbeCommands?: VoiceCloneGoalQualityGateProbeCommand[];
+  nextQualityGateRepairActions?: VoiceCloneGoalQualityGateRepairAction[];
   nextProductProofCommand?: string | null;
   nextProofEnvironmentCommand?: string | null;
   nextLoraHandoffCommand?: string | null;
@@ -117,7 +192,8 @@ function parseAuditPayload(stdout: string): VoiceCloneGoalAuditReport {
     typeof parsed.complete !== "boolean" ||
     typeof parsed.profileJson !== "string" ||
     typeof parsed.kitManifest !== "string" ||
-    !Array.isArray(parsed.stages)
+    !Array.isArray(parsed.stages) ||
+    !Array.isArray(parsed.completionRequirements)
   ) {
     throw new Error("voice clone goal audit script returned an invalid payload");
   }
@@ -140,6 +216,7 @@ export async function getVoiceCloneGoalAudit({
       kitManifestForProfile(profileId),
       "--profile-id",
       profileId,
+      "--json",
     ],
     {
       cwd: process.cwd(),

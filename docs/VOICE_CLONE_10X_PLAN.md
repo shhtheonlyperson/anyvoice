@@ -104,6 +104,15 @@ The UI can still allow draft generation, but the clone profile should require:
   and stay preserved, but they should not count toward the Traditional Chinese
   profile gate.
 
+Default profile generation now enforces that strict bar at the server boundary:
+`useVoiceProfile=yes` requires the strict profile verifier plus passing
+transcript-validation proof before resolving a profile reference. Draft
+quick-clone remains available only through an explicit
+`allowDraftVoiceProfile=yes` / `profileMode=draft` flag, so a single usable clip
+cannot silently travel the verified profile path. Audiobook creation and the
+background book synthesizer use the same strict-ready check before accepting or
+continuing long-form synthesis jobs.
+
 ## Eval Harness
 
 Create `examples/voice_clone_eval_set.json` with fixed cases:
@@ -135,8 +144,9 @@ Pass bar for a 10x-quality claim:
 - speaker identity: speaker similarity improves or does not regress;
 - stability: three repeated renders do not vary materially;
 - latency: no worse than current hot-worker path for short text;
-- subjective: user picks candidate over baseline in blind A/B for at least 80%
-  of cases.
+- subjective: blind A/B does not prefer baseline over candidate; all-tie is
+  acceptable for the current product bar, while an 80% candidate preference
+  remains a stronger 10x claim.
 
 ## Architecture
 
@@ -170,7 +180,12 @@ Then generation uses a profile, not just the last uploaded blob.
 Keep a backend interface:
 
 ```ts
-type VoiceBackend = "voxcpm2-hifi" | "voxcpm2-lora" | "indextts2" | "f5-tts";
+type VoiceBackend =
+  | "voxcpm2-hifi"
+  | "voxcpm2-lora"
+  | "indextts2"
+  | "f5-tts"
+  | "fishaudio-s2-pro";
 ```
 
 Backend order:
@@ -181,6 +196,9 @@ Backend order:
    experiments, especially Chinese.
 4. `f5-tts`: speed baseline and fallback; good for local throughput, but
    validate zh-Hant and speaker similarity before productizing.
+5. `fishaudio-s2-pro`: local MLX/TypelessMLX fallback candidate when
+   IndexTTS2/F5-TTS are not installed. Keep it honestly labeled; do not use it
+   as IndexTTS2 evidence.
 
 ## Milestones
 
@@ -205,8 +223,10 @@ render/stability harness is `scripts/voice_clone_regression.py`. It renders
 worker through `--hot-worker-url`, can run from a ready
 `.anyvoice/voices/local-default/profile.json` via `--profile-json` only after a
 passing transcript-validation report and strict profile verifier, repeats each
-case, stores metadata/audio, and emits a JSON + HTML review report. It does not
-run ASR itself.
+case, stores metadata/audio, and emits a JSON + HTML review report. The fixture
+now includes `history_failed_self_voice`, a user-provided failed local-history
+target with source run IDs, so regressions keep one real prior failure in the
+suite. It does not run ASR itself.
 
 Gate orchestration status: `scripts/run_voice_quality_gate.py` now runs the
 full eval path in one command: basic profile readiness verification, profile
@@ -222,17 +242,24 @@ ASR status: `scripts/transcribe_voice_regression.py` consumes the regression
 
 Speaker identity status: `scripts/score_speaker_similarity.py` now consumes the
 same regression `report.json`, compares each render to its recorded reference,
-and writes scorer-compatible `speaker.json`. The built-in `mfcc-cosine` backend
-is an immediately runnable local proxy; `resemblyzer` and `speechbrain-ecapa`
-are supported when those packages are installed. The script now has
-`--list-backends`, and `auto` prefers `speechbrain-ecapa` when the SpeechBrain,
-Torch, and Torchaudio dependencies are present, then `resemblyzer`, then the
-MFCC proxy. ECAPA or another speaker-verification model is still the target
-backend for a stronger product claim, but the pipeline no longer has a missing
-artifact between render and identity scoring. Product-proof quality gates can
-now pass `--require-speaker-backend speechbrain-ecapa`; the gate blocks before
-rendering if `auto` would fall back to the MFCC proxy or if the ECAPA stack is
-not installed. `--speaker-python` / `ANYVOICE_SPEAKER_PYTHON` points the
+and writes scorer-compatible `speaker.json`. When `--profile-json` is provided,
+it also compares each profile render against the selected enrollment clips and
+records per-clip plus min/avg profile-reference similarity; strict scoring uses
+the lower of the prompt-reference and profile-reference similarity for the
+speaker identity verdict. The built-in `mfcc-cosine` backend is an immediately
+runnable local proxy; `resemblyzer` and `speechbrain-ecapa` are supported when
+those packages are installed. The script now has `--list-backends`, and `auto`
+prefers `speechbrain-ecapa` when the SpeechBrain, Torch, and Torchaudio
+dependencies are present, then `resemblyzer`, then the MFCC proxy. ECAPA or
+another speaker-verification model is still the target backend for a stronger
+product claim, but the pipeline no longer has a missing artifact between render
+and identity scoring. Product-proof quality gates can now pass
+`--require-speaker-backend speechbrain-ecapa`; the gate blocks before rendering
+if `auto` would fall back to the MFCC proxy or if the ECAPA stack is not
+installed. Profile-based quality gates pass the profile manifest into the
+speaker scorer, so product proof measures identity against the reusable
+enrollment set instead of only the one selected prompt clip. `--speaker-python`
+/ `ANYVOICE_SPEAKER_PYTHON` points the
 speaker check and scoring step at the Python env that owns `torch`,
 `torchaudio`, and `speechbrain`; when unset, the gate defaults to the synthesis
 Python so local VoxCPM and ECAPA dependencies can live together.
@@ -253,7 +280,13 @@ optional baseline comparison. If ASR transcripts are missing, pronunciation is
 explicitly marked `missing_asr`; if a previous score is provided, the scorer
 checks the 50%+ CER/WER reduction bar used by this plan. When `--speaker-json`
 is supplied, strict scoring also requires every render to meet the speaker
-similarity threshold.
+similarity threshold. Strict scoring now also requires audio metrics for every
+render and rejects clipping above the configured `--max-clipping-ratio`, so the
+duration/clipping measurement requirement is part of the pass gate rather than
+only HTML-report metadata. Stability is proof-bound as well: strict scoring
+requires at least three successful repeats per case and numeric duration-span,
+RMS-span, and pairwise-waveform-correlation metrics before a stability verdict
+can pass.
 The CER/WER scorer now folds common Simplified/Traditional glyph variants before
 comparison. This prevents ASR output like `重庆` from being counted as a
 pronunciation miss against an expected `重慶`, while the enrollment contract
@@ -265,24 +298,56 @@ becoming false CER/WER regressions.
 Paired A/B status: when the gate renders `--clone-mode both`, it now scores
 `prompt` as the current zero-shot baseline against `hifi` as the candidate in
 the same report. This keeps the 10x-quality claim honest: bad prompt-only
-baseline groups can fail, but hifi must pass the absolute gates and satisfy the
-configured paired CER/WER reduction before the quality gate can pass.
+baseline groups can fail, but hifi must pass the absolute gates before the
+paired proof is considered. The paired scorer is now ceiling-aware: if the
+baseline already has zero CER/WER for a case, that case is treated as a
+no-regression ceiling instead of an impossible reduction target. The product
+verdict uses aggregate evidence: no candidate group failures, no pronunciation
+regression, non-negative average speaker delta, aggregate latency within the
+configured tolerance, and at least one aggregate CER/WER reduction metric at the
+configured threshold. Native regression renders now record `renderSeconds`,
+external render manifests can provide the same field, and paired scoring records
+per-case latency while judging the product proof on aggregate latency. That
+makes the latency pass bar measurable without failing on single-render timing
+noise.
 The regression HTML report is also blind by default: paired renders are shown
 as Sample A/B, reviewer choices are saved locally and exportable as JSON, and
 the prompt/hifi answer key stays collapsed until after listening. That makes
-the subjective 80% preference bar collectable instead of relying on memory.
+the subjective no-regression bar collectable instead of relying on memory.
 The completion audit now enforces that bar: save the exported review JSON next
 to the product proof `report.json` as `review.json` or `report.review.json`.
-The report page now has a `Download review.json` button; that downloaded JSON
-includes the reviewed `report.json` path and SHA-256, and
-`scripts/audit_voice_clone_goal.py` rejects review files that do not match the
-product report hash. It reconstructs the blind order from the report and blocks
-completion unless the hifi candidate wins at least 80% of reviewed prompt-vs-hifi
-rounds with no missing choices or rerender requests.
+The report page now has a `Save review.json` button when served through
+`scripts/serve_voice_review.py`, plus a `Download review.json` fallback. The
+exported JSON includes the reviewed `report.json` path, SHA-256, status, and
+review stats, and
+`scripts/audit_voice_clone_goal.py` rejects review files that do not point at
+the audited product report path or do not match the product report hash. It
+reconstructs the blind order from the report and blocks completion only when
+the review is incomplete, asks for rerender, contains invalid choices, or
+prefers prompt over hifi. The export also supports an explicit
+selected-rounds mode: `reviewScope: "selected"` with
+`minimumReviewedRounds: 7` can clear the current operator gate while preserving
+`totalReportRounds`, so later blind rounds can be added without pretending they
+were already reviewed.
+When a full blind review requests rerender for only a subset of cases, keep the
+original `review.json` as the raw operator record and merge the replacement
+subset after it is reviewed:
+`scripts/merge_voice_subjective_reviews.py --base-review <full>/review.json
+--base-report <full>/report.json --replacement-review <rerender>/review.json
+--replacement-report <rerender>/report.json --out <full>/report.review.json`.
+The merge proof translates A/B labels through candidate/baseline roles before
+writing the full-review replacement, and the audit prefers `report.review.json`
+over the sibling raw `review.json`.
 Regression renders now use the same production text-prep contract: raw target
 text is kept beside the model-facing preset-pronunciation target, and the
 `text-prep.json` proof is passed through to worker metadata. That prevents the
 quality gate from measuring a different pronunciation path than the app.
+Long-form chunked app synthesis now rewrites final run metadata back to the
+full request-level text-prep proof and records per-chunk raw/model text evidence,
+so concatenated output is not left with only the first chunk's metadata.
+Chunked and segment hot-worker responses now use the same NDJSON parser as
+single-pass hot-worker generation, so worker `type=error` events fail the run
+instead of being silently drained as plain text.
 Runtime stability now has a shared seed contract instead of relying on implicit
 Torch randomness. `ANYVOICE_STABILITY_SEED` defaults to `1337`, one-shot
 synthesis passes it as `--seed`, the hot worker accepts `stabilitySeed`, and
@@ -296,7 +361,10 @@ model-facing target in native VoxCPM2 regression runs, external backend
 shootout plans, and registered external-render reports, while raw target text
 remains untouched for scoring and review. The default eval set includes
 `zh_hant_custom_readings` so a heard pronunciation bug can become a durable
-gate case instead of a one-off textarea tweak.
+gate case instead of a one-off textarea tweak. The 2026-06-04 blind review
+rejected the earlier `重試 -> 重新測試` repair, so that override is removed:
+future runs must keep the spoken target aligned with the raw text unless a
+reviewer explicitly approves the model-facing substitution.
 
 Current local evidence: after rescanning older runs with
 `scripts/reanalyze_voice_profile_runs.py --build-profile`, the local profile
@@ -322,8 +390,9 @@ The runner now auto-applies built-in safe presets for known risky polyphones and
 product names in the target text, turning likely misreads into an explicit
 model-facing text change before synthesis. Custom user replacements remain
 available for terms outside that preset list.
-The studio preview now runs that same auto-preset text-prep path, so the user
-can see the exact model-facing target before synthesis. Mixed-script warnings
+The studio preview now runs that same auto-preset text-prep path and renders a
+raw/model-facing text diff, so the user can see the exact target before
+synthesis. Mixed-script warnings
 also include the concrete marker hits, such as `这->這` or `声->聲`, so
 Simplified/Traditional drift can be fixed at the source instead of treated as a
 vague Mandarin pronunciation issue. The UI now also exposes a manual
@@ -422,11 +491,12 @@ phrased as an example so the user is less likely to improvise while reading and
 break ASR transcript alignment.
 When coverage is missing, the profile panel recommends the next scripted prompt
 that fills the highest-priority gap. The guided action records that prompt,
-keeps the stop button disabled until the recommended duration and active-voice
-time are reached, and submits it to the profile analyzer after the user stops
-recording. Saved browser drafts now carry both total duration and active-voice
-duration; known silence-heavy drafts are blocked from batch import before they
-can become low-VAD rejected clips.
+keeps the stop button disabled until the recommended duration and, when the
+browser live audio meter is available, active-voice time are reached, and submits
+it to the profile analyzer after the user stops recording. Saved browser drafts
+also carry both total duration and post-decode active-voice duration; known
+silence-heavy drafts are blocked from resubmit or batch import before they can
+become low-VAD rejected clips.
 The ready-profile generation path now applies the same script discipline to the
 target text: Simplified, mixed, or unproven Chinese is blocked for digital-voice
 renders so the fixed Traditional Mandarin profile is not evaluated against
@@ -442,6 +512,10 @@ Enrollment progress is now script-level, not just aggregate counts: the UI maps
 the five fixed prompts to accepted, rejected, or missing states. A missing or
 rejected row can start recording that exact prompt and auto-submit it to profile
 enrollment, reducing the chance that the user records the wrong category again.
+The active Build tab now seeds its guided recording rows from the detailed
+profile manifest when available, so accepted and rejected scripted transcripts
+stay tied to their exact prompt rows instead of being inferred from aggregate
+`clipCount`.
 Batch import is also available for a cleaner recording workflow:
 `scripts/prepare_voice_profile_recording_kit.py` creates a local folder with
 the prompt files, a `recordings/` directory, a ready import manifest, and the
@@ -477,7 +551,8 @@ after all kit WAVs exist. It
 uses `ANYVOICE_RECORDER_COMMAND` / `--recorder-command` when the default `rec`
 or macOS `ffmpeg` microphone path is not available. The next-step command uses a
 short countdown and writes sidecar recording metadata with the exact transcript
-SHA-256 for each take. `--rehearse --no-default-recorder --auto-duration`
+SHA-256, resolved audio path, byte size, and audio SHA-256 for each take.
+`--rehearse --no-default-recorder --auto-duration`
 prints the exact cue sheet, per-prompt targets, and required pronunciation
 coverage without requiring a recorder; `--dry-run` shows the exact recorder
 command per clip before touching the microphone. `--preflight` is the stricter
@@ -499,9 +574,10 @@ without parsing the full JSON payload.
 If the audio is recorded externally, for example in Voice Memos or on a phone,
 `scripts/normalize_voice_profile_recording_kit_audio.py` maps files named by
 clip id (`profile-clip-01.m4a`, `profile-clip-02.wav`, etc.) into the manifest
-WAV paths, writes transcript-hash sidecars, and can immediately run the same kit
-check with `--check`. That keeps the external-recorder path inside the same
-strict prompt/transcript proof chain instead of requiring manifest edits.
+WAV paths, writes transcript/audio-hash sidecars, and can immediately run the
+same kit check with `--check`. That keeps the external-recorder path inside the
+same strict prompt/transcript/audio proof chain instead of requiring manifest
+edits.
 The localhost profile panel auto-loads the `local-default-current` kit, so the
 same normalize/check path is visible on page load instead of requiring a new
 timestamped kit. The panel's bulk upload path now derives expected files and
@@ -540,8 +616,10 @@ spends time analyzing clips. Non-WAV files are decoded with `ffmpeg` for the
 same active-voice gate; undecodable files remain blocked instead of slipping
 through as duration-only evidence. It also checks generated prompt files
 against `manifest.json`, rejects stale terminal `.recording.json` transcript
-hashes, rejects explicit non-scripted recording-kit rows, and includes exact
-Simplified/Traditional marker hits when transcript script validation fails.
+hashes, rejects sidecars whose resolved audio path or audio SHA-256 no longer
+match the current recording, rejects explicit non-scripted recording-kit rows,
+and includes exact Simplified/Traditional marker hits when transcript script
+validation fails.
 When a generated manifest carries `durationTargetSec` /
 `recommendedDurationSec`, the checker also rejects takes recorded more than two
 seconds below that prompt-specific target, so a long Mandarin/polyphone prompt
@@ -563,6 +641,15 @@ in the run evidence. The `--skip-kit-check` escape hatch is now explicitly
 unsafe: migration/debug imports must pass
 `--allow-unsafe-skip-kit-check --unsafe-skip-kit-check-reason "<reason>"`, and
 that accepted reason is recorded in the workflow JSON.
+Direct `scripts/import_voice_profile_clips.py --manifest <generated-kit>` calls
+now enforce the same pre-import recording-kit check when `manifest.json` carries
+generated kit metadata such as `promptSet`, `requiredClips`, or per-row prompt
+targets. The same unsafe skip flags are required to bypass that direct-import
+gate, so stale sidecars or swapped audio cannot bypass the proof chain by
+skipping the enroll wrapper. When a generated-kit row omits `sourceKind`, direct
+import now defaults it to `scripted` instead of the generic upload default, so
+fixed-prompt recording-kit evidence keeps the same provenance whether it enters
+through the wrapper or the lower-level importer.
 The same rule applies to manifest-provided quality values:
 `--trust-manifest-quality` is only for already analyzed migration/debug
 manifests, and it now requires
@@ -588,7 +675,9 @@ profile, and returns the updated gate status. Bulk import repeats the same
 Simplified / mixed-Chinese transcript rejection before analyzer work and
 requires filenames containing `profile-clip-01` through `profile-clip-05`; this
 prevents a wrong audio/transcript pairing from becoming another pronunciation
-bug. For the 10x extended kit, use the generated manifest commands so
+bug. The API treats `profile-clip-XX` rows or filenames as fixed-prompt scripted
+evidence and rejects an explicit non-scripted source kind for that shape, while
+generic bulk uploads continue to default to `uploaded`. For the 10x extended kit, use the generated manifest commands so
 `profile-clip-01` through `profile-clip-10` stay paired with the extended
 transcripts. After a successful browser bulk import, the studio starts
 transcript validation, strict profile verification, and the completion audit
@@ -604,16 +693,21 @@ quality gate without unexpectedly reopening recording or exporting a LoRA
 dataset.
 `scripts/import_voice_profile_clips.py` reads a JSON/JSONL/CSV manifest of
 audio paths plus exact transcripts, writes profile enrollment run evidence,
-runs the same analyzer, and can rebuild the profile manifest. The example
-manifest is `examples/voice_profile_import_manifest.example.json`.
+runs the same analyzer, and can rebuild the profile manifest. For generated
+recording-kit manifests, it first runs the recording-kit pre-import gate unless
+an explicit unsafe skip reason is provided. The example manifest is
+`examples/voice_profile_import_manifest.example.json`.
 Post-enrollment verification is now a first-class gate:
 `scripts/verify_voice_profile_ready.py` loads the profile manifest and refuses
 the digital-voice path until status, selected clip count, pronunciation
 coverage, selected audio duration, clip metadata, user-recorded source
 provenance, strict zh-Hant raw transcripts, and audio files all pass. The fast
-minimum remains five selected clips / 30s; the 10x audit and LoRA handoff require
-ten selected clips / 60s plus extended product preset ids such as
-`polyphone:bank-president` and `brand:voxcpm2`. It
+minimum remains five selected clips / 30s. The temporary 10x product audit and
+LoRA handoff gate allow seven selected clips / 60s while the remaining extended
+capture is backfilled; the extended ten-clip set still carries additional
+clone-depth and backend-shootout coverage such as `polyphone:bank-president`
+and `brand:voxcpm2`. Missing extended profile-reference presets are reported as
+focused recording cues rather than as the current capture-depth blocker. It
 recomputes script from `transcriptRaw`, reports exact Simplified/Traditional
 marker hits when script validation fails, and rejects selected clips marked
 `profile` or `sample` so generated/sample evidence cannot become a reusable
@@ -625,17 +719,30 @@ The verifier's audio-file skip path is also explicit unsafe-only:
 `--allow-unsafe-audio-exists-bypass --unsafe-audio-exists-bypass-reason "<reason>"`,
 and the accepted reason is reported as `audioFileCheck`.
 When transcript validation is required, the verifier also rejects validation
-JSON for a different profile manifest, even if the clip IDs happen to match.
+JSON that omits the current profile SHA-256 or points at a different profile
+manifest, even if the clip IDs happen to match.
 `scripts/voice_profile_next_step.py` is the workflow router around that gate: it
 loads the strict profile verifier plus the current recording-kit checker and
 returns one next action: prepare the kit, record missing WAVs, enroll a ready
 kit, validate transcripts, run the quality gate, prepare the LoRA handoff, or
 prepare the IndexTTS2/F5 backend shootout.
+When a fast-ready profile still lacks temporary seven-clip product capture depth
+and the current extended kit is incomplete, the router prioritizes recording-kit repair/recording before
+ASR transcript validation, so the audit, terminal brief, and profile panel point
+at the same first physical blocker.
+When the latest matching full hifi quality gate is a review/fail because score
+evidence reports missing profile-reference pronunciation presets, the same
+router reads the score artifact, maps those presets back to the recording-kit
+clips, and returns a focused profile-reference recording action before another
+full quality-gate render. This keeps `voice_profile_next_step.py` aligned with
+the goal audit's repair queue instead of wasting a rerun on unchanged reference
+evidence.
 Use `--brief` for the operator-facing recording-session view: it prints status,
 the exact next command, missing clips, the first prompt, mic/preflight commands,
 the focused `--clip ... --check-selected` command, the proof-chain command, and
 ASR/speaker backend readiness without requiring the caller to parse JSON. The
-router also includes this brief in its JSON payload, and the profile check panel
+router accepts `--json` as an explicit machine-readable alias for its default
+JSON output, rejects `--brief --json`, also includes this brief in its JSON payload, and the profile check panel
 renders it beside the structured cue sheet so the app and terminal present the
 same next action.
 It now routes stale prompt files, non-scripted rows, mixed-script transcripts,
@@ -649,7 +756,11 @@ That keeps the 10x path from depending on remembering which script comes next.
 With `--run`, the router executes only the safe next step by default: if
 recording is needed it runs preflight rather than opening the microphone.
 Recording, enrollment, and ASR/quality-gate work are separate phases requiring
-`--allow-recording`, `--allow-enroll`, or `--allow-expensive`. With
+`--allow-recording`, `--allow-enroll`, or `--allow-expensive`. Focused
+quality-gate profile-reference repairs keep their mapped clip list when
+recording is explicitly allowed: non-interactive runs use the action's
+`nonInteractiveCommand` with the same `--clip ...` selectors and `--yes`, not
+the generic `--next-missing` path. With
 `--auto-advance`, the router re-checks after each successful allowed phase and
 continues until the next blocked or unpermitted phase, so a finished recording
 kit can move directly to enrollment, then transcript validation, then the quality
@@ -699,15 +810,56 @@ preflight brief, while direct `voice_profile_next_step.py --run` still requires
 `--allow-lora-export` before writing the dataset.
 `scripts/audit_voice_clone_goal.py --fail-unless-complete` is the read-only
 completion audit for this plan. Use `scripts/audit_voice_clone_goal.py --brief`
-when the next step is a recording-session checklist instead of machine-readable
-JSON. It refuses to call the goal complete until the recording kit, strict
-profile verifier, ASR transcript validation, proof backend environment, 10
-selected clips / 60 seconds of capture depth, non-dry-run quality gate, paired
-10x product proof, LoRA dataset, LoRA training job, readable adapter proof, and
-a non-dry-run LoRA quality gate with the verified adapter loaded all have
-current evidence. The audit now also emits the proof-backend check
-command even when the recording kit is the first blocker, so missing
-Faster-Whisper or `speechbrain-ecapa` setup is visible before recording starts.
+or `npm run voice:clone:audit` when the next step is a recording-session
+checklist instead of machine-readable JSON; use
+`npm run --silent voice:clone:audit:json` for a pure structured payload without
+npm's command header. It refuses to call the goal complete until the
+recording kit, strict profile verifier, ASR transcript validation, proof backend
+environment, seven selected clips / 60 seconds of temporary product capture
+depth, non-dry-run hifi quality gate, paired 10x product proof, LoRA dataset,
+LoRA training job, readable adapter proof, and a non-dry-run LoRA quality gate
+with the verified adapter loaded, plus an accepted backend-selection proof that
+still recomputes from its score JSON and matches the audited voice profile, all
+have current evidence. Quality-gate and product-proof transcript validation
+evidence must bind back to the audited profile path, voice profile ID, profile
+hash, and selected clip rows. The audit now also emits
+`completionRequirements`: a fixed, ordered checklist for every 10x gate with
+the requirement text, pass/block status, and the stage-specific evidence used
+for that decision. `firstIncompleteRequirement` mirrors the first failed
+checklist item, so future UI/automation code can prove completion from
+structured requirements instead of scraping stage labels or brief text. For
+profile-reference quality-gate failures, it carries through
+`scoreReviewGroups[].profileReference` and ASR samples for each review group,
+emits `nextProfileReferenceRecordingCommands` for individual focused cue clips,
+`nextProfileReferenceRecordingBatchCommand` for recording all known missing
+profile-reference clips in one session, and
+`nextPostProfileReferenceRecordingProofCommand` for the no-microphone proof
+chain to run after those clips pass `--check-selected`.
+`nextQualityGateProbeCommands` lists partial `--case` probes for review groups;
+those probes are diagnostics and are not accepted as the full hifi completion
+gate. `nextQualityGateRepairActions` orders the operator path for a blocked
+quality gate: missing profile-reference batch recording first, proof-chain
+refresh second, then the partial case probes. Each action carries a `status`
+such as `ready` or `waiting`, and waiting probes include `blockedUntil` so
+automation does not run diagnostics before the required profile-reference proof
+refresh. These actions are repair guidance, not completion evidence. The
+`POST /api/voice-profile/goal-audit` TypeScript contract preserves that checklist
+as `completionRequirements`, and the AnyVoice browser client exposes it through
+`fetchVoiceCloneGoalAudit`, so browser surfaces can render the same evidence
+without shelling out or re-parsing brief text. The Build tab also turns the
+audited `kitManifest` into a cue-sheet link through the recording-kit API, so
+the browser action opens the exact fixed-prompt kit the audit checks, and it
+shows the full audited missing-kit clip list, the first missing clip transcript,
+and the focused one-clip record command from audit evidence so the next
+recording cue is visible without opening a terminal. It also renders the
+recording preflight evidence, recorder source, duration targets, microphone
+smoke-test command, preflight command, and external recording normalization
+check from audit evidence. The same panel now carries the post-recording
+product-proof and LoRA-handoff commands, so the browser path
+does not dead-end at recording. Proof-backend readiness and backend check
+commands from the `proof_environment` checklist row render even when the
+recording kit is the first blocker, so missing Faster-Whisper or
+`speechbrain-ecapa` setup is visible before recording starts.
 When the first blocker is missing kit audio, the audit includes the first missing
 transcript plus a focused `--check-selected` recording command so the operator
 can validate one take before continuing. It also embeds the no-microphone
@@ -748,23 +900,43 @@ The CLI, recording-kit enrollment workflow, next-step router, and localhost
 transcript-validation API share the `ANYVOICE_ASR_PYTHON` /
 `--transcript-python` / `--asr-python` contract, so the ASR proof path uses the
 Brenda Faster-Whisper env instead of whichever shell Python launched the action.
-Quality-gate artifacts include an `inputs` block with the profile path and gate
-parameters. The router scans `generated/voice-regression/**/quality-gate.json`
-for the latest matching non-dry-run hifi `status=pass` gate, then advances to
-the paired product proof gate. It only advances to `prepare_lora_dataset` after
-the paired `prompt` vs `hifi` product proof passes with `speechbrain-ecapa`.
+Quality-gate artifacts include an `inputs` block with the profile path, the
+canonical profile SHA-256, and gate parameters. The hash excludes later applied
+`loraPath`, `loraAdapter`, and `preferredBackend` policies, but catches changed
+clip/transcript evidence. The router scans
+`generated/voice-regression/**/quality-gate.json` for the latest matching
+non-dry-run hifi `status=pass` gate with the current profile hash, then
+advances to the paired product proof gate. It only advances to
+`prepare_lora_dataset` after the paired `prompt` vs `hifi` product proof passes
+with `speechbrain-ecapa` and the same current profile hash.
+Quality-gate consumers also reopen the transcript-validation JSON named by the
+gate (`proofs`, `inputs`, or `paths`) and require that report to be `status=pass`
+for the same profile, so a hand-edited gate cannot advance on boolean proof flags
+alone. LoRA export, training handoff, adapter verification, adapter application,
+runtime use, and the completion audit also reopen the quality-gate
+score/source-report artifacts and reject them if their top-level, group, or
+render `voiceProfileId` / `profileSha256` evidence no longer matches the current
+profile.
 Dry-run gates and hifi-only gates remain useful planning evidence but do not
 unlock LoRA export.
 Profile quality-gate proof skips are now explicit unsafe operations:
 `--skip-profile-verify` or `--skip-transcript-validation` require
 `--allow-unsafe-profile-gate-bypass --unsafe-profile-gate-bypass-reason "<reason>"`,
 and the accepted reason is stored in the gate artifact. This keeps migration or
-debug reports visibly separate from measured digital-voice proof.
+debug reports visibly separate from measured digital-voice proof. The completion
+audit uses the same strict predicate for paired product gates, so an unsafe
+skip-bypassed `prompt` vs `hifi` report cannot satisfy the 10x product proof or
+unlock LoRA export. Base profile quality-gate discovery ignores adapter-loaded
+reports with `inputs.loraPath`; those are audited only by the dedicated
+`lora_quality_gate` stage, so a bad LoRA run cannot mask a valid zero-shot
+profile gate or vice versa.
 The top-level completion audit also requires a blind subjective review artifact
 for the paired product proof. Metrics alone are not enough for `complete`: the
 review JSON must be exported from `report.html`, saved beside the product
-`report.json`, carry the matching report SHA-256, and show at least 80% hifi
-preference over prompt.
+`report.json`, carry the matching report SHA-256, and not prefer prompt over
+hifi. The audit rebuilds rounds only from existing audio and rejects duplicate
+prompt/hifi samples for the same case and repeat, so ambiguous A/B evidence
+cannot satisfy the subjective bar.
 At the same ready-profile stages, the router also surfaces
 `prepare_voice_backend_shootout.py` as a secondary command. That keeps the
 alternative-backend 10x route visible at the moment there is finally enough
@@ -784,24 +956,26 @@ alignment gate from the same panel and refreshes strict verification afterward,
 so transcript mismatch is a visible localhost state rather than a separate CLI
 handoff.
 The guided enrollment path now persists each fixed prompt recording as a
-browser draft keyed by prompt index. Reloads or failed enrollment attempts do
-not force the user to re-record every line; the profile checklist can re-submit
-each saved draft directly to `POST /api/voice-profile/enroll`. The next-prompt
-recommendation treats those saved drafts as progress, so browser capture moves
-to the next missing line instead of repeatedly suggesting the first un-enrolled
-prompt. The browser recording session control uses the same draft-aware order:
-one click starts the next missing prompt, auto-stops each take after the guided
-duration and voice-active gate, and queues the next prompt with a short
-cancelable countdown after saving/enrollment. When that session records the last
-missing prompt, it automatically imports the completed draft set through
-`POST /api/voice-profile/import`, keeping browser-recorded drafts and external
-bulk-upload files on the same fixed-transcript enrollment contract. Successful
-browser import automatically starts ASR transcript validation, strict profile
-verification, and the 10x completion audit, making the next proof gate visible
-instead of optional. Newly recorded drafts also store their browser-measured
-duration, so the checklist can flag known clips under the 6-second floor or over
-the 20-second ceiling and block batch import before another analyzer run is
-wasted on invalid material.
+browser draft keyed by profile, script pack, and prompt index. Metadata is kept
+in `localStorage` for prompt ordering, and the audio blob is kept in IndexedDB
+when the browser supports it. Reloads or failed enrollment attempts do not force
+the user to re-record every line: the line list marks the saved take as a draft,
+can re-submit the draft directly to `POST /api/voice-profile/enroll`, and treats
+drafted prompts as progress when choosing the next recording line. Newly
+recorded drafts also store their browser-measured duration, estimated
+active-voice duration when local decoding is available, file size, MIME type,
+and capture settings, so the checklist has enough local evidence to flag known
+clips under the 6-second floor, over the 20-second ceiling, or below the
+5.2-second active-voice gate before another analyzer run is wasted on invalid
+material. Draft resubmission and batch import now check stored duration and
+stored active-voice duration before reopening the draft blob or posting to
+enrollment, so stale short/long/silence-heavy drafts cannot become profile
+evidence through the browser path.
+The browser-session bulk import/validation cascade is now wired into the Build
+tab: saved valid drafts can be imported in backend-sized batches through
+`POST /api/voice-profile/import`, then the studio automatically starts ASR
+transcript validation, strict profile verification, and the 10x completion
+audit before refreshing the row statuses from the updated profile manifest.
 Browser capture now requests mono 48 kHz audio as an ideal format and asks the
 browser to disable echo cancellation, noise suppression, and automatic gain
 control when supported. Those are soft constraints, but they keep profile
@@ -809,13 +983,19 @@ recordings closer to the speaker's real timbre instead of letting browser DSP
 reshape each take differently. The live recorder also displays the browser's
 reported capture settings and warns when processing remains enabled, so a bad
 capture path is caught before the full ten-clip profile run. Browser profile
-drafts persist those capture settings and block one-click import when a draft is
-known to have echo cancellation, noise suppression, or automatic gain enabled.
+drafts persist those capture settings and block one-click submit/import when a
+draft is known to have echo cancellation, noise suppression, or automatic gain
+enabled.
 Guided profile recording now fails before saving a draft when the active browser
 mic path reports that processing is still enabled, which keeps bad browser DSP
 out of the 10x profile evidence set. A browser mic preflight button runs the
-same capture-settings check without creating a draft, so the mic path can be
-validated before starting the guided ten-clip session.
+same capture-settings check without creating a draft, reports the observed
+sample rate/channel/DSP flags, and stops the track immediately, so the mic path
+can be validated before starting the guided ten-clip session. The enrollment and
+bulk import APIs repeat the same check when browser capture settings are
+included and persist those settings in enrollment run metadata, so
+browser-recorded profile evidence cannot bypass the DSP guard through a
+different upload path.
 For the extended ten-prompt kit, those imported browser drafts are first-class
 profile evidence: once the selected profile reaches ten clips and at least sixty
 seconds of selected audio, stale external recording-kit files do not block the
@@ -828,9 +1008,13 @@ recording-kit audit stage.
 - Add a preview diff showing what the model will read.
 
 Status: implemented as explicit replacement controls rather than silent
-conversion. The UI shows the model-facing target preview, API validation rejects
-malformed override lines, worker/proxy form data preserves the field, and run
-history stores the override list. Known polyphone/brand suggestions carry typed
+conversion. The active workspace composer and the legacy studio both show the
+model-facing target preview; the workspace composer also exposes per-run reading
+override rows and preset chips. API validation rejects malformed override lines,
+worker/proxy form data preserves the field, and run history stores the override
+list, the resolved profile reference, and the prepared raw/model text payload
+used for synthesis. Known
+polyphone/brand suggestions carry typed
 preset metadata (`polyphone` / `brand`, `source=preset`, stable `presetId`)
 while arbitrary user entries are marked `custom`. Explicit
 `pinyin:` / `zhuyin:` / `[reading]` lines are accepted as user-supplied
@@ -852,10 +1036,10 @@ a ready profile manifest, validate the ten-clip / 60s default LoRA bar, then the
 exporter reruns the strict verifier with the transcript-validation report before
 writing any dataset files. That blocks ready-looking manifests with missing
 coverage, bad provenance, missing audio, wrong script, or weak clip metadata.
-The exporter also requires a passing
-same-profile transcript-validation JSON plus a matching non-dry-run paired
-product-proof quality-gate JSON, and writes `dataset.json` plus `manifest.train.jsonl`,
-`manifest.val.jsonl`, and `manifest.all.jsonl`. It can
+The exporter also requires a passing same-profile transcript-validation JSON
+plus a matching non-dry-run paired product-proof quality-gate JSON with the
+current profile SHA-256, and writes `dataset.json` plus
+`manifest.train.jsonl`, `manifest.val.jsonl`, and `manifest.all.jsonl`. It can
 copy audio into the export folder with `--copy-audio`; otherwise it references
 the profile clip paths. Each row now records the source profile audio path plus
 audio and transcript SHA-256 hashes, giving the later training handoff a
@@ -873,33 +1057,99 @@ source profile audio path, and audio file, and writes `train_config.json`,
 `train.sh`, and a README under
 `generated/voice-lora-training-jobs/`. The config records LoRA hyperparameters,
 the expected `output/lora_weights.ckpt`, `output/adapter-proof.json`, AnyVoice
-runtime env, and post-train quality gate commands. The Brenda-installed VoxCPM
-package exposes LoRA load/runtime support plus `voxcpm.training` helpers, but no
-packaged `voxcpm train` CLI, so the generated `train.sh` requires an external
-trainer command before doing actual training. The completion audit does not let
-that scaffold create a false green: `lora_training_job` remains blocked until
-the generated config has `trainer.status=ready` with a non-empty command
-template, the audit run has `ANYVOICE_VOXCPM_TRAINER_COMMAND` set, or a passing
-`output/adapter-proof.json` exists. The same audit also requires the LoRA dataset
-to carry the full 10 selected clips and at least 60 seconds of selected audio,
-so a five-clip minimum profile cannot become the final digital-clone proof. It
-also validates the dataset's proof metadata:
+runtime env, trainer preflight, and post-train quality gate commands.
+`scripts/train_voxcpm_lora.py` is the repo-local VoxCPM LoRA trainer entry
+point. Its `--dry-run` mode validates train/val manifests, audio paths, hashes,
+and trainer arguments without loading the model or writing an adapter; real
+training must still load VoxCPM, train LoRA parameters, and write
+`output/lora_weights.ckpt`. `scripts/check_voxcpm_lora_trainer.py` preflights
+the generated config before a long training run: it revalidates the
+dataset/proof bindings, checks output paths, validates the trainer command
+template, and confirms the selected Python can import `voxcpm.training` with
+`load_audio_text_datasets`, `HFVoxCPMDataset`, and `BatchProcessor`. The
+Brenda-installed VoxCPM package exposes LoRA load/runtime support plus those
+`voxcpm.training` helpers, but no packaged `voxcpm train` CLI, so the generated
+`train.sh` now points operators at the repo-local trainer command template. The
+completion audit does not let that scaffold create a false green:
+`lora_training_job` remains blocked
+until the generated config has `trainer.status=ready` with a valid command
+template, the audit run has a valid `ANYVOICE_VOXCPM_TRAINER_COMMAND` set, or a
+passing readable `output/adapter-proof.json` exists. Metadata-only adapter proofs keep
+the stage partial and route the operator to
+`scripts/verify_voxcpm_lora_adapter.py --require-readable-checkpoint`. Valid trainer templates must include
+`{config}`, `{output_dir}`, and `{adapter_path}`; `{train_manifest}` and
+`{val_manifest}` are optional. Both `prepare_voxcpm_lora_training_job.py` and
+the generated `train.sh` reject unknown placeholders or incomplete templates, so
+an env override cannot silently train into the wrong output path. The same audit
+currently allows the LoRA handoff at seven selected clips and at least 60 seconds
+of selected audio, while the full 10 selected clips remain the final clone-depth
+target. A five-clip minimum profile cannot become the final digital-clone proof.
+It also validates the dataset's proof metadata:
 normal handoffs require passing same-profile transcript-validation and
-non-dry-run paired product-proof quality-gate proof files, every dataset row must match the
-transcript-validation clip proof, and unsafe-bypassed datasets require
+non-dry-run paired product-proof quality-gate proof files with the dataset
+profile SHA-256, every dataset row must match the transcript-validation clip
+proof, and unsafe-bypassed datasets require
 `--allow-unsafe-dataset
 --unsafe-dataset-reason "<reason>"` so migration/debug exceptions are visible in
 `train_config.json`.
 After training, `train.sh` now runs `scripts/verify_voxcpm_lora_adapter.py` to
 prove the adapter path, byte size, SHA-256, dataset minimums, and proof metadata
 before writing `adapter-proof.json`. The verifier rejects train configs or
-adapter proofs that do not preserve the paired product-proof dataset marker. A
-plain environment can only produce a metadata proof; final acceptance uses the
-generated `--require-readable-checkpoint` command in the VoxCPM/Torch
-environment so readable LoRA tensor keys are confirmed. After that, the adapter
-proof's `qualityGateWithAdapter` command must pass a non-dry-run quality gate
-with `ANYVOICE_VOXCPM_LORA_PATH` set to the verified adapter and ECAPA speaker
-verification required.
+adapter proofs that do not preserve the paired product-proof dataset marker or
+whose `voiceProfileId` / `datasetProofs.profileSha256` no longer match the
+current voice profile.
+It also writes the training config SHA-256 into the adapter proof; apply and
+audit reject proofs whose `trainConfigSha256` no longer matches the current
+`train_config.json`, so post-verification trainer or hyperparameter edits force
+fresh adapter verification. The completion audit rechecks the same adapter proof
+profile hash so hand-edited or older proof JSON cannot stay green after a profile
+edit. A plain environment can only produce a metadata proof; final acceptance uses the generated
+`--require-readable-checkpoint` command in the VoxCPM/Torch environment so
+readable LoRA tensor keys are confirmed. After that, the adapter proof's
+`qualityGateWithAdapter` command must pass a non-dry-run quality gate with
+`ANYVOICE_VOXCPM_LORA_PATH` set to the verified adapter, ECAPA speaker
+verification required, the dataset's transcript-validation JSON passed through
+when the dataset was not unsafe-bypassed, and quality-gate evidence recording
+the adapter path, byte count, and SHA-256 from the run. That verified adapter
+must then be
+applied with `scripts/apply_voxcpm_lora_adapter.py`, which writes `loraPath`
+and a hash-bound `loraAdapter` policy into the profile. The apply script also
+rejects adapter proofs whose `datasetProofs.profileSha256` no longer matches
+the current profile, then rejects adapter-loaded quality gates whose
+`voiceProfileId` / `profileSha256` no longer match the current profile or whose
+profile / transcript-validation proof was skipped. A profile edit after LoRA
+verification or evaluation therefore forces fresh adapter proof and quality gate
+evidence before policy write. The applied policy now also carries the training config
+path and SHA-256; the apply step refuses adapter proofs that do not name an
+existing training config or whose proof hash does not match it, and profile
+loading, profile rebuilds, internal worker requests, runtime generation, and the
+completion audit all reject LoRA policies without that train-config evidence.
+LoRA apply and completion audit also require the source regression report's
+render metadata to prove `loraEnabled=true` and the same `loraPath`, so a
+hand-edited quality-gate wrapper cannot claim the adapter was loaded while the
+underlying renders were still zero-shot. Conversely, base paired product proof
+rejects adapter-loaded quality gates with `inputs.loraPath`; those reports must
+flow through the dedicated `lora_quality_gate` stage and cannot unlock the LoRA
+dataset export as if they were zero-shot `prompt` vs `hifi` evidence. The
+completion audit requires that
+applied policy, so a
+passing adapter-loaded quality gate cannot stay as a one-off env-var proof that
+normal profile generation would ignore. Runtime generation now also reopens the
+applied LoRA quality gate before spawning a worker, requires the gate to match
+the applied profile/adapter policy, and rechecks the report, ASR, speaker, and
+score artifact hashes plus the score JSON's source-report/ASR/speaker hash
+bindings. It also rechecks the transcript-validation proof path, SHA-256,
+`status=pass`, profile path, voice profile ID, profile hash, and selected-clip
+rows so an applied LoRA policy cannot run from a quality gate that later skips
+or points at stale transcript proof.
+Runtime rejects score/source-report artifacts whose top-level, group, or render
+profile evidence no longer matches the applied policy. Runtime also rechecks
+the quality-gate source report's ready `hifi` renders for
+`effectiveParams.loraEnabled=true` and the same `loraPath`, so a rehashed report
+cannot drop the proof that the measured run actually loaded the applied adapter.
+That prevents an already-applied `loraPath` from being used after the
+adapter-loaded proof artifacts have drifted, were re-hashed from another
+profile, or no longer prove adapter-loaded rendering.
 
 The runtime contract for a trained adapter is also wired:
 `ANYVOICE_VOXCPM_LORA_PATH` / `--lora-path` is passed through the Next runner,
@@ -909,11 +1159,14 @@ the one-shot `synthesize_voxcpm_anyvoice.py` bridge, and the preloaded
 key so a new adapter reloads once and then stays resident. Metadata records
 `loraEnabled`, `loraPath`, and LoRA config under `effectiveParams`, which lets
 LoRA output be compared against zero-shot profile output in the same regression
-pipeline. The remaining M4 work is the actual VoxCPM2 LoRA trainer command and
-a real trained adapter from qualified user clips; the post-training proof and
-runtime load path are now wired, but no real adapter can be accepted until the
-recording/profile gates produce usable clips, the adapter is readable, and the
-adapter-loaded quality gate passes.
+pipeline. Profile generation now prefers a strict profile's applied `loraPath`
+over the global env var, keeping per-speaker adapter ownership attached to the
+voice profile instead of the process environment. The remaining M4 work is the
+actual VoxCPM2 LoRA trainer command and a real trained adapter from qualified
+user clips; the post-training proof and runtime load path are now wired, but no
+real adapter can be accepted until the recording/profile gates produce usable
+clips, the adapter is readable, the adapter-loaded quality gate passes, and the
+adapter policy has been applied to the profile.
 
 ### M5: Alternative Backend Shootout
 
@@ -924,25 +1177,120 @@ adapter-loaded quality gate passes.
 Status: shootout contract added. `scripts/prepare_voice_backend_shootout.py`
 turns a ready profile/reference plus the fixed eval set into executable backend
 jobs: `jobs.json`, `manifest.json`, `render.sh`, and next commands for
-registration/scoring. It can use arbitrary backend ids such as `indextts2` and
-`f5-tts`, repeated cases, a shell command template, and the same target-aware
-profile reference selection as the VoxCPM2 regression harness. Profile-based
-plans require a passing same-profile transcript-validation report before any
-external backend jobs are written.
+registration/scoring/selection. The default plan now includes the
+`voxcpm2-hifi` baseline plus candidate backends such as `indextts2` and
+`f5-tts`; it can also use arbitrary backend ids, repeated cases, a shell command
+template, and the same target-aware profile reference selection as the VoxCPM2
+regression harness. Profile-based plans require a passing same-profile
+transcript-validation report before any external backend jobs are written.
 Renderer command templates are now validated up front: they must include the
 planned output WAV, reference audio, and model-facing text placeholder. If no
 template is supplied, the plan is explicitly marked `needs_renderer_command`
 and `render.sh` exits with a precise `ANYVOICE_BACKEND_RENDER_COMMAND`
 instruction instead of behaving like a loose TODO checklist.
+`scripts/render_voice_backend_job.py --preflight --manifest <manifest.json>`
+now checks planned render counts, backend-specific envs, local adapter support,
+and model cache state before `render.sh` runs. The current local-default
+shootout at `generated/voice-backend-shootouts/20260604-054441` is now fully
+rendered and registered: `voxcpm2-hifi`, `indextts2`, and `f5-tts` each have
+`27/27` ready, hashed WAVs (`81/81` total). The local IndexTTS2 path uses
+`solar2ain/mlx-indextts` plus the `vanch007/mlx-indextts2-standard-fp16` MLX
+model snapshot. The local F5-TTS path uses the official
+`uvx --from f5-tts f5-tts_infer-cli` runner with `SWivid/F5-TTS`
+(`F5TTS_v1_Base`) on `mps`. That clears the previous F5 renderer blocker.
+The first complete IndexTTS2 paired score was rejected:
+`registered-report/indextts2.score.json` produced `verdict=review` and
+`registered-report/indextts2.selection.json` produced `verdict=reject`. Against
+the VoxCPM2 baseline, IndexTTS2 had `0/9` passing paired cases; average CER/WER
+reduction was negative, and every candidate group stayed in review. The first
+complete F5-TTS paired score was also rejected:
+`registered-report/f5-tts.score.json` produced `verdict=review` and
+`registered-report/f5-tts.selection.json` produced `verdict=reject`. F5-TTS had
+`0/9` passing paired cases, with negative average CER/WER reduction versus
+VoxCPM2 and lower average speaker similarity (`0.793515` candidate vs
+`0.813136` baseline in the selector evidence). This means the next backend work
+should not ask for more recording. The immediate options are to tune backend
+text conditioning/settings, try different checkpoints/runtime options, or move
+to the LoRA path.
+After the completed backend shootout, the remaining direct quality failures were
+not recording-depth failures. The profile was reduced to the requested 7 selected
+clips and the speaker-embedding outlier `DennlGsidA` was removed while retaining
+all required coverage and pronunciation presets. The refreshed transcript proof
+at `.anyvoice/voices/local-default/transcript-validation.json` passes `7/7`
+selected clips with profile SHA
+`ae2c55518cfa912f69bba69bbf4992c7c5836444bec670eca7c08bb519a236e2`.
+`zh_hant_custom_readings` now keeps `重試` as `重試`; the earlier
+model-facing `重試 -> 重新測試` repair produced a blind-review rerender request
+because the audio no longer matched the displayed text. Case-level ASR
+equivalence remains only for faster-whisper homophone choices such as
+`行長/航長` and `長樂/常樂`.
+`zh_hant_tone_contrast` now keeps the tone trap inside a carrier sentence so the
+speaker verifier has enough speech to measure identity; the short standalone
+tone phrase topped out at only `0.664385` speaker similarity across the 7 profile
+references, while the carrier probe measured `0.850185` against the selected
+reference. The refreshed tone probe at
+`generated/voice-regression/20260604-075722/score.json` passes. The full native
+VoxCPM2 quality gate at `generated/voice-regression/20260604-075831/score.json`
+passes all `9/9` groups with `avgCer=0.012656`, `avgWer=0.023073`,
+`avgSpeakerSimilarity=0.838183`, no stability review groups, and no speaker
+review groups. The paired product gate at
+`generated/voice-regression/20260604-080700/score.json` renders both `prompt`
+and `hifi` for all 9 cases, and all 18 absolute groups pass. Under the
+ceiling-aware product scorer it now produces `pairedComparison.verdict=pass`:
+`9/9` pairs pass, average CER reduction is `50.0%`, average WER reduction is
+`41.666667%`, average speaker delta is `+0.018621`, and average latency
+regression is `5.312667%` against the configured `10%` tolerance. That remains
+a metric-only product proof, not a subjective 10x claim. The merged blind review
+at `generated/voice-regression/20260604-080700/report.review.json` now passes
+the no-regression bar: all `27/27` rounds are reviewed, all are ties, and there
+are no rerenders or baseline wins. The reviewer still reported no clear audible
+difference between prompt and hifi, so this is a stability/no-regression proof,
+not a human 10x preference proof. The triage artifact remains
+`generated/voice-regression/20260604-080700/subjective-review-triage.json`.
+The `乾淨` reading is now tracked explicitly as `gānjìng`, not `qiānjìng`, via
+the eval-set `乾淨 -> 甘淨` model-facing override and reviewer target.
+The first gated LoRA dataset export is
+`generated/voice-lora-datasets/local-default-20260604-083412/dataset.json`
+(`7` clips, `84.349s`, product quality gate required and satisfied). The latest
+training handoff is
+`generated/voice-lora-training-jobs/local-default-20260604-084344/train_config.json`;
+the local VoxCPM LoRA trainer now produces readable weights at
+`output/lora_weights.ckpt`, verified by
+`output/adapter-proof.json`. The LoRA quality gate at
+`generated/voice-regression/20260604-134932/quality-gate.json` passes with the
+adapter loaded: `9/9` groups pass, `avgCer=0.013438`, `avgWer=0.014156`,
+`avgSpeakerSimilarity=0.843523`, and no stability, speaker, audio, or
+profile-reference review groups. That verified adapter policy has been applied
+to `.anyvoice/voices/local-default/profile.json`.
 Those jobs use the production text-prep contract: `targetTextRaw` /
 `targetTextRawFile` preserve the eval sentence, while `targetText` /
 `targetTextFile` carry the model-facing preset-pronunciation text that external
 renderers should use. Each row also carries `textPrepFile` / `textPreparation`,
 so registered external renders are scored with the same pronunciation-alias
 policy as native AnyVoice runs.
+The scorer also accepts explicit case-level `asrEquivalenceAliases` for known
+ASR text ambiguity. Alias hits are recorded as `scoringTarget.kind=asr_alias:*`
+instead of pretending the raw target matched exactly, so downstream review can
+separate true transcription matches from ASR-equivalence passes.
 Case-level custom pronunciation repairs are included in the same contract, so
 backend candidates are compared against the corrected model-facing reading
 rather than a different prompt path.
+After the scorer normalization update, the existing external backend selections
+were refreshed and remain rejected. `indextts2.selection.json` and
+`f5-tts.selection.json` both keep `verdict=reject`; each still has `0/9`
+passing paired cases, missing subjective review evidence, and candidate groups
+in review. The FishAudio S2 Pro fallback shootout at
+`generated/voice-backend-shootouts/20260604-141034-fishaudio/registered-report`
+also produced a rejected proof:
+`fishaudio-s2-pro.selection.json` has `verdict=reject`, `0/9` passing paired
+cases, `avgCerReductionPct=-91.668`, `avgWerReductionPct=-91.6675`, and
+`avgSpeakerSimilarityDelta=-0.152811` versus `voxcpm2-hifi`. The completion
+audit now passes through `lora_quality_gate` and treats external
+`backend_selection` as optional research unless a `preferredBackend` policy is
+actually applied. Missing, rejected, or unapplied external backend evidence is
+reported under `optionalStages` / `firstOptionalIssue`; a stale or invalid
+applied `preferredBackend` policy still blocks completion because it can affect
+runtime.
 Backend render command templates can also use `{{seed}}` so external engines
 with explicit seeding are compared under the same stability setting as VoxCPM2.
 `scripts/register_voice_backend_renders.py` then turns rendered WAVs from that
@@ -950,11 +1298,96 @@ plan into the same `report.json` plus blind `report.html` shape emitted by
 `voice_clone_regression.py`; the example is
 `examples/voice_backend_renders.example.json`. This means IndexTTS2, F5-TTS, or
 another local backend can be evaluated through the existing ASR, speaker
-similarity, paired-improvement scoring, and blind A/B review pipeline before
-being wired into the product path. The remaining M5 work is to install/run a
-candidate backend, fill the planned WAV outputs from the ready voice profile,
-and keep the backend only if it beats `voxcpm2-hifi` on the absolute and paired
-quality gates.
+similarity, paired-improvement scoring, latency comparison, and blind A/B review
+pipeline before being wired into the product path. Native and external
+regression reports now carry the canonical profile SHA-256 through report,
+score, and selection artifacts, so a backend selected before profile evidence
+changes cannot be applied to the updated profile. The backend selector checks
+that the blind-review source report is profile-bound at report, group, and render
+levels before accepting a candidate, so a hand-edited score JSON cannot borrow a
+review from another profile. Registration also records
+each rendered WAV's byte count, SHA-256, and optional `renderSeconds`; `--allow-missing`
+rows are marked `missing` instead of `ready`, so incomplete external backend
+plans cannot look like finished evidence. Registration now also rejects explicit
+backend identity conflicts between the manifest backend and renderer metadata
+fields such as `metadataJson.voiceBackend`, preventing a rendered WAV from being
+filed under a different backend label than the engine that produced it.
+`scripts/select_voice_backend_candidate.py` is the final
+keep/reject gate: it accepts a candidate only when the strict paired score
+is bound to one current voice profile at score, source-report, group, and render levels, passes
+against `voxcpm2-hifi`, speaker similarity and render latency are
+evaluated without regression, and external candidate WAVs carry byte/SHA-256
+evidence whose current output files still exist and match the recorded bytes and
+hash. It also requires the exported blind `review.json` for the exact source
+regression report path and SHA-256, and enforces the same no-regression
+subjective bar before accepting a backend, so an alternative backend cannot win
+on metrics alone. The selector's `--skip-subjective-review` path is
+experiment-only: it requires an explicit unsafe acknowledgement and reason, and
+still writes a rejected proof with `subjective_review_bypassed` instead of an
+accepted backend selection. External backend selections measured against any baseline
+other than `voxcpm2-hifi` stay rejected experiment data; apply/runtime paths,
+internal request parsing, profile loads, and profile rebuilds mirror that
+baseline requirement before writing, carrying, forwarding, or executing a
+policy. `preferredBackend` is external-only: native `voxcpm2-hifi` and
+`voxcpm2-lora` choices are represented by the normal VoxCPM/LoRA runtime paths,
+not by backend-selection policy. The selector rejects ambiguous blind rounds that contain
+multiple baseline or candidate samples for the same case/repeat, so a
+hand-edited source report cannot satisfy the preference bar by overwriting A/B
+labels. The source report must also preserve the external candidate render's
+`externalBackend`, `outputBytes`, `outputSha256`, and current output WAV
+evidence; a score JSON cannot become the only place where backend identity and
+file hashes are proven. Accepted selection proofs now persist the accepted score,
+review, and source-report SHA-256 values; apply/audit rejects the proof if any
+referenced artifact has changed and routes the operator back to a fresh
+backend shootout/selection instead of re-applying stale evidence. Accepted selections must
+then be applied with `scripts/apply_voice_backend_selection.py`, which writes a
+hash-bound `preferredBackend` policy into the voice profile; the apply script
+first requires the selection proof itself to have `verdict=accept`,
+`accepted=true`, and current `voiceProfileId` / `profileSha256` evidence, then
+recomputes the selection and rejects score/source-report artifacts whose
+`voiceProfileId` or `profileSha256` no longer match the current profile. The
+completion audit checks the same selection-profile and source-report evidence
+when a `preferredBackend` policy is present, so runtime backend choice cannot
+drift away from the accepted evidence. Unapplied accepted proofs remain optional
+research until they are explicitly applied. Persisted
+profile loads now drop stale `preferredBackend` and `loraAdapter` policies whose
+current `voiceProfileId`, canonical `profileSha256`, or `profileJson` no longer match the manifest,
+or whose preferred backend policy no longer names the measured baseline backend,
+so a later profile edit cannot silently reuse an old backend or LoRA proof.
+Runtime execution also reopens the applied `selectionJson` and requires it to
+still say `verdict=accept`, `accepted=true`, the same candidate backend, the
+same baseline backend, the same profile identity, and the same score/review/report
+paths plus SHA-256 values before spawning an external renderer. It also reopens
+the applied score and source-report JSON and rejects runtime backend use if the
+score no longer points at the same source report/hash or if either artifact's
+`voiceProfileId` / `profileSha256` group or render evidence no longer matches
+the applied policy. Runtime now also rechecks the source report's external
+candidate render evidence and current WAV file bytes/SHA-256, so a
+post-selection source report cannot be rehashed into policy while dropping the
+proof that the accepted candidate output was actually rendered by the external
+backend.
+Profile generation now carries that applied policy into the clone runner. If the
+selected backend is not `voxcpm2-hifi` or
+`voxcpm2-lora`, the runner uses `ANYVOICE_PROFILE_BACKEND_RENDER_COMMAND`
+(falling back to the shootout `ANYVOICE_BACKEND_RENDER_COMMAND`) with the same
+shell-quoted placeholders used by backend shootout plans, verifies that a
+non-empty output WAV was written, and records `voiceBackend` plus selection
+hashes in run metadata. If the policy selects an external backend but its
+profile / selection / score evidence is incomplete, or if no
+renderer command is configured, generation fails clearly instead of silently
+falling back to VoxCPM2. By default, an accepted external backend is the primary
+runtime backend; setting `ANYVOICE_PROFILE_BACKEND_MODE=voxcpm-first` tries
+VoxCPM2 first and falls back to that accepted external backend only after the
+VoxCPM2 path throws. That fallback writes `voxcpm-fallback-error.txt` and
+records `backendFallbackFrom` / `backendFallbackReason` in metadata so failed
+VoxCPM attempts remain auditable. The worker proxy preserves the resolved profile
+reference, applied LoRA policy, and preferred backend policy through an
+authenticated internal form field accepted only by `/api/local-worker/clone`
+and `/api/local-worker/clone/stream`, so Vercel-to-Mac worker handoff does not
+drop the evidence-bound runtime selection. The remaining external-backend work
+is optional: install/run another candidate backend, fill the planned WAV outputs
+from the ready voice profile, and keep the backend only if that selection proof
+passes and has been applied to the profile.
 
 ## Definition Of 10x Better
 

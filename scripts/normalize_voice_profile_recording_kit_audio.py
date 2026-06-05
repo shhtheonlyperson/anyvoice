@@ -17,6 +17,7 @@ from import_voice_profile_clips import field, load_json, load_manifest, normaliz
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_EXTENSIONS = [".wav", ".m4a", ".mp3", ".webm", ".aac", ".caf", ".aiff", ".aif", ".flac", ".ogg", ".opus"]
+SOURCE_STEM_SUFFIXES = ["", ".source", ".export", "-source", "-export"]
 
 
 def utc_stamp() -> str:
@@ -25,6 +26,14 @@ def utc_stamp() -> str:
 
 def text_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def command(parts: list[str]) -> str:
@@ -92,14 +101,28 @@ def source_candidates(spec: dict[str, Any], source_dirs: list[Path]) -> list[Pat
             if key not in seen:
                 seen.add(key)
                 candidates.append(candidate)
-        for stem in stems:
-            for ext in SOURCE_EXTENSIONS:
-                candidate = (source_dir / f"{stem}{ext}").expanduser().resolve()
-                key = str(candidate)
-                if key not in seen:
-                    seen.add(key)
-                    candidates.append(candidate)
+        for name in expected_source_names(stems):
+            candidate = (source_dir / name).expanduser().resolve()
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                candidates.append(candidate)
     return candidates
+
+
+def expected_source_names(stems: list[str]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for stem in stems:
+        if not stem:
+            continue
+        for suffix in SOURCE_STEM_SUFFIXES:
+            for ext in SOURCE_EXTENSIONS:
+                name = f"{stem}{suffix}{ext}"
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+    return names
 
 
 def find_source(spec: dict[str, Any], source_dirs: list[Path]) -> Path | None:
@@ -129,7 +152,11 @@ def write_recording_metadata(
                 "id": spec["id"],
                 "index": spec["index"],
                 "audioPath": str(target_path),
+                "audioBytes": target_path.stat().st_size,
+                "audioSha256": file_sha256(target_path),
                 "sourceAudioPath": str(source_path),
+                "sourceAudioBytes": source_path.stat().st_size,
+                "sourceAudioSha256": file_sha256(source_path),
                 "promptPath": str(spec["promptPath"]),
                 "transcript": spec["transcript"],
                 "transcriptSha256": spec["transcriptSha256"],
@@ -247,6 +274,7 @@ def normalize_recordings(
     source_dirs: list[Path],
     overwrite: bool,
     dry_run: bool,
+    only_present: bool,
     write_metadata: bool,
     profile_id: str,
     run_check_after: bool,
@@ -282,15 +310,9 @@ def normalize_recordings(
                 {
                     "index": spec["index"],
                     "id": spec["id"],
-                    "status": "missing_source",
+                    "status": "missing_source_skipped" if only_present else "missing_source",
                     "audioPath": str(target_path),
-                    "expectedSourceNames": sorted(
-                        {
-                            f"{target_path.stem}{ext}"
-                            for ext in SOURCE_EXTENSIONS
-                        }
-                        | {f"{spec['id']}{ext}" for ext in SOURCE_EXTENSIONS}
-                    ),
+                    "expectedSourceNames": sorted(expected_source_names([target_path.stem, str(spec["id"])])),
                 }
             )
             continue
@@ -333,13 +355,21 @@ def normalize_recordings(
             }
         )
 
-    status = "blocked" if missing or failures else ("planned" if dry_run else ("normalized" if written else "all_recordings_present"))
+    if failures:
+        status = "blocked"
+    elif missing and only_present and written:
+        status = "planned_partial" if dry_run else "partial_normalized"
+    elif missing:
+        status = "blocked"
+    else:
+        status = "planned" if dry_run else ("normalized" if written else "all_recordings_present")
     payload: dict[str, Any] = {
         "status": status,
         "manifest": str(manifest_path),
         "profileId": profile_id,
         "dryRun": dry_run,
         "overwrite": overwrite,
+        "onlyPresent": only_present,
         "sourceDirs": [str(path) for path in effective_source_dirs],
         "summary": {
             "clips": len(specs),
@@ -357,6 +387,17 @@ def normalize_recordings(
                     "--manifest",
                     str(manifest_path),
                     "--check",
+                    "--profile-id",
+                    profile_id,
+                ]
+            ),
+            "normalizePresentSources": command(
+                [
+                    "python3",
+                    "scripts/normalize_voice_profile_recording_kit_audio.py",
+                    "--manifest",
+                    str(manifest_path),
+                    "--only-present",
                     "--profile-id",
                     profile_id,
                 ]
@@ -436,6 +477,11 @@ def main() -> None:
     parser.add_argument("--profile-id", default="local-default")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--only-present",
+        action="store_true",
+        help="Normalize source files that are present and skip missing sources without failing when progress was made.",
+    )
     parser.add_argument("--check", action="store_true", help="Run the recording-kit checker after normalization.")
     parser.add_argument("--brief", action="store_true")
     parser.add_argument("--no-write-metadata", action="store_true")
@@ -446,6 +492,7 @@ def main() -> None:
         source_dirs=[Path(path) for path in args.source_dir],
         overwrite=args.overwrite,
         dry_run=args.dry_run,
+        only_present=args.only_present,
         write_metadata=not args.no_write_metadata,
         profile_id=args.profile_id,
         run_check_after=args.check,

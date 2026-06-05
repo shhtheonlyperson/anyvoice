@@ -34,6 +34,20 @@ def text_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def same_resolved_path(left: str, right: Path) -> bool:
+    if not left.strip():
+        return False
+    return Path(left).expanduser().resolve(strict=False) == right.resolve(strict=False)
+
+
 def probe_audio_duration(path: Path) -> tuple[float | None, str | None]:
     if path.suffix.lower() == ".wav":
         try:
@@ -347,6 +361,7 @@ def clip_row(
     min_duration_sec: float,
     max_duration_sec: float,
     min_active_voice_sec: float,
+    active_voice_threshold: float,
     target_duration_tolerance_sec: float,
     min_peak_amplitude: float,
     max_clipping_ratio: float,
@@ -365,6 +380,9 @@ def clip_row(
     recording_metadata_exists = bool(recording_metadata_path and recording_metadata_path.exists())
     recording_metadata_transcript = ""
     recording_metadata_transcript_sha256 = ""
+    recording_metadata_audio_path = ""
+    recording_metadata_audio_sha256 = ""
+    audio_sha256 = ""
     exists = bool(audio_path and audio_path.exists())
     size = audio_path.stat().st_size if exists and audio_path else 0
     duration_sec: float | None = None
@@ -378,6 +396,10 @@ def clip_row(
     elif size <= 0:
         errors.append("audio_file_empty")
     else:
+        try:
+            audio_sha256 = file_sha256(audio_path)
+        except OSError:
+            errors.append("audio_file_hash_unreadable")
         duration_sec, duration_error = probe_audio_duration(audio_path)
         if duration_error:
             errors.append("audio_duration_unreadable")
@@ -394,7 +416,7 @@ def clip_row(
         ):
             errors.append("audio_below_target_duration")
         if audio_path and "audio_duration_unreadable" not in errors:
-            active_voice_sec, active_voice_error = probe_decoded_active_voice(audio_path)
+            active_voice_sec, active_voice_error = probe_decoded_active_voice(audio_path, threshold=active_voice_threshold)
             if active_voice_error:
                 errors.append("audio_voice_activity_unreadable")
             elif active_voice_sec is not None and active_voice_sec < min_active_voice_sec:
@@ -439,6 +461,12 @@ def clip_row(
             recording_metadata_transcript_sha256 = str(
                 metadata.get("transcriptSha256") or metadata.get("manifestTranscriptSha256") or ""
             ).strip().lower()
+            recording_metadata_audio_path = str(
+                metadata.get("audioPath") or metadata.get("manifestAudioPath") or ""
+            ).strip()
+            recording_metadata_audio_sha256 = str(
+                metadata.get("audioSha256") or metadata.get("audioFileSha256") or metadata.get("manifestAudioSha256") or ""
+            ).strip().lower()
             expected_transcript_sha256 = text_sha256(transcript) if transcript else ""
             if not recording_metadata_transcript_sha256:
                 errors.append("recording_metadata_transcript_hash_missing")
@@ -446,6 +474,16 @@ def clip_row(
                 errors.append("recording_metadata_transcript_mismatch")
             elif recording_metadata_transcript and transcript and recording_metadata_transcript != transcript:
                 errors.append("recording_metadata_transcript_mismatch")
+            if audio_path:
+                if not recording_metadata_audio_path:
+                    errors.append("recording_metadata_audio_path_missing")
+                elif not same_resolved_path(recording_metadata_audio_path, audio_path):
+                    errors.append("recording_metadata_audio_path_mismatch")
+            if audio_sha256:
+                if not recording_metadata_audio_sha256:
+                    errors.append("recording_metadata_audio_hash_missing")
+                elif recording_metadata_audio_sha256 != audio_sha256:
+                    errors.append("recording_metadata_audio_hash_mismatch")
 
     return {
         "index": index,
@@ -453,6 +491,7 @@ def clip_row(
         "audioPath": str(audio_path) if audio_path else "",
         "audioExists": exists,
         "audioBytes": size,
+        "audioSha256": audio_sha256,
         "durationSec": duration_sec,
         "durationTargetSec": duration_target_sec,
         "minTargetDurationSec": min_target_duration_sec,
@@ -472,6 +511,8 @@ def clip_row(
         "recordingMetadataExists": recording_metadata_exists,
         "recordingMetadataTranscript": recording_metadata_transcript,
         "recordingMetadataTranscriptSha256": recording_metadata_transcript_sha256,
+        "recordingMetadataAudioPath": recording_metadata_audio_path,
+        "recordingMetadataAudioSha256": recording_metadata_audio_sha256,
         "expectedTranscriptSha256": text_sha256(transcript) if transcript else "",
         "coverageFeatures": transcript_coverage_features(transcript) if transcript else [],
         "pronunciationPresetIds": pronunciation_preset_ids(transcript) if transcript else [],
@@ -486,6 +527,7 @@ def check_manifest(
     min_duration_sec: float,
     max_duration_sec: float,
     min_active_voice_sec: float,
+    active_voice_threshold: float,
     target_duration_tolerance_sec: float,
     min_peak_amplitude: float,
     max_clipping_ratio: float,
@@ -502,6 +544,7 @@ def check_manifest(
             min_duration_sec=min_duration_sec,
             max_duration_sec=max_duration_sec,
             min_active_voice_sec=min_active_voice_sec,
+            active_voice_threshold=active_voice_threshold,
             target_duration_tolerance_sec=target_duration_tolerance_sec,
             min_peak_amplitude=min_peak_amplitude,
             max_clipping_ratio=max_clipping_ratio,
@@ -518,7 +561,7 @@ def check_manifest(
     missing_pronunciation_preset_ids = [
         preset_id for preset_id in required_pronunciation_preset_ids if preset_id not in covered_pronunciation_preset_ids
     ]
-    audio_error_reasons = {"missing_audio_path", "audio_file_missing", "audio_file_empty"}
+    audio_error_reasons = {"missing_audio_path", "audio_file_missing", "audio_file_empty", "audio_file_hash_unreadable"}
     duration_error_reasons = {"audio_duration_unreadable", "audio_too_short", "audio_too_long"}
     target_duration_error_reasons = {"audio_below_target_duration"}
     active_voice_error_reasons = {"audio_voice_activity_unreadable", "audio_low_voice_activity"}
@@ -530,6 +573,10 @@ def check_manifest(
         "recording_metadata_unreadable",
         "recording_metadata_transcript_hash_missing",
         "recording_metadata_transcript_mismatch",
+        "recording_metadata_audio_path_missing",
+        "recording_metadata_audio_path_mismatch",
+        "recording_metadata_audio_hash_missing",
+        "recording_metadata_audio_hash_mismatch",
     }
     audio_errors = [
         {
@@ -632,6 +679,9 @@ def check_manifest(
             "audioPath": clip["audioPath"],
             "recordingMetadataPath": clip["recordingMetadataPath"],
             "recordingMetadataTranscriptSha256": clip["recordingMetadataTranscriptSha256"],
+            "recordingMetadataAudioPath": clip["recordingMetadataAudioPath"],
+            "recordingMetadataAudioSha256": clip["recordingMetadataAudioSha256"],
+            "expectedAudioSha256": clip["audioSha256"],
             "expectedTranscriptSha256": clip["expectedTranscriptSha256"],
             "errors": [error for error in clip["errors"] if error in recording_metadata_error_reasons],
         }
@@ -671,6 +721,7 @@ def check_manifest(
             "minDurationSec": min_duration_sec,
             "maxDurationSec": max_duration_sec,
             "minActiveVoiceSec": min_active_voice_sec,
+            "activeVoiceThreshold": active_voice_threshold,
             "targetDurationToleranceSec": target_duration_tolerance_sec,
             "minPeakAmplitude": min_peak_amplitude,
             "maxClippingRatio": max_clipping_ratio,
@@ -851,6 +902,12 @@ def main() -> None:
     parser.add_argument("--max-duration-sec", type=float, default=20.0)
     parser.add_argument("--min-active-voice-sec", type=float, default=5.2)
     parser.add_argument(
+        "--active-voice-threshold",
+        type=float,
+        default=0.006,
+        help="RMS threshold for active-voice windows. The default is calibrated for quiet but usable local microphone recordings.",
+    )
+    parser.add_argument(
         "--target-duration-tolerance-sec",
         type=float,
         default=2.0,
@@ -868,6 +925,7 @@ def main() -> None:
         min_duration_sec=args.min_duration_sec,
         max_duration_sec=args.max_duration_sec,
         min_active_voice_sec=args.min_active_voice_sec,
+        active_voice_threshold=max(0.0, args.active_voice_threshold),
         target_duration_tolerance_sec=max(0.0, args.target_duration_tolerance_sec),
         min_peak_amplitude=max(0.0, args.min_peak_amplitude),
         max_clipping_ratio=max(0.0, args.max_clipping_ratio),

@@ -63,6 +63,67 @@ def load_manifest(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def manifest_metadata(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() != ".json":
+        return {}
+    parsed = load_json(path)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def is_generated_recording_kit_manifest(metadata: dict[str, Any]) -> bool:
+    clips = metadata.get("clips")
+    if not isinstance(clips, list) or not clips:
+        return False
+    if isinstance(metadata.get("promptSet"), str) and metadata["promptSet"].strip():
+        return True
+    required_clips = metadata.get("requiredClips")
+    if isinstance(required_clips, int) and required_clips > 0:
+        return True
+    return any(
+        isinstance(row, dict)
+        and any(
+            key in row
+            for key in (
+                "expectedStem",
+                "durationTargetSec",
+                "recommendedDurationSec",
+                "coverageFeatures",
+                "pronunciationPresetIds",
+                "scriptMarkerHits",
+            )
+        )
+        for row in clips
+    )
+
+
+def json_or_text(value: str) -> Any:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def run_recording_kit_check(*, manifest_path: Path, profile_id: str) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "check_voice_profile_recording_kit.py"),
+        "--manifest",
+        str(manifest_path),
+        "--profile-id",
+        profile_id,
+    ]
+    proc = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+    return {
+        "command": command,
+        "exitCode": proc.returncode,
+        "stdout": json_or_text(proc.stdout),
+        "stderr": proc.stderr.strip() or None,
+    }
+
+
 def field(row: dict[str, Any], names: tuple[str, ...]) -> str:
     for name in names:
         value = row.get(name)
@@ -320,14 +381,20 @@ def main() -> None:
     parser.add_argument("--trust-manifest-quality", action="store_true", help="Use per-row quality/referenceQuality instead of running the analyzer. Intended only for already-analyzed migration manifests.")
     parser.add_argument("--allow-unsafe-trust-manifest-quality", action="store_true", help="Allow --trust-manifest-quality for migration/debug imports. Requires --unsafe-manifest-quality-reason.")
     parser.add_argument("--unsafe-manifest-quality-reason", default="", help="Required reason when trusting manifest quality instead of analyzing audio.")
+    parser.add_argument("--skip-kit-check", action="store_true", help="Unsafe: skip the recording-kit preflight check for generated recording-kit manifests.")
+    parser.add_argument("--allow-unsafe-skip-kit-check", action="store_true", help="Allow --skip-kit-check for migration/debug imports. Requires --unsafe-skip-kit-check-reason.")
+    parser.add_argument("--unsafe-skip-kit-check-reason", default="", help="Required reason when bypassing the recording-kit preflight check.")
     parser.add_argument("--build-profile", action="store_true", help="Rebuild .anyvoice/voices/<profile-id>/profile.json after import.")
     parser.add_argument("--run-prefix", default=f"import-{utc_stamp()}")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     manifest_path = Path(args.manifest).expanduser().resolve()
+    metadata = manifest_metadata(manifest_path)
+    is_recording_kit_manifest = is_generated_recording_kit_manifest(metadata)
     rows = load_manifest(manifest_path)
     manifest_quality_reason = args.unsafe_manifest_quality_reason.strip()
+    unsafe_skip_reason = args.unsafe_skip_kit_check_reason.strip()
     if args.trust_manifest_quality and (not args.allow_unsafe_trust_manifest_quality or not manifest_quality_reason):
         print(
             json.dumps(
@@ -352,6 +419,28 @@ def main() -> None:
             )
         )
         raise SystemExit(2)
+    if args.skip_kit_check and (not args.allow_unsafe_skip_kit_check or not unsafe_skip_reason):
+        print(
+            json.dumps(
+                {
+                    "status": "unsafe_skip_kit_check_blocked",
+                    "manifest": str(manifest_path),
+                    "recordingKitCheck": {
+                        "required": is_recording_kit_manifest,
+                        "skipped": True,
+                        "acceptedUnsafeSkip": False,
+                        "reason": None,
+                        "requiredFlags": ["--allow-unsafe-skip-kit-check", "--unsafe-skip-kit-check-reason"],
+                    },
+                    "imported": 0,
+                    "dryRun": args.dry_run,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        raise SystemExit(2)
     runs_dir = Path(args.runs_dir).expanduser().resolve()
     voices_dir = Path(args.voices_dir).expanduser().resolve()
     brenda_python = Path("/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python")
@@ -360,8 +449,34 @@ def main() -> None:
         or os.environ.get("ANYVOICE_VOXCPM_PYTHON")
         or (str(brenda_python) if brenda_python.exists() else sys.executable)
     )
+    recording_kit_check: dict[str, Any] = {
+        "required": is_recording_kit_manifest,
+        "skipped": bool(args.skip_kit_check and is_recording_kit_manifest),
+        "acceptedUnsafeSkip": bool(args.skip_kit_check and args.allow_unsafe_skip_kit_check and is_recording_kit_manifest),
+        "reason": unsafe_skip_reason if args.skip_kit_check and is_recording_kit_manifest else None,
+        "result": None,
+    }
+    if is_recording_kit_manifest and not args.skip_kit_check:
+        recording_kit_check["result"] = run_recording_kit_check(manifest_path=manifest_path, profile_id=args.profile_id)
+        if recording_kit_check["result"]["exitCode"] != 0:
+            print(
+                json.dumps(
+                    {
+                        "status": "incomplete_recording_kit",
+                        "manifest": str(manifest_path),
+                        "recordingKitCheck": recording_kit_check,
+                        "imported": 0,
+                        "dryRun": args.dry_run,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            raise SystemExit(2)
 
     imported: list[dict[str, Any]] = []
+    source_kind_default = "scripted" if is_recording_kit_manifest else args.source_kind
     for index, row in enumerate(rows, start=1):
         imported.append(
             import_row(
@@ -371,7 +486,7 @@ def main() -> None:
                 runs_dir=runs_dir,
                 run_prefix=args.run_prefix,
                 model_id=args.model_id,
-                source_kind_default=args.source_kind,
+                source_kind_default=source_kind_default,
                 analyzer_python=analyzer_python,
                 trust_manifest_quality=args.trust_manifest_quality,
                 manifest_quality_reason=manifest_quality_reason if args.trust_manifest_quality else None,
@@ -396,6 +511,7 @@ def main() -> None:
                     "acceptedUnsafeTrust": bool(args.trust_manifest_quality and args.allow_unsafe_trust_manifest_quality),
                     "reason": manifest_quality_reason if args.trust_manifest_quality else None,
                 },
+                "recordingKitCheck": recording_kit_check,
                 "imported": len(imported),
                 "clips": imported,
                 "profile": profile,

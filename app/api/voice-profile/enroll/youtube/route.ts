@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { enrollVoiceProfileClip } from "@/lib/profile-enrollment";
 import { safeRunDir } from "@/lib/run-paths";
-import { detectChineseScript, simplifiedOrMixedChineseScriptErrors } from "@/lib/text-prep";
+import { detectChineseScript, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
 import {
@@ -156,8 +156,9 @@ export async function POST(req: NextRequest) {
         skipped.push({ reason: "empty", transcript: clip.transcriptRaw });
         continue;
       }
-      if (simplifiedOrMixedChineseScriptErrors(transcript).length > 0) {
-        skipped.push({ reason: "simplified_or_mixed", transcript });
+      const scriptErrors = strictTraditionalChineseScriptErrors(transcript);
+      if (scriptErrors.length > 0) {
+        skipped.push({ reason: scriptErrors.includes("unproven_chinese_script") ? "unproven_chinese_script" : "simplified_or_mixed", transcript });
         continue;
       }
       const clipJobId = nanoid(10);
@@ -205,11 +206,13 @@ export async function POST(req: NextRequest) {
 
     if (enrolledClips.length === 0) {
       // Every candidate clip failed the Traditional-Chinese gate.
-      const sample = skipped.find((s) => s.reason === "simplified_or_mixed")?.transcript ?? "";
+      const sample =
+        skipped.find((s) => s.reason === "simplified_or_mixed" || s.reason === "unproven_chinese_script")?.transcript ??
+        "";
       return reply(
         {
           status: "error",
-          message: `profile transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${detectChineseScript(sample)})`,
+          message: `profile transcript must be proven Traditional Chinese; Simplified, mixed, or unproven Chinese clips are not accepted for the Traditional Mandarin voice profile (${detectChineseScript(sample)})`,
         },
         { status: 400 },
       );

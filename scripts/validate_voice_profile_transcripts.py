@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -27,6 +28,16 @@ DEFAULT_OUT_ROOT = REPO_ROOT / "generated" / "voice-profile-transcript-validatio
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def canonical_profile_sha256(profile: dict[str, Any]) -> str:
+    payload = dict(profile)
+    payload.pop("createdAt", None)
+    payload.pop("loraPath", None)
+    payload.pop("loraAdapter", None)
+    payload.pop("preferredBackend", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def profile_clips(profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -225,6 +236,7 @@ def main() -> None:
         "version": 1,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "profile": str(profile_path),
+        "profileSha256": canonical_profile_sha256(profile),
         "voiceProfileId": profile.get("voiceProfileId"),
         "backend": backend,
         "model": args.model,

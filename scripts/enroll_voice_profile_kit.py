@@ -228,6 +228,13 @@ def main() -> None:
             "--unsafe-manifest-quality-reason",
             unsafe_quality_reason,
         ])
+    if args.skip_kit_check:
+        import_cmd.append("--skip-kit-check")
+        import_cmd.extend([
+            "--allow-unsafe-skip-kit-check",
+            "--unsafe-skip-kit-check-reason",
+            unsafe_skip_reason,
+        ])
     steps.append(run_step("import_profile_clips", import_cmd))
     if steps[-1]["exitCode"] != 0:
         print(

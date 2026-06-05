@@ -10,7 +10,20 @@
         {
           "caseId": "zh_hant_polyphones",
           "repeat": 1,
+          "renderSeconds": 10.2,
           "outputWav": "/path/to/voxcpm2-hifi/zh_hant_polyphones-r01.wav"
+        },
+        {
+          "caseId": "zh_hant_polyphones",
+          "repeat": 2,
+          "renderSeconds": 10.1,
+          "outputWav": "/path/to/voxcpm2-hifi/zh_hant_polyphones-r02.wav"
+        },
+        {
+          "caseId": "zh_hant_polyphones",
+          "repeat": 3,
+          "renderSeconds": 10.3,
+          "outputWav": "/path/to/voxcpm2-hifi/zh_hant_polyphones-r03.wav"
         }
       ]
     },
@@ -22,11 +35,24 @@
         {
           "caseId": "zh_hant_polyphones",
           "repeat": 1,
+          "renderSeconds": 9.1,
           "outputWav": "/path/to/indextts2/zh_hant_polyphones-r01.wav",
           "metadataJson": {
             "engine": "IndexTTS2",
             "notes": "External render registered for AnyVoice scoring."
           }
+        },
+        {
+          "caseId": "zh_hant_polyphones",
+          "repeat": 2,
+          "renderSeconds": 9.2,
+          "outputWav": "/path/to/indextts2/zh_hant_polyphones-r02.wav"
+        },
+        {
+          "caseId": "zh_hant_polyphones",
+          "repeat": 3,
+          "renderSeconds": 9.0,
+          "outputWav": "/path/to/indextts2/zh_hant_polyphones-r03.wav"
         }
       ]
     }

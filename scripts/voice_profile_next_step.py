@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -8,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from build_voice_profile import REQUIRED_PRONUNCIATION_PRESET_IDS, pronunciation_preset_ids
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -17,9 +20,24 @@ DEFAULT_TRANSCRIPT_VALIDATION_ROOT = REPO_ROOT / "generated" / "voice-profile-tr
 DEFAULT_QUALITY_GATE_ROOT = REPO_ROOT / "generated" / "voice-regression"
 PRODUCT_PROOF_SPEAKER_BACKEND = "speechbrain-ecapa"
 PRODUCT_PROOF_ASR_BACKEND = "faster-whisper"
-PRODUCT_CAPTURE_CLIPS = 10
+PRODUCT_CAPTURE_CLIPS = 7
 PRODUCT_CAPTURE_DURATION_SEC = 60.0
 PRODUCT_PROMPT_SET = "extended"
+PRODUCT_PRONUNCIATION_PRESET_IDS = REQUIRED_PRONUNCIATION_PRESET_IDS
+EXTERNAL_RECORDING_SOURCE_EXTENSIONS = [
+    ".wav",
+    ".m4a",
+    ".mp3",
+    ".webm",
+    ".aac",
+    ".caf",
+    ".aiff",
+    ".aif",
+    ".flac",
+    ".ogg",
+    ".opus",
+]
+EXTERNAL_RECORDING_SOURCE_STEM_SUFFIXES = ["", ".source", ".export", "-source", "-export"]
 
 
 def local_env_value(key: str) -> str:
@@ -75,6 +93,178 @@ def load_json_file(path: Path) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def file_sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def profile_capture_duration(profile_payload: dict[str, Any]) -> float:
+    clips = profile_payload.get("clips") if isinstance(profile_payload.get("clips"), list) else []
+    total = 0.0
+    for clip in clips:
+        if not isinstance(clip, dict):
+            continue
+        quality = clip.get("quality") if isinstance(clip.get("quality"), dict) else {}
+        duration = quality.get("durationSec")
+        if isinstance(duration, (int, float)):
+            total += float(duration)
+    return total
+
+
+def profile_clip_pronunciation_preset_ids(clip: dict[str, Any]) -> set[str]:
+    ids = set(pronunciation_preset_ids(str(clip.get("transcriptRaw") or "")))
+    raw = clip.get("pronunciationPresetIds")
+    if isinstance(raw, list):
+        ids.update(str(item) for item in raw if isinstance(item, str) and item)
+    return ids
+
+
+def profile_product_capture_depth(profile_path: Path) -> dict[str, Any]:
+    profile_payload = load_json_file(profile_path)
+    if not profile_payload:
+        return {
+            "ok": False,
+            "selectedClips": 0,
+            "totalDurationSec": 0.0,
+            "missingPronunciationPresetIds": PRODUCT_PRONUNCIATION_PRESET_IDS,
+        }
+    clips = profile_payload.get("clips") if isinstance(profile_payload.get("clips"), list) else []
+    summary = profile_payload.get("summary") if isinstance(profile_payload.get("summary"), dict) else {}
+    selected = summary.get("selectedClips")
+    selected_clips = int(selected) if isinstance(selected, int) else len(clips)
+    total_duration = round(profile_capture_duration(profile_payload), 3)
+    covered_ids: set[str] = set()
+    for clip in clips:
+        if isinstance(clip, dict):
+            covered_ids.update(profile_clip_pronunciation_preset_ids(clip))
+    missing_ids = [preset_id for preset_id in PRODUCT_PRONUNCIATION_PRESET_IDS if preset_id not in covered_ids]
+    return {
+        "ok": selected_clips >= PRODUCT_CAPTURE_CLIPS
+        and total_duration >= PRODUCT_CAPTURE_DURATION_SEC
+        and not missing_ids,
+        "selectedClips": selected_clips,
+        "totalDurationSec": total_duration,
+        "missingPronunciationPresetIds": missing_ids,
+    }
+
+
+def canonical_profile_sha256(profile: dict[str, Any]) -> str:
+    payload = dict(profile)
+    payload.pop("createdAt", None)
+    payload.pop("loraPath", None)
+    payload.pop("loraAdapter", None)
+    payload.pop("preferredBackend", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def profile_sha256_for_path(profile_path: Path) -> str | None:
+    profile = load_json_file(profile_path)
+    return canonical_profile_sha256(profile) if profile else None
+
+
+def profile_clips(profile_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    clips = profile_payload.get("clips")
+    return [clip for clip in clips if isinstance(clip, dict)] if isinstance(clips, list) else []
+
+
+def selected_profile_clips(profile_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements = profile_payload.get("requirements") if isinstance(profile_payload.get("requirements"), dict) else {}
+    max_clips = requirements.get("maxClips")
+    if not isinstance(max_clips, int) or max_clips <= 0:
+        max_clips = 10
+    return profile_clips(profile_payload)[:max_clips]
+
+
+def transcript_validation_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = payload.get("clips")
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def resolve_profile_audio_path(profile_path: Path, raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = profile_path.parent / path
+    return path.resolve(strict=False)
+
+
+def same_resolved_path(raw_path: Any, expected_path: Path, base_dir: Path) -> bool:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return False
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve(strict=False) == expected_path.resolve(strict=False)
+
+
+def valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
+
+
+def resolve_render_output_path(render: dict[str, Any], report_path: Path) -> Path | None:
+    raw_path = render.get("outputWav")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    output_path = Path(raw_path).expanduser()
+    if not output_path.is_absolute():
+        output_path = report_path.parent / output_path
+    return output_path.resolve(strict=False)
+
+
+def source_report_render_output_evidence_matches(report: dict[str, Any], report_path: Path) -> bool:
+    groups = report.get("groups") if isinstance(report.get("groups"), list) else []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        renders = group.get("renders") if isinstance(group.get("renders"), list) else []
+        for render in renders:
+            if not isinstance(render, dict) or render.get("status") != "ready":
+                continue
+            if render.get("outputExists") is not True or render.get("missingOutput") is True:
+                return False
+            if not isinstance(render.get("outputBytes"), int) or int(render.get("outputBytes") or 0) <= 0:
+                return False
+            if not valid_sha256(render.get("outputSha256")):
+                return False
+            output_path = resolve_render_output_path(render, report_path)
+            if output_path is None:
+                return False
+            actual_sha256 = file_sha256(output_path)
+            try:
+                actual_bytes = output_path.stat().st_size
+            except OSError:
+                return False
+            if int(render["outputBytes"]) != actual_bytes:
+                return False
+            if render.get("outputSha256") != actual_sha256:
+                return False
+    return True
+
+
+def transcript_validation_rows_match_profile(profile_path: Path, profile_payload: dict[str, Any], validation_path: Path, validation_payload: dict[str, Any]) -> bool:
+    rows = transcript_validation_rows(validation_payload)
+    by_source = {str(row.get("sourceRunId") or ""): row for row in rows if row.get("sourceRunId")}
+    for clip in selected_profile_clips(profile_payload):
+        source_run_id = str(clip.get("sourceRunId") or "").strip()
+        row = by_source.get(source_run_id)
+        if not row or row.get("verdict") != "pass":
+            return False
+        if row.get("expectedTranscript") != str(clip.get("transcriptRaw") or "").strip():
+            return False
+        raw_audio_path = str(clip.get("audioPath") or "").strip()
+        if not raw_audio_path:
+            return False
+        if not same_resolved_path(row.get("audioPath"), resolve_profile_audio_path(profile_path, raw_audio_path), validation_path.parent):
+            return False
+    return True
+
+
 def transcript_validation_root() -> Path:
     configured = Path(os.environ.get("ANYVOICE_TRANSCRIPT_VALIDATION_ROOT", str(DEFAULT_TRANSCRIPT_VALIDATION_ROOT)))
     return configured.expanduser().resolve()
@@ -106,7 +296,8 @@ def default_asr_python() -> str:
 
 def latest_transcript_validation_for_profile(profile_path: Path) -> Path | None:
     normalized_profile = profile_path.resolve()
-    matches: list[tuple[str, Path]] = []
+    expected_profile_sha256 = profile_sha256_for_path(normalized_profile)
+    matches: list[tuple[int, str, Path]] = []
     seen: set[Path] = set()
 
     def add_candidate(path: Path) -> None:
@@ -118,10 +309,14 @@ def latest_transcript_validation_for_profile(profile_path: Path) -> Path | None:
         if not payload:
             return
         raw_profile = payload.get("profile")
-        if not isinstance(raw_profile, str) or Path(raw_profile).expanduser().resolve() != normalized_profile:
+        if not same_resolved_path(raw_profile, normalized_profile, resolved.parent):
             return
+        validation_profile_sha256 = payload.get("profileSha256")
+        profile_rank = 1
+        if isinstance(validation_profile_sha256, str) and validation_profile_sha256.strip():
+            profile_rank = 0 if expected_profile_sha256 and validation_profile_sha256 == expected_profile_sha256 else 2
         created_at = str(payload.get("createdAt") or "")
-        matches.append((created_at, resolved))
+        matches.append((profile_rank, created_at, resolved))
 
     add_candidate(normalized_profile.parent / "transcript-validation.json")
     root = transcript_validation_root()
@@ -133,12 +328,16 @@ def latest_transcript_validation_for_profile(profile_path: Path) -> Path | None:
         pass
     if not matches:
         return None
-    matches.sort(key=lambda row: row[0], reverse=True)
-    return matches[0][1]
+    matches.sort(key=lambda row: row[1], reverse=True)
+    matches.sort(key=lambda row: row[0])
+    return matches[0][2]
 
 
 def latest_quality_gate_for_profile(profile_path: Path) -> dict[str, Any] | None:
     normalized_profile = profile_path.resolve()
+    expected_profile_sha256 = profile_sha256_for_path(normalized_profile)
+    if not expected_profile_sha256:
+        return None
     matches: list[tuple[str, Path, dict[str, Any]]] = []
     root = quality_gate_root()
     try:
@@ -155,7 +354,13 @@ def latest_quality_gate_for_profile(profile_path: Path) -> dict[str, Any] | None
         if not isinstance(inputs, dict):
             continue
         raw_profile = inputs.get("profileJson")
-        if not isinstance(raw_profile, str) or Path(raw_profile).expanduser().resolve() != normalized_profile:
+        if not same_resolved_path(raw_profile, normalized_profile, path.parent):
+            continue
+        if inputs.get("profileSha256") != expected_profile_sha256:
+            continue
+        if isinstance(inputs.get("loraPath"), str) and str(inputs.get("loraPath")).strip():
+            continue
+        if not quality_gate_full_eval_inputs(inputs):
             continue
         created_at = str(payload.get("createdAt") or "")
         matches.append((created_at, path.expanduser().resolve(), payload))
@@ -175,6 +380,431 @@ def latest_quality_gate_for_profile(profile_path: Path) -> dict[str, Any] | None
     }
 
 
+def quality_gate_score_path(report: dict[str, Any] | None) -> Path | None:
+    if not isinstance(report, dict):
+        return None
+    gate_json = report.get("json")
+    if not isinstance(gate_json, str) or not gate_json.strip():
+        return None
+    paths = report.get("paths")
+    if not isinstance(paths, dict):
+        return None
+    return resolve_quality_gate_path(paths.get("score"), gate_json)
+
+
+def quality_gate_missing_profile_reference_preset_ids(report: dict[str, Any] | None) -> list[str]:
+    score_path = quality_gate_score_path(report)
+    if not score_path:
+        return []
+    score = load_json_file(score_path)
+    if not score:
+        return []
+    summary = score.get("summary") if isinstance(score.get("summary"), dict) else {}
+    profile_reference_reviews = summary.get("profileReferenceReviewGroups")
+    if not isinstance(profile_reference_reviews, int) or profile_reference_reviews <= 0:
+        return []
+    groups = score.get("groups") if isinstance(score.get("groups"), list) else []
+    missing_ids: list[str] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        if group.get("verdict") == "pass":
+            continue
+        profile_reference = group.get("profileReference") if isinstance(group.get("profileReference"), dict) else {}
+        missing_by_render = (
+            profile_reference.get("missingByRender")
+            if isinstance(profile_reference.get("missingByRender"), list)
+            else []
+        )
+        for row in missing_by_render:
+            if not isinstance(row, dict):
+                continue
+            for preset_id in string_list(row.get("missingPronunciationPresetIds")):
+                if preset_id not in missing_ids:
+                    missing_ids.append(preset_id)
+    return missing_ids
+
+
+def profile_reference_repair_clips(kit_manifest: Path, preset_ids: list[str]) -> list[dict[str, Any]]:
+    if not preset_ids:
+        return []
+    payload = load_json_file(kit_manifest)
+    clips = payload.get("clips") if isinstance(payload, dict) and isinstance(payload.get("clips"), list) else []
+    rows: list[dict[str, Any]] = []
+    seen_clip_ids: set[str] = set()
+    for preset_id in preset_ids:
+        matching_clip = next(
+            (
+                clip
+                for clip in clips
+                if isinstance(clip, dict)
+                and preset_id in set(string_list(clip.get("pronunciationPresetIds")))
+                and isinstance(clip.get("id"), str)
+                and str(clip.get("id")).strip()
+            ),
+            None,
+        )
+        if not matching_clip:
+            continue
+        clip_id = str(matching_clip["id"]).strip()
+        if clip_id in seen_clip_ids:
+            continue
+        seen_clip_ids.add(clip_id)
+        rows.append(
+            {
+                "presetId": preset_id,
+                "clipId": clip_id,
+                "transcript": matching_clip.get("transcript"),
+            }
+        )
+    return rows
+
+
+def profile_reference_recording_command(
+    *,
+    kit_manifest: Path,
+    profile_id: str,
+    clip_ids: list[str],
+    record_countdown_sec: int,
+    non_interactive: bool = False,
+) -> str:
+    args = ["--manifest", str(kit_manifest)]
+    for clip_id in clip_ids:
+        args.extend(["--clip", clip_id])
+    args.extend(
+        [
+            "--profile-id",
+            profile_id,
+            "--auto-duration",
+            "--countdown-sec",
+            str(record_countdown_sec),
+            "--write-metadata",
+            "--check-selected",
+        ]
+    )
+    if non_interactive:
+        args.append("--yes")
+    else:
+        args.extend(["--open-cue-sheet", "--microphone-smoke-sec", "2"])
+    return user_py_script("record_voice_profile_recording_kit.py", args)
+
+
+def quality_gate_full_eval_inputs(inputs: dict[str, Any]) -> bool:
+    cases = inputs.get("case")
+    tags = inputs.get("tag")
+    if isinstance(cases, list) and cases:
+        return False
+    if isinstance(tags, list) and tags:
+        return False
+    if isinstance(cases, str) and cases.strip():
+        return False
+    if isinstance(tags, str) and tags.strip():
+        return False
+    return inputs.get("maxCases") is None
+
+
+def resolve_quality_gate_path(raw_path: Any, gate_json: str | None) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute() and gate_json:
+        path = Path(gate_json).expanduser().resolve(strict=False).parent / path
+    return path.resolve(strict=False)
+
+
+def quality_gate_transcript_validation_paths(inputs: dict[str, Any], proofs: dict[str, Any], paths: dict[str, Any], gate_json: str | None) -> list[Path]:
+    resolved: list[Path] = []
+    for raw_path in (
+        proofs.get("transcriptValidationJson"),
+        inputs.get("transcriptValidationJson"),
+        paths.get("profileTranscriptValidation"),
+    ):
+        path = resolve_quality_gate_path(raw_path, gate_json)
+        if path is not None:
+            resolved.append(path)
+    return resolved
+
+
+def quality_gate_transcript_validation_sha256s(inputs: dict[str, Any], proofs: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for raw_value in (
+        proofs.get("transcriptValidationSha256"),
+        inputs.get("transcriptValidationSha256"),
+    ):
+        if isinstance(raw_value, str) and raw_value.strip():
+            values.append(raw_value.strip())
+    return values
+
+
+def quality_gate_transcript_validation_passed(report: dict[str, Any], inputs: dict[str, Any], proofs: dict[str, Any]) -> bool:
+    profile_json = inputs.get("profileJson")
+    if not isinstance(profile_json, str) or not profile_json.strip():
+        return False
+    gate_json = report.get("json") if isinstance(report.get("json"), str) else None
+    gate_base = Path(gate_json).expanduser().resolve(strict=False).parent if gate_json else Path.cwd()
+    profile_path = (Path(profile_json).expanduser() if Path(profile_json).expanduser().is_absolute() else gate_base / Path(profile_json).expanduser()).resolve(strict=False)
+    paths = report.get("paths") if isinstance(report.get("paths"), dict) else {}
+    proof_paths = quality_gate_transcript_validation_paths(inputs, proofs, paths, gate_json)
+    if not proof_paths:
+        return False
+    proof_path = proof_paths[0]
+    if any(path != proof_path for path in proof_paths[1:]):
+        return False
+    proof_sha256s = quality_gate_transcript_validation_sha256s(inputs, proofs)
+    if not proof_sha256s or any(value != proof_sha256s[0] for value in proof_sha256s[1:]):
+        return False
+    if file_sha256(proof_path) != proof_sha256s[0]:
+        return False
+    payload = load_json_file(proof_path)
+    if not payload or payload.get("status") != "pass":
+        return False
+    raw_profile = payload.get("profile")
+    if not same_resolved_path(raw_profile, profile_path, proof_path.parent):
+        return False
+    expected_profile_sha256 = profile_sha256_for_path(profile_path)
+    validation_profile_sha256 = payload.get("profileSha256")
+    if (
+        expected_profile_sha256 is None
+        or not isinstance(validation_profile_sha256, str)
+        or not validation_profile_sha256.strip()
+        or validation_profile_sha256 != expected_profile_sha256
+    ):
+        return False
+    profile_payload = load_json_file(profile_path)
+    expected_voice_profile_id = str(profile_payload.get("voiceProfileId") or "").strip() if profile_payload else ""
+    if expected_voice_profile_id and payload.get("voiceProfileId") != expected_voice_profile_id:
+        return False
+    return bool(profile_payload and transcript_validation_rows_match_profile(profile_path, profile_payload, proof_path, payload))
+
+
+def quality_gate_artifacts_passed(report: dict[str, Any], proofs: dict[str, Any]) -> bool:
+    gate_json = report.get("json") if isinstance(report.get("json"), str) else None
+    paths = report.get("paths") if isinstance(report.get("paths"), dict) else {}
+    artifacts = proofs.get("artifacts") if isinstance(proofs.get("artifacts"), dict) else {}
+    resolved: dict[str, tuple[Path, str]] = {}
+
+    for key in ("report", "asr", "speaker", "score"):
+        path = resolve_quality_gate_path(paths.get(key), gate_json)
+        artifact = artifacts.get(key) if isinstance(artifacts.get(key), dict) else None
+        if path is None or artifact is None:
+            return False
+        artifact_path = resolve_quality_gate_path(artifact.get("path"), gate_json)
+        if artifact_path is None or artifact_path != path:
+            return False
+        proof_sha256 = artifact.get("sha256")
+        if not isinstance(proof_sha256, str) or not proof_sha256.strip():
+            return False
+        actual_sha256 = file_sha256(path)
+        if actual_sha256 != proof_sha256:
+            return False
+        resolved[key] = (path, actual_sha256)
+
+    score_path, _score_sha256 = resolved["score"]
+    score = load_json_file(score_path)
+    if not score or score.get("verdict") != "pass":
+        return False
+    thresholds = score.get("thresholds") if isinstance(score.get("thresholds"), dict) else {}
+    if thresholds.get("requireProfileReferenceSimilarity") is not True:
+        return False
+    score_groups = score.get("groups") if isinstance(score.get("groups"), list) else []
+    if not score_groups:
+        return False
+    for group in score_groups:
+        if not isinstance(group, dict):
+            return False
+        render_count = group.get("renderCount")
+        if not isinstance(render_count, int) or render_count <= 0:
+            return False
+        if group.get("verdict") != "pass":
+            return False
+        if group.get("speakerIdentityVerdict") != "pass":
+            return False
+        identity = group.get("speakerIdentity") if isinstance(group.get("speakerIdentity"), dict) else {}
+        if identity.get("verdict") != "pass":
+            return False
+        if identity.get("requireProfileReferenceSimilarity") is not True:
+            return False
+        if identity.get("profileReferenceEvaluatedRenders") != render_count:
+            return False
+
+    report_path, report_sha256 = resolved["report"]
+    asr_path, asr_sha256 = resolved["asr"]
+    speaker_path, speaker_sha256 = resolved["speaker"]
+    inputs = report.get("inputs") if isinstance(report.get("inputs"), dict) else {}
+    profile_path = resolve_quality_gate_path(inputs.get("profileJson"), gate_json)
+    profile_payload = load_json_file(profile_path) if profile_path else None
+    source_report = load_json_file(report_path)
+    if not (
+        same_resolved_path(score.get("sourceReport"), report_path, score_path.parent)
+        and score.get("sourceReportSha256") == report_sha256
+        and same_resolved_path(score.get("asrJson"), asr_path, score_path.parent)
+        and score.get("asrJsonSha256") == asr_sha256
+        and same_resolved_path(score.get("speakerJson"), speaker_path, score_path.parent)
+        and score.get("speakerJsonSha256") == speaker_sha256
+        and bool(profile_payload and source_report)
+        and report_score_profile_evidence_matches(source_report, score, profile_payload)
+        and source_report_render_output_evidence_matches(source_report, report_path)
+    ):
+        return False
+
+    inputs = report.get("inputs") if isinstance(report.get("inputs"), dict) else {}
+    lora_path = resolve_quality_gate_path(inputs.get("loraPath"), gate_json)
+    return not lora_path or source_report_lora_render_evidence_matches(source_report, lora_path, report_path)
+
+
+def product_paired_improvement_passed(report: dict[str, Any]) -> bool:
+    gate_json = report.get("json") if isinstance(report.get("json"), str) else None
+    paths = report.get("paths") if isinstance(report.get("paths"), dict) else {}
+    score_path = resolve_quality_gate_path(paths.get("score"), gate_json)
+    score = load_json_file(score_path) if score_path else None
+    if not score:
+        return False
+    paired = score.get("pairedComparison") if isinstance(score.get("pairedComparison"), dict) else None
+    if not paired or paired.get("verdict") != "pass":
+        return False
+    if paired.get("baselineCloneMode") != "prompt" or paired.get("candidateCloneMode") != "hifi":
+        return False
+    min_reduction = paired.get("minReductionPct")
+    if not isinstance(min_reduction, (int, float)):
+        min_reduction = 50.0
+    summary = paired.get("summary") if isinstance(paired.get("summary"), dict) else {}
+    pairs = paired.get("pairs") if isinstance(paired.get("pairs"), list) else []
+    pair_count = summary.get("pairs")
+    passing_pairs = summary.get("passingPairs")
+    review_pairs = summary.get("reviewPairs")
+    if not isinstance(pair_count, int) or pair_count <= 0 or len(pairs) != pair_count:
+        return False
+    if passing_pairs != pair_count or review_pairs != 0:
+        return False
+    for key in ("avgCerReductionPct", "avgWerReductionPct"):
+        value = summary.get(key)
+        if not isinstance(value, (int, float)) or float(value) < float(min_reduction):
+            return False
+    latency = summary.get("avgLatencyRegressionPct")
+    if not isinstance(latency, (int, float)) or float(latency) > 0:
+        return False
+    for row in pairs:
+        if not isinstance(row, dict) or row.get("verdict") != "pass":
+            return False
+        if row.get("baselineCloneMode") != "prompt" or row.get("candidateCloneMode") != "hifi":
+            return False
+        for key in ("cerReductionPct", "werReductionPct"):
+            value = row.get(key)
+            if not isinstance(value, (int, float)) or float(value) < float(min_reduction):
+                return False
+        speaker_delta = row.get("speakerSimilarityDelta")
+        if not isinstance(speaker_delta, (int, float)) or float(speaker_delta) < 0:
+            return False
+        row_latency = row.get("latencyRegressionPct")
+        if row.get("latencyVerdict") != "pass" or not isinstance(row_latency, (int, float)) or float(row_latency) > 0:
+            return False
+    return True
+
+
+def render_effective_params(render: dict[str, Any]) -> dict[str, Any] | None:
+    candidates: list[Any] = [
+        render.get("metadataJson"),
+        render.get("hotWorkerMetadata"),
+        render,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        effective = candidate.get("effectiveParams")
+        if isinstance(effective, dict):
+            return effective
+    return None
+
+
+def source_report_lora_render_evidence_matches(report: dict[str, Any], adapter_path: Path, report_path: Path) -> bool:
+    matched_renders = 0
+    groups = report.get("groups") if isinstance(report.get("groups"), list) else []
+    for group in groups:
+        if not isinstance(group, dict) or str(group.get("cloneMode") or "") != "hifi":
+            continue
+        renders = group.get("renders") if isinstance(group.get("renders"), list) else []
+        for render in renders:
+            if not isinstance(render, dict) or render.get("status") != "ready":
+                continue
+            matched_renders += 1
+            effective = render_effective_params(render)
+            if effective is None:
+                return False
+            if effective.get("loraEnabled") is not True:
+                return False
+            if not same_resolved_path(effective.get("loraPath"), adapter_path, report_path.parent):
+                return False
+    return matched_renders > 0
+
+
+def profile_evidence_matches(value: Any, *, voice_profile_id: str | None, profile_sha256: str | None, require: bool = True) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if voice_profile_id:
+        actual_voice_profile_id = str(value.get("voiceProfileId") or "").strip()
+        if actual_voice_profile_id:
+            if actual_voice_profile_id != voice_profile_id:
+                return False
+        elif require:
+            return False
+    if profile_sha256:
+        actual_profile_sha256 = str(value.get("profileSha256") or "").strip()
+        if actual_profile_sha256:
+            if actual_profile_sha256 != profile_sha256:
+                return False
+        elif require:
+            return False
+    return True
+
+
+def group_profile_evidence_matches(groups: Any, *, voice_profile_id: str | None, profile_sha256: str | None) -> bool:
+    if not isinstance(groups, list):
+        return False
+    matched_renders = 0
+    for group in groups:
+        if not isinstance(group, dict):
+            return False
+        if not profile_evidence_matches(group, voice_profile_id=voice_profile_id, profile_sha256=profile_sha256, require=False):
+            return False
+        renders = group.get("renders")
+        if not isinstance(renders, list):
+            return False
+        for render in renders:
+            if not isinstance(render, dict):
+                return False
+            matched_renders += 1
+            if not profile_evidence_matches(render, voice_profile_id=voice_profile_id, profile_sha256=profile_sha256):
+                return False
+    return matched_renders > 0
+
+
+def report_score_profile_evidence_matches(report: dict[str, Any], score: dict[str, Any], profile_payload: dict[str, Any]) -> bool:
+    voice_profile_id = str(profile_payload.get("voiceProfileId") or "").strip() or None
+    profile_sha256 = canonical_profile_sha256(profile_payload)
+    return (
+        profile_evidence_matches(
+            score.get("voiceProfile"),
+            voice_profile_id=voice_profile_id,
+            profile_sha256=profile_sha256,
+        )
+        and group_profile_evidence_matches(
+            score.get("groups"),
+            voice_profile_id=voice_profile_id,
+            profile_sha256=profile_sha256,
+        )
+        and profile_evidence_matches(
+            report.get("voiceProfile"),
+            voice_profile_id=voice_profile_id,
+            profile_sha256=profile_sha256,
+        )
+        and group_profile_evidence_matches(
+            report.get("groups"),
+            voice_profile_id=voice_profile_id,
+            profile_sha256=profile_sha256,
+        )
+    )
+
+
 def strict_profile_quality_gate_passed(report: dict[str, Any] | None) -> bool:
     if not report or report.get("status") != "pass" or report.get("dryRun") is not False:
         return False
@@ -183,12 +813,18 @@ def strict_profile_quality_gate_passed(report: dict[str, Any] | None) -> bool:
     if not isinstance(inputs, dict) or not isinstance(proofs, dict):
         return False
     return (
+        quality_gate_full_eval_inputs(inputs)
+        and
         inputs.get("skipProfileVerify") is not True
         and inputs.get("skipTranscriptValidation") is not True
         and proofs.get("profileVerifyRequired") is True
         and proofs.get("profileVerifyPassed") is True
+        and proofs.get("profileVerifySkipped") is not True
         and proofs.get("transcriptValidationRequired") is True
         and proofs.get("transcriptValidationPassed") is True
+        and proofs.get("transcriptValidationSkipped") is not True
+        and quality_gate_transcript_validation_passed(report, inputs, proofs)
+        and quality_gate_artifacts_passed(report, proofs)
     )
 
 
@@ -199,24 +835,27 @@ def product_quality_gate_passed(report: dict[str, Any] | None) -> bool:
     proofs = report.get("proofs") if isinstance(report, dict) else None
     if not isinstance(inputs, dict) or not isinstance(proofs, dict):
         return False
+    if isinstance(inputs.get("loraPath"), str) and str(inputs.get("loraPath")).strip():
+        return False
     speaker = proofs.get("speakerBackendRequirement")
     speaker_ok = (
         isinstance(speaker, dict)
         and speaker.get("required") == PRODUCT_PROOF_SPEAKER_BACKEND
         and speaker.get("selected") == PRODUCT_PROOF_SPEAKER_BACKEND
     )
-    commands = report.get("commands") if isinstance(report.get("commands"), dict) else {}
-    score_command = str(commands.get("score") or "") if isinstance(commands, dict) else ""
     return (
         inputs.get("cloneMode") == "both"
         and inputs.get("requireSpeakerBackend") == PRODUCT_PROOF_SPEAKER_BACKEND
         and speaker_ok
-        and "require-paired-improvement" in score_command
+        and product_paired_improvement_passed(report)
     )
 
 
 def latest_product_quality_gate_for_profile(profile_path: Path) -> dict[str, Any] | None:
     normalized_profile = profile_path.resolve()
+    expected_profile_sha256 = profile_sha256_for_path(normalized_profile)
+    if not expected_profile_sha256:
+        return None
     matches: list[tuple[str, Path, dict[str, Any]]] = []
     root = quality_gate_root()
     try:
@@ -233,7 +872,9 @@ def latest_product_quality_gate_for_profile(profile_path: Path) -> dict[str, Any
         if not isinstance(inputs, dict):
             continue
         raw_profile = inputs.get("profileJson")
-        if not isinstance(raw_profile, str) or Path(raw_profile).expanduser().resolve() != normalized_profile:
+        if not same_resolved_path(raw_profile, normalized_profile, path.parent):
+            continue
+        if inputs.get("profileSha256") != expected_profile_sha256:
             continue
         report = {
             "json": str(path.expanduser().resolve()),
@@ -425,6 +1066,51 @@ def check_detail_rows(check: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def pending_external_recording_sources(audio_check: dict[str, Any] | None, kit_manifest: Path) -> list[dict[str, Any]]:
+    source_dir = kit_manifest.parent / "recordings"
+    pending: list[dict[str, Any]] = []
+    for row in check_detail_rows(audio_check):
+        raw_errors = row.get("errors")
+        errors = [str(error) for error in raw_errors] if isinstance(raw_errors, list) else []
+        if "audio_file_missing" not in errors:
+            continue
+        raw_audio_path = row.get("audioPath")
+        if not isinstance(raw_audio_path, str) or not raw_audio_path.strip():
+            continue
+        target_path = Path(raw_audio_path).expanduser().resolve(strict=False)
+        clip_id = str(row.get("id") or "").strip()
+        stems = [target_path.stem, clip_id]
+        seen: set[Path] = set()
+        source_path: Path | None = None
+        for stem in stems:
+            if not stem:
+                continue
+            for suffix in EXTERNAL_RECORDING_SOURCE_STEM_SUFFIXES:
+                for extension in EXTERNAL_RECORDING_SOURCE_EXTENSIONS:
+                    candidate = (source_dir / f"{stem}{suffix}{extension}").expanduser().resolve(strict=False)
+                    if candidate in seen or candidate == target_path:
+                        continue
+                    seen.add(candidate)
+                    if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                        source_path = candidate
+                        break
+                if source_path is not None:
+                    break
+            if source_path is not None:
+                break
+        if source_path is None:
+            continue
+        pending.append(
+            {
+                "id": clip_id or target_path.stem,
+                "index": row.get("index"),
+                "audioPath": str(target_path),
+                "sourceAudioPath": str(source_path),
+            }
+        )
+    return pending
 
 
 def transcript_failed_rows(check: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -705,6 +1391,8 @@ def commands(
         "--profile-json",
         str(profile_path),
         "--backend",
+        "voxcpm2-hifi",
+        "--backend",
         "indextts2",
         "--backend",
         "f5-tts",
@@ -827,6 +1515,7 @@ def commands(
                 str(record_countdown_sec),
                 "--write-metadata",
                 "--auto-duration",
+                "--check",
                 "--run-proof-after-check",
             ],
         ),
@@ -845,6 +1534,7 @@ def commands(
                 str(record_countdown_sec),
                 "--write-metadata",
                 "--auto-duration",
+                "--check",
                 "--run-product-proof-after-check",
             ],
         ),
@@ -863,8 +1553,17 @@ def commands(
                 str(record_countdown_sec),
                 "--write-metadata",
                 "--auto-duration",
+                "--check",
                 "--prepare-lora-after-product-proof",
             ],
+        ),
+        "normalizeExternalRecordings": user_py_script(
+            "normalize_voice_profile_recording_kit_audio.py",
+            ["--manifest", str(kit_manifest), "--check", "--profile-id", profile_id],
+        ),
+        "normalizePresentExternalRecordings": user_py_script(
+            "normalize_voice_profile_recording_kit_audio.py",
+            ["--manifest", str(kit_manifest), "--only-present", "--profile-id", profile_id],
         ),
         "recordProfileKitNonInteractive": user_py_script(
             "record_voice_profile_recording_kit.py",
@@ -1054,108 +1753,16 @@ def post_recording_proof_plan(
     }
 
 
-def next_action(
+def recording_kit_action(
     *,
-    profile_report: dict[str, Any] | None,
     kit_report: dict[str, Any] | None,
-    quality_gate_report: dict[str, Any] | None,
-    product_quality_gate_report: dict[str, Any] | None,
     profile_exists: bool,
     kit_exists: bool,
     cmds: dict[str, str],
     kit_manifest: Path,
     profile_id: str,
     record_countdown_sec: int,
-) -> dict[str, Any]:
-    if profile_report and profile_report.get("status") == "ready":
-        if product_quality_gate_passed(product_quality_gate_report):
-            return {
-                "id": "prepare_lora_dataset",
-                "phase": "lora_dataset",
-                "status": "ready_for_lora_dataset",
-                "command": cmds["prepareLoraDataset"],
-                "secondaryCommands": [
-                    cmds["prepareLoraTrainingJob"],
-                    cmds["prepareBackendShootout"],
-                    cmds["registerBackendRenders"],
-                ],
-                "reason": "strict profile and paired product proof passed; export the consented LoRA dataset next",
-            }
-        if strict_profile_quality_gate_passed(quality_gate_report):
-            return {
-                "id": "run_product_proof_quality_gate",
-                "phase": "product_proof",
-                "status": "ready_for_product_proof",
-                "command": cmds["qualityGateProductProof"],
-                "secondaryCommands": [
-                    cmds["prepareBackendShootout"],
-                    cmds["prepareLoraDataset"],
-                    cmds["prepareLoraTrainingJob"],
-                ],
-                "reason": "hifi quality gate passed; run the paired product proof before LoRA handoff",
-            }
-        return {
-            "id": "run_quality_gate",
-            "phase": "quality_gate",
-            "status": "ready_for_quality_gate",
-            "command": cmds["qualityGate"],
-            "secondaryCommands": [
-                cmds["qualityGateProductProof"],
-                cmds["prepareBackendShootout"],
-                cmds["prepareLoraDataset"],
-                cmds["prepareLoraTrainingJob"],
-            ],
-            "reason": "strict profile verifier passed; prove quality before making the digital voice default",
-        }
-
-    transcript_check = report_check(profile_report, "transcript_validation")
-    if profile_report and transcript_check and transcript_check.get("ok") is False:
-        other_failed = [
-            row.get("check")
-            for row in profile_report.get("checks", [])
-            if isinstance(row, dict) and row.get("check") != "transcript_validation" and row.get("ok") is False
-        ]
-        if not other_failed:
-            failed_rows = transcript_failed_rows(transcript_check)
-            first_failed_source_run_id = str(failed_rows[0].get("sourceRunId") or "").strip() if failed_rows else ""
-            first_failed_clip_id = str(failed_rows[0].get("repairClipId") or failed_rows[0].get("sourceRunId") or failed_rows[0].get("id") or "").strip() if failed_rows else ""
-            repair_commands = (
-                per_clip_recording_commands(
-                    manifest_path=kit_manifest,
-                    profile_id=profile_id,
-                    clip_id=first_failed_clip_id,
-                    record_countdown_sec=record_countdown_sec,
-                )
-                if first_failed_clip_id
-                else {}
-            )
-            if repair_commands:
-                return {
-                    "id": "fix_transcript_validation_clip",
-                    "phase": "transcript_validation",
-                    "status": "needs_transcript_rerecord",
-                    "command": repair_commands["repairCommand"],
-                    "nonInteractiveCommand": repair_commands["repairCommandNonInteractive"],
-                    "failedClip": first_failed_clip_id,
-                    "failedSourceRunId": first_failed_source_run_id or None,
-                    "failedClipErrors": [f"transcript_validation_{failed_rows[0].get('verdict') or 'failed'}"],
-                    "secondaryCommands": [
-                        repair_commands["rehearseCommand"],
-                        cmds["validateTranscripts"],
-                        cmds["verifyProfileStrict"],
-                        cmds["qualityGate"],
-                    ],
-                    "reason": "ASR transcript validation failed for a selected clip; re-record that exact scripted clip, then validate again",
-                }
-            return {
-                "id": "validate_transcripts",
-                "phase": "transcript_validation",
-                "status": "needs_transcript_validation",
-                "command": cmds["validateTranscripts"],
-                "secondaryCommands": [cmds["verifyProfileStrict"], cmds["qualityGate"]],
-                "reason": "profile clips are otherwise ready, but ASR transcript validation is missing or failed",
-            }
-
+) -> dict[str, Any] | None:
     if kit_exists and kit_report and kit_report.get("status") == "ready_to_import":
         return {
             "id": "enroll_profile_kit",
@@ -1196,6 +1803,46 @@ def next_action(
                 "reason": "; ".join(str(row.get("message") or row.get("check")) for row in blocked_metadata),
             }
         if audio_check and audio_check.get("ok") is False:
+            missing_audio_rows = [
+                row
+                for row in check_detail_rows(audio_check)
+                if "audio_file_missing" in string_list(row.get("errors"))
+            ]
+            pending_external = pending_external_recording_sources(audio_check, kit_manifest)
+            if missing_audio_rows and len(pending_external) == len(missing_audio_rows):
+                return {
+                    "id": "normalize_external_recordings",
+                    "phase": "recording_import",
+                    "status": "needs_external_recording_normalization",
+                    "command": cmds["normalizeExternalRecordings"],
+                    "secondaryCommands": [
+                        cmds["checkRecordingKit"],
+                        cmds["enrollProfileKitAndValidate"],
+                        cmds["recordMissingUntilComplete"],
+                    ],
+                    "pendingExternalRecordings": pending_external,
+                    "reason": f"{len(pending_external)} external recording file(s) are present; normalize them into the fixed kit WAV paths before enrollment",
+                }
+            if pending_external:
+                return {
+                    "id": "normalize_partial_external_recordings",
+                    "phase": "recording_import",
+                    "status": "needs_partial_external_recording_normalization",
+                    "command": cmds["normalizePresentExternalRecordings"],
+                    "secondaryCommands": [
+                        cmds["recordMissingUntilComplete"],
+                        cmds["normalizeExternalRecordings"],
+                        cmds["checkRecordingKit"],
+                        cmds["enrollProfileKitAndValidate"],
+                    ],
+                    "pendingExternalRecordings": pending_external,
+                    "missingRecordingClips": [
+                        str(row.get("id") or "")
+                        for row in missing_audio_rows
+                        if str(row.get("id") or "").strip()
+                    ],
+                    "reason": f"{len(pending_external)} external recording file(s) are present, but {len(missing_audio_rows) - len(pending_external)} missing WAV source(s) still need recording",
+                }
             return {
                 "id": "record_profile_kit",
                 "phase": "recording",
@@ -1209,10 +1856,12 @@ def next_action(
                     cmds["recordProfileKitAndProve"],
                     cmds["recordProfileKitAndProductProof"],
                     cmds["recordProfileKitToLoraHandoff"],
+                    cmds["normalizeExternalRecordings"],
                     cmds["recordProfileKit"],
                     cmds["checkRecordingKit"],
                     cmds["enrollProfileKitAndValidate"],
                 ],
+                "pendingExternalRecordings": pending_external,
                 "reason": str(audio_check.get("message") or "recording kit is missing audio files"),
             }
         failed_audio_quality = [
@@ -1289,6 +1938,182 @@ def next_action(
             "reason": "profile manifest is missing; inspect the recording kit before enrollment",
         }
 
+    return None
+
+
+def next_action(
+    *,
+    profile_report: dict[str, Any] | None,
+    kit_report: dict[str, Any] | None,
+    quality_gate_report: dict[str, Any] | None,
+    product_quality_gate_report: dict[str, Any] | None,
+    profile_path: Path,
+    profile_exists: bool,
+    kit_exists: bool,
+    cmds: dict[str, str],
+    kit_manifest: Path,
+    profile_id: str,
+    record_countdown_sec: int,
+) -> dict[str, Any]:
+    product_depth = profile_product_capture_depth(profile_path) if profile_exists else {
+        "ok": False,
+        "selectedClips": 0,
+        "totalDurationSec": 0.0,
+        "missingPronunciationPresetIds": PRODUCT_PRONUNCIATION_PRESET_IDS,
+    }
+    if kit_exists and kit_report and not product_depth.get("ok"):
+        action = recording_kit_action(
+            kit_report=kit_report,
+            profile_exists=profile_exists,
+            kit_exists=kit_exists,
+            cmds=cmds,
+            kit_manifest=kit_manifest,
+            profile_id=profile_id,
+            record_countdown_sec=record_countdown_sec,
+        )
+        if action and (action.get("id") != "enroll_profile_kit" or not profile_exists):
+            action["productCaptureDepth"] = product_depth
+            return action
+
+    if profile_report and profile_report.get("status") == "ready":
+        if product_quality_gate_passed(product_quality_gate_report):
+            return {
+                "id": "prepare_lora_dataset",
+                "phase": "lora_dataset",
+                "status": "ready_for_lora_dataset",
+                "command": cmds["prepareLoraDataset"],
+                "secondaryCommands": [
+                    cmds["prepareLoraTrainingJob"],
+                    cmds["prepareBackendShootout"],
+                    cmds["registerBackendRenders"],
+                ],
+                "reason": "strict profile and paired product proof passed; export the consented LoRA dataset next",
+            }
+        if strict_profile_quality_gate_passed(quality_gate_report):
+            return {
+                "id": "run_product_proof_quality_gate",
+                "phase": "product_proof",
+                "status": "ready_for_product_proof",
+                "command": cmds["qualityGateProductProof"],
+                "secondaryCommands": [
+                    cmds["prepareBackendShootout"],
+                    cmds["prepareLoraDataset"],
+                    cmds["prepareLoraTrainingJob"],
+                ],
+                "reason": "hifi quality gate passed; run the paired product proof before LoRA handoff",
+            }
+        missing_reference_presets = quality_gate_missing_profile_reference_preset_ids(quality_gate_report)
+        repair_clips = profile_reference_repair_clips(kit_manifest, missing_reference_presets)
+        if repair_clips:
+            clip_ids = [str(row["clipId"]) for row in repair_clips if isinstance(row.get("clipId"), str)]
+            return {
+                "id": "record_quality_gate_profile_reference",
+                "phase": "quality_gate_repair",
+                "status": "needs_profile_reference_recording",
+                "command": profile_reference_recording_command(
+                    kit_manifest=kit_manifest,
+                    profile_id=profile_id,
+                    clip_ids=clip_ids,
+                    record_countdown_sec=record_countdown_sec,
+                ),
+                "nonInteractiveCommand": profile_reference_recording_command(
+                    kit_manifest=kit_manifest,
+                    profile_id=profile_id,
+                    clip_ids=clip_ids,
+                    record_countdown_sec=record_countdown_sec,
+                    non_interactive=True,
+                ),
+                "secondaryCommands": [
+                    cmds["proveRecordedKit"],
+                    cmds["qualityGate"],
+                ],
+                "profileReferenceRepair": {
+                    "presetIds": missing_reference_presets,
+                    "clipIds": clip_ids,
+                    "clips": repair_clips,
+                    "sourceQualityGateJson": quality_gate_report.get("json") if isinstance(quality_gate_report, dict) else None,
+                    "sourceScoreJson": str(quality_gate_score_path(quality_gate_report))
+                    if quality_gate_score_path(quality_gate_report)
+                    else None,
+                },
+                "reason": "latest hifi quality gate is blocked by missing profile-reference coverage; record the focused reference clips before rerunning the proof chain",
+            }
+        return {
+            "id": "run_quality_gate",
+            "phase": "quality_gate",
+            "status": "ready_for_quality_gate",
+            "command": cmds["qualityGate"],
+            "secondaryCommands": [
+                cmds["qualityGateProductProof"],
+                cmds["prepareBackendShootout"],
+                cmds["prepareLoraDataset"],
+                cmds["prepareLoraTrainingJob"],
+            ],
+            "reason": "strict profile verifier passed; prove quality before making the digital voice default",
+        }
+
+    transcript_check = report_check(profile_report, "transcript_validation")
+    if profile_report and transcript_check and transcript_check.get("ok") is False:
+        other_failed = [
+            row.get("check")
+            for row in profile_report.get("checks", [])
+            if isinstance(row, dict) and row.get("check") != "transcript_validation" and row.get("ok") is False
+        ]
+        if not other_failed:
+            failed_rows = transcript_failed_rows(transcript_check)
+            first_failed_source_run_id = str(failed_rows[0].get("sourceRunId") or "").strip() if failed_rows else ""
+            first_failed_clip_id = str(failed_rows[0].get("repairClipId") or failed_rows[0].get("sourceRunId") or failed_rows[0].get("id") or "").strip() if failed_rows else ""
+            repair_commands = (
+                per_clip_recording_commands(
+                    manifest_path=kit_manifest,
+                    profile_id=profile_id,
+                    clip_id=first_failed_clip_id,
+                    record_countdown_sec=record_countdown_sec,
+                )
+                if first_failed_clip_id
+                else {}
+            )
+            if repair_commands:
+                return {
+                    "id": "fix_transcript_validation_clip",
+                    "phase": "transcript_validation",
+                    "status": "needs_transcript_rerecord",
+                    "command": repair_commands["repairCommand"],
+                    "nonInteractiveCommand": repair_commands["repairCommandNonInteractive"],
+                    "failedClip": first_failed_clip_id,
+                    "failedSourceRunId": first_failed_source_run_id or None,
+                    "failedClipErrors": [f"transcript_validation_{failed_rows[0].get('verdict') or 'failed'}"],
+                    "secondaryCommands": [
+                        repair_commands["rehearseCommand"],
+                        cmds["validateTranscripts"],
+                        cmds["verifyProfileStrict"],
+                        cmds["qualityGate"],
+                    ],
+                    "reason": "ASR transcript validation failed for a selected clip; re-record that exact scripted clip, then validate again",
+                }
+            return {
+                "id": "validate_transcripts",
+                "phase": "transcript_validation",
+                "status": "needs_transcript_validation",
+                "command": cmds["validateTranscripts"],
+                "secondaryCommands": [cmds["verifyProfileStrict"], cmds["qualityGate"]],
+                "reason": "profile clips are otherwise ready, but ASR transcript validation is missing or failed",
+            }
+
+    action = recording_kit_action(
+        kit_report=kit_report,
+        profile_exists=profile_exists,
+        kit_exists=kit_exists,
+        cmds=cmds,
+        kit_manifest=kit_manifest,
+        profile_id=profile_id,
+        record_countdown_sec=record_countdown_sec,
+    )
+    if action:
+        if not product_depth.get("ok"):
+            action["productCaptureDepth"] = product_depth
+        return action
+
     return {
         "id": "inspect_profile",
         "phase": "diagnosis",
@@ -1316,7 +2141,12 @@ def run_action(
     allow_lora_export: bool,
 ) -> tuple[dict[str, Any], int]:
     action_id = str(action.get("id") or "")
-    recording_action_ids = {"record_profile_kit", "fix_recording_kit", "fix_transcript_validation_clip"}
+    recording_action_ids = {
+        "record_profile_kit",
+        "fix_recording_kit",
+        "fix_transcript_validation_clip",
+        "record_quality_gate_profile_reference",
+    }
     if action_id in recording_action_ids and not allow_recording:
         result = run_shell_command(cmds["preflightRecordingKit"])
         return (
@@ -1442,6 +2272,7 @@ def evaluate_state(
         kit_report=kit_report,
         quality_gate_report=quality_gate_report,
         product_quality_gate_report=product_quality_gate_report,
+        profile_path=profile_path,
         profile_exists=profile_exists,
         kit_exists=kit_exists,
         cmds=cmds,
@@ -1501,7 +2332,7 @@ def evaluate_state(
             cmds=cmds,
         ),
     }
-    if brief:
+    if brief and action.get("id") != "record_quality_gate_profile_reference":
         payload["recordingBrief"] = brief
         payload["missingRecordingClips"] = brief.get("clipsNeedingAudio", [])
     return payload, action, cmds
@@ -1522,6 +2353,32 @@ def brief_backend_line(label: str, backend: dict[str, Any] | None) -> str:
     python_value = str(backend.get(python_key) or "")
     suffix = f" via {python_value}" if python_value else ""
     return f"- {label}: {status} ({required}){suffix}"
+
+
+def brief_number(value: Any, fallback: int | float) -> str:
+    raw = value if isinstance(value, (int, float)) else fallback
+    if isinstance(raw, int):
+        return str(raw)
+    return f"{float(raw):.3f}".rstrip("0").rstrip(".")
+
+
+def product_capture_depth_brief_lines(payload: dict[str, Any]) -> list[str]:
+    action = payload.get("nextAction") if isinstance(payload.get("nextAction"), dict) else {}
+    capture_depth = action.get("productCaptureDepth") if isinstance(action, dict) else None
+    if not isinstance(capture_depth, dict):
+        return []
+    selected = capture_depth.get("selectedClips")
+    duration = capture_depth.get("totalDurationSec")
+    missing_presets = string_list(capture_depth.get("missingPronunciationPresetIds"))
+    lines = [
+        "Capture depth: "
+        f"{brief_number(selected, 0)}/{brief_number(PRODUCT_CAPTURE_CLIPS, PRODUCT_CAPTURE_CLIPS)} clips",
+        "Capture duration: "
+        f"{brief_number(duration, 0)}/{brief_number(PRODUCT_CAPTURE_DURATION_SEC, PRODUCT_CAPTURE_DURATION_SEC)}s",
+    ]
+    if missing_presets:
+        lines.append(f"Missing pronunciation coverage: {', '.join(missing_presets)}")
+    return lines
 
 
 def first_recording_brief_clip(recording_brief_payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1548,6 +2405,9 @@ def format_brief(payload: dict[str, Any]) -> str:
     reason = str(action.get("reason") or "").strip()
     if reason:
         lines.append(f"Reason: {reason}")
+    capture_depth_lines = product_capture_depth_brief_lines(payload)
+    if capture_depth_lines:
+        lines.extend(["", *capture_depth_lines])
     command_text = str(action.get("command") or "").strip()
     if command_text:
         lines.extend(["", "Next command:", command_text])
@@ -1577,11 +2437,12 @@ def format_brief(payload: dict[str, Any]) -> str:
             if clip_command:
                 lines.extend(["", "Focused clip command:", clip_command])
 
-    if commands_payload:
+    if commands_payload and action.get("id") != "record_quality_gate_profile_reference":
         command_rows = [
             ("Open/check mic", "microphoneSmokeTestRecordingKit"),
             ("Preflight", "preflightRecordingKit"),
             ("Record missing clips", "recordMissingUntilComplete"),
+            ("Normalize phone files", "normalizeExternalRecordings"),
             ("Record and prove", "recordProfileKitAndProve"),
             ("Product proof after recording", "recordProfileKitAndProductProof"),
             ("LoRA handoff after product proof", "recordProfileKitToLoraHandoff"),
@@ -1625,6 +2486,7 @@ def main() -> None:
     parser.add_argument("--profile-id", default="local-default")
     parser.add_argument("--transcript-validation-json", help="Existing transcript-validation JSON to pass into the strict verifier.")
     parser.add_argument("--transcript-asr-json", help="External ASR JSON to pass into validate_voice_profile_transcripts.py when --run reaches transcript validation.")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON. This is the default unless --brief is used.")
     parser.add_argument("--brief", action="store_true", help="Print a compact terminal checklist instead of JSON.")
     parser.add_argument("--fail-unless-ready", action="store_true", help="Exit 2 unless the strict profile is ready for the quality gate.")
     parser.add_argument("--run", action="store_true", help="Run the safe next step. Recording/enrollment/expensive phases require explicit allow flags.")
@@ -1637,6 +2499,8 @@ def main() -> None:
     parser.add_argument("--allow-lora-export", action="store_true", help="Allow --run to export the consented LoRA dataset after all proof gates pass.")
     parser.add_argument("--stop-before-lora", action="store_true", help="With --run --auto-advance, stop once the LoRA dataset export becomes the next action.")
     args = parser.parse_args()
+    if args.brief and args.json:
+        parser.error("--brief and --json cannot be used together")
     if args.max_steps <= 0:
         raise SystemExit("--max-steps must be positive")
     if args.record_countdown_sec < 0:

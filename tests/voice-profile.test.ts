@@ -16,7 +16,7 @@ const profileTranscriptFixtures = [
 async function writeRun(
   id: string,
   quality: { grade: string; durationSec: number; warnings?: string[] },
-  options: { transcript?: string; sourceKind?: string } = {},
+  options: { transcript?: string; sourceKind?: string; recordingKitClipId?: string } = {},
 ) {
   const runDir = path.join(tmpRoot, id);
   await mkdir(runDir, { recursive: true });
@@ -27,10 +27,18 @@ async function writeRun(
     "utf-8",
   );
   await writeFile(path.join(runDir, "target.txt"), "target words", "utf-8");
-  if (options.sourceKind) {
+  if (options.sourceKind || options.recordingKitClipId) {
+    const request: Record<string, unknown> = {};
+    if (options.sourceKind) {
+      request.sourceKind = options.sourceKind;
+      request.referenceSource = { kind: options.sourceKind };
+    }
+    if (options.recordingKitClipId) {
+      request.recordingKitClipId = options.recordingKitClipId;
+    }
     await writeFile(
       path.join(runDir, "request.json"),
-      JSON.stringify({ sourceKind: options.sourceKind, referenceSource: { kind: options.sourceKind } }),
+      JSON.stringify(request),
       "utf-8",
     );
   }
@@ -81,6 +89,26 @@ describe("buildVoiceProfileSummary", () => {
       { grade: "B", count: 2 },
     ]);
     expect(profile.diagnostics.missingCoverageFeatures).toEqual([]);
+  });
+
+  it("caps the curated default profile at eight selected clips", async () => {
+    await Promise.all([
+      writeRun("clip1", { grade: "A", durationSec: 16 }, { transcript: "如果遇到重要名字，例如 Brenda、AnyVoice、台北、紐約、重慶、銀行、角色、音樂和長樂，我會保持穩定的音量與節奏。" }),
+      writeRun("clip2", { grade: "A", durationSec: 14 }, { transcript: "遇到英文或產品名稱時，例如 OpenAI、Mac Studio、VoxCPM2 和 TestFlight，我會用平常說話的方式讀出來。" }),
+      writeRun("clip3", { grade: "A", durationSec: 12 }, { transcript: "請注意多音字：重慶、行長、長樂、角色和音樂，都要保持固定讀法，不要忽快忽慢。" }),
+      writeRun("clip4", { grade: "B", durationSec: 13 }, { transcript: "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，遠方傳來陣陣鳥鳴，世界顯得格外安靜。" }),
+      writeRun("clip5", { grade: "B", durationSec: 11 }, { transcript: "Hello大家好歡迎回到陽光財經我是Sunny今天是二零二六年五月二十一號星期四。" }),
+      writeRun("clip6", { grade: "B", durationSec: 10 }, { transcript: "這段錄音包含高低起伏、停頓和短句，目的是讓數位聲音更接近我平常說話的方式。" }),
+      writeRun("clip7", { grade: "B", durationSec: 9 }, { transcript: "請確認錄音環境安靜、沒有回音，也不要離麥克風太近，讓聲音保持乾淨自然。" }),
+      writeRun("clip8", { grade: "B", durationSec: 8 }, { transcript: "日期範例是二零二六年五月二十日，我會用自然的速度，把每一句話清楚地讀完。" }),
+      writeRun("clip9", { grade: "B", durationSec: 7 }, { transcript: "這是另一段清楚的繁體聲音樣本，內容簡短但節奏穩定，方便驗證選取上限。" }),
+      writeRun("stale-extra", { grade: "B", durationSec: 6.1 }, { transcript: "請確認錄音環境安靜、沒有回音，也不要離麥克風太近，讓聲音保持乾淨自然。" }),
+    ]);
+
+    const profile = await buildVoiceProfileSummary({ env: { ANYVOICE_RUNS_DIR: tmpRoot } });
+
+    expect(profile.status).toBe("ready");
+    expect(profile.summary.selectedClips).toBe(8);
   });
 
   it("marks a single A/B clip usable but not studio-grade (quick-clone unlock)", async () => {
@@ -231,6 +259,24 @@ describe("buildVoiceProfileSummary", () => {
     );
   });
 
+  it("carries recording kit clip ids from enrollment requests", async () => {
+    await Promise.all([
+      writeRun("plain-long", { grade: "A", durationSec: 12 }, { transcript: "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，世界很安靜。" }),
+      writeRun("numbers", { grade: "A", durationSec: 10 }, { transcript: "今天是二零二六年五月十九日，我會清楚讀完。" }),
+      writeRun("brand", { grade: "A", durationSec: 9 }, { transcript: "我會把 Brenda 與 AnyVoice 的名稱讀清楚。" }),
+      writeRun("rhythm", { grade: "A", durationSec: 8 }, { transcript: "這段錄音包含高低起伏、停頓和短句，讓聲音自然、乾淨。" }),
+      writeRun("kit-09", { grade: "A", durationSec: 7 }, {
+        transcript: "請注意多音字：重慶、行長、長樂、角色和音樂，都要保持固定讀法，不要忽快忽慢。",
+        sourceKind: "scripted",
+        recordingKitClipId: "profile-clip-09",
+      }),
+    ]);
+
+    const profile = await buildVoiceProfileSummary({ env: { ANYVOICE_RUNS_DIR: tmpRoot } });
+
+    expect(profile.clips.find((clip) => clip.sourceRunId === "kit-09")?.recordingKitClipId).toBe("profile-clip-09");
+  });
+
   it("keeps the profile not ready until exact required pronunciation presets are covered", async () => {
     await Promise.all([
       writeRun("subset-1", { grade: "A", durationSec: 8 }, { transcript: "這是第一段 AnyVoice、重慶、銀行，二零二六年五月十九日。" }),
@@ -335,6 +381,49 @@ describe("buildVoiceProfileSummary", () => {
     expect(selection?.clip.sourceRunId).toBe("bank-president");
     expect(selection?.targetPronunciationPresetIds).toEqual(["polyphone:bank-president"]);
     expect(selection?.matchedPronunciationPresetIds).toEqual(["polyphone:bank-president"]);
+  });
+
+  it("infers newly-added pronunciation preset coverage from stale persisted clip transcripts", async () => {
+    await Promise.all([
+      writeRun("plain-long", { grade: "A", durationSec: 12 }, { transcript: "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，世界很安靜。" }),
+      writeRun("generic-polyphones", { grade: "A", durationSec: 11 }, { transcript: "Brenda、AnyVoice、重慶、銀行、角色、音樂和長樂，都要讀準。" }),
+      writeRun("clean", { grade: "A", durationSec: 10 }, { transcript: "請確認錄音環境安靜、沒有回音，讓聲音保持乾淨自然。" }),
+      writeRun("numbers", { grade: "A", durationSec: 9 }, { transcript: "今天是二零二六年五月十九日，我會清楚讀完。" }),
+      writeRun("rhythm", { grade: "A", durationSec: 8 }, { transcript: "這段錄音包含高低起伏、停頓和短句，讓聲音自然。" }),
+    ]);
+
+    const profile = await buildVoiceProfileSummary({ env: { ANYVOICE_RUNS_DIR: tmpRoot } });
+    const staleProfile = {
+      ...profile,
+      clips: profile.clips.map((clip) => ({
+        ...clip,
+        pronunciationPresetIds: [],
+      })),
+    };
+    const selection = selectVoiceProfileClipForTarget(staleProfile, "如果錄音品質夠乾淨，聲音就可以使用。");
+
+    expect(selection?.clip.sourceRunId).toBe("clean");
+    expect(selection?.targetPronunciationPresetIds).toEqual(["polyphone:ganjing"]);
+    expect(selection?.matchedPronunciationPresetIds).toEqual(["polyphone:ganjing"]);
+  });
+
+  it("uses target pronunciation order to break equal brand reference ties", async () => {
+    await Promise.all([
+      writeRun("plain-long", { grade: "A", durationSec: 12 }, { transcript: "你好，我正在錄製一段聲音樣本。春天的陽光灑在湖面上，世界很安靜。" }),
+      writeRun("voxcpm", { grade: "A", durationSec: 8 }, { transcript: "遇到 VoxCPM2 這個產品名稱時，我會保持自然清楚。" }),
+      writeRun("anyvoice", { grade: "A", durationSec: 8 }, { transcript: "遇到 AnyVoice 這個產品名稱時，我會保持自然清楚。" }),
+      writeRun("numbers", { grade: "A", durationSec: 10 }, { transcript: "今天是二零二六年五月十九日，我會清楚讀完。" }),
+      writeRun("rhythm", { grade: "A", durationSec: 9 }, { transcript: "這段錄音包含高低起伏、停頓和短句，讓聲音自然、乾淨。" }),
+      writeRun("polyphones", { grade: "A", durationSec: 9 }, { transcript: "重慶、銀行、角色、音樂和長樂，都要讀準。" }),
+    ]);
+
+    const profile = await buildVoiceProfileSummary({ env: { ANYVOICE_RUNS_DIR: tmpRoot } });
+    const selection = selectVoiceProfileClipForTarget(profile, "請幫我把 AnyVoice 和 VoxCPM2 的結果整理好。");
+
+    expect(profile.status).toBe("ready");
+    expect(selection?.clip.sourceRunId).toBe("anyvoice");
+    expect(selection?.targetPronunciationPresetIds).toEqual(["brand:anyvoice", "brand:voxcpm2"]);
+    expect(selection?.matchedPronunciationPresetIds).toEqual(["brand:anyvoice"]);
   });
 
   it("does not let profile-generated runs enroll themselves again", async () => {

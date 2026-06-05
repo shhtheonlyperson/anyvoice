@@ -36,6 +36,34 @@ beforeEach(() => {
         missingClips: ["profile-clip-01", "profile-clip-02"],
       },
     ],
+    completionRequirements: [
+      {
+        id: "recording_kit",
+        stageId: "recording_kit",
+        order: 1,
+        requirement: "extended recording kit exists and every required fixed-prompt WAV passes the pre-import check",
+        status: "blocked",
+        ok: false,
+        message: "recording kit is incomplete",
+        evidence: {
+          missingClips: ["profile-clip-01", "profile-clip-02"],
+          recommendedClips: 10,
+        },
+      },
+      {
+        id: "proof_environment",
+        stageId: "proof_environment",
+        order: 4,
+        requirement: "Faster-Whisper ASR and speechbrain-ecapa speaker-verification backends are available in the configured Python environments",
+        status: "pass",
+        ok: true,
+        message: "ASR and product speaker-verification backends are ready",
+        evidence: {
+          asr: { selectedAutoBackend: "faster-whisper" },
+          speaker: { selectedAutoBackend: "speechbrain-ecapa" },
+        },
+      },
+    ],
     firstBlocker: {
       id: "recording_kit",
       status: "blocked",
@@ -66,6 +94,19 @@ beforeEach(() => {
         },
       },
     },
+    firstIncompleteRequirement: {
+      id: "recording_kit",
+      stageId: "recording_kit",
+      order: 1,
+      requirement: "extended recording kit exists and every required fixed-prompt WAV passes the pre-import check",
+      status: "blocked",
+      ok: false,
+      message: "recording kit is incomplete",
+      evidence: {
+        missingClips: ["profile-clip-01", "profile-clip-02"],
+        recommendedClips: 10,
+      },
+    },
     nextCommand:
       "python3 scripts/record_voice_profile_recording_kit.py --manifest generated/voice-profile-recording-kits/local-default-current/manifest.json --record-missing-until-complete --open-cue-sheet --profile-id local-default --countdown-sec 2 --write-metadata --check --auto-duration",
     nextBriefCommand:
@@ -76,6 +117,30 @@ beforeEach(() => {
       "python3 scripts/record_voice_profile_recording_kit.py --manifest generated/voice-profile-recording-kits/local-default-current/manifest.json --preflight --brief --microphone-smoke-sec 2 --profile-id local-default --auto-duration",
     nextNormalizeExternalRecordingsCommand:
       "python3 scripts/normalize_voice_profile_recording_kit_audio.py --manifest generated/voice-profile-recording-kits/local-default-current/manifest.json --check --profile-id local-default",
+    nextNormalizePresentExternalRecordingsCommand:
+      "python3 scripts/normalize_voice_profile_recording_kit_audio.py --manifest generated/voice-profile-recording-kits/local-default-current/manifest.json --only-present --check --profile-id local-default",
+    nextQualityGateRepairActions: [
+      {
+        kind: "record_profile_reference_batch",
+        priority: 1,
+        status: "ready",
+        reason: "quality gate is missing profile-reference coverage for review groups",
+        command:
+          "python3 scripts/record_voice_profile_recording_kit.py --manifest generated/voice-profile-recording-kits/local-default-current/manifest.json --clip profile-clip-09 --clip profile-clip-08 --record-missing-until-complete --profile-id local-default --check-selected",
+        clipIds: ["profile-clip-09", "profile-clip-08"],
+        presetIds: ["polyphone:bank-president", "brand:voxcpm2"],
+      },
+      {
+        kind: "run_quality_probe",
+        priority: 3,
+        status: "waiting",
+        reason: "re-render and rescore this failing case after the preceding repair actions",
+        caseId: "zh_hant_custom_readings",
+        blockedUntil: "rerun_profile_reference_proof",
+        command: "python3 scripts/run_voice_quality_gate.py --case zh_hant_custom_readings",
+        proofScope: "partial_case_probe_not_full_completion_gate",
+      },
+    ],
     nextProductProofCommand:
       "python3 scripts/record_voice_profile_recording_kit.py --manifest generated/voice-profile-recording-kits/local-default-current/manifest.json --record-missing-until-complete --open-cue-sheet --profile-id local-default --countdown-sec 2 --write-metadata --check --auto-duration --run-product-proof-after-check",
     nextProofEnvironmentCommand:
@@ -101,6 +166,32 @@ describe("POST /api/voice-profile/goal-audit", () => {
     const body = await res.json();
     expect(body.audit).toMatchObject({
       status: "blocked",
+      completionRequirements: [
+        {
+          id: "recording_kit",
+          status: "blocked",
+          ok: false,
+          evidence: {
+            missingClips: ["profile-clip-01", "profile-clip-02"],
+          },
+        },
+        {
+          id: "proof_environment",
+          status: "pass",
+          ok: true,
+          evidence: {
+            asr: { selectedAutoBackend: "faster-whisper" },
+            speaker: { selectedAutoBackend: "speechbrain-ecapa" },
+          },
+        },
+      ],
+      firstIncompleteRequirement: {
+        id: "recording_kit",
+        requirement: expect.stringContaining("extended recording kit"),
+        evidence: {
+          missingClips: ["profile-clip-01", "profile-clip-02"],
+        },
+      },
       firstBlocker: {
         id: "recording_kit",
         missingClips: ["profile-clip-01", "profile-clip-02"],
@@ -120,6 +211,25 @@ describe("POST /api/voice-profile/goal-audit", () => {
       nextOpenCueSheetCommand: expect.stringContaining("cue-sheet.html"),
       nextMicrophoneSmokeTestCommand: expect.stringContaining("--microphone-smoke-sec 2"),
       nextNormalizeExternalRecordingsCommand: expect.stringContaining("normalize_voice_profile_recording_kit_audio.py"),
+      nextNormalizePresentExternalRecordingsCommand: expect.stringContaining("--only-present"),
+      nextQualityGateRepairActions: [
+        {
+          kind: "record_profile_reference_batch",
+          priority: 1,
+          status: "ready",
+          command: expect.stringContaining("--clip profile-clip-09 --clip profile-clip-08"),
+          clipIds: ["profile-clip-09", "profile-clip-08"],
+          presetIds: ["polyphone:bank-president", "brand:voxcpm2"],
+        },
+        {
+          kind: "run_quality_probe",
+          priority: 3,
+          status: "waiting",
+          caseId: "zh_hant_custom_readings",
+          blockedUntil: "rerun_profile_reference_proof",
+          proofScope: "partial_case_probe_not_full_completion_gate",
+        },
+      ],
       nextProductProofCommand: expect.stringContaining("--run-product-proof-after-check"),
       nextProofEnvironmentCommand: expect.stringContaining("score_speaker_similarity.py --list-backends"),
       nextLoraHandoffCommand: expect.stringContaining("--prepare-lora-after-product-proof"),

@@ -99,6 +99,7 @@ describe("validate_voice_profile_transcripts.py", () => {
     });
     await expect(stat(outPath)).resolves.toMatchObject({ size: expect.any(Number) });
     const report = JSON.parse(await readFile(outPath, "utf-8"));
+    expect(report.profileSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(report.clips.every((clip: { verdict: string }) => clip.verdict === "pass")).toBe(true);
   });
 
@@ -129,6 +130,63 @@ describe("validate_voice_profile_transcripts.py", () => {
     });
     const report = JSON.parse(await readFile(outPath, "utf-8"));
     expect(report.textScoringPolicy.zhScriptEquivalence).toBe("common_simplified_to_traditional");
+  });
+
+  it("does not fail profile validation only because ASR returns Arabic date digits", async () => {
+    const { profilePath, asrPath } = await writeProfile();
+    const asr = JSON.parse(await readFile(asrPath, "utf-8"));
+    asr.transcripts[1].transcript = "今天是2026年5月19日。";
+    await writeFile(asrPath, `${JSON.stringify(asr, null, 2)}\n`, "utf-8");
+    const outPath = path.join(tmpRoot, "arabic-date-validation.json");
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      profilePath,
+      "--asr-json",
+      asrPath,
+      "--out",
+      outPath,
+      "--strict",
+    ]);
+
+    expect(JSON.parse(stdout)).toMatchObject({
+      status: "pass",
+      total: 2,
+      passed: 2,
+      failed: 0,
+    });
+  });
+
+  it("does not fail profile validation only because ASR truncates a known brand name", async () => {
+    const { profilePath, asrPath } = await writeProfile();
+    const profile = JSON.parse(await readFile(profilePath, "utf-8"));
+    profile.clips[0].transcriptRaw = "遇到英文或產品名稱時，例如 OpenAI、Mac Studio、VoxCPM2 和 TestFlight，我會用平常說話的方式讀出來。";
+    await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf-8");
+    const asr = JSON.parse(await readFile(asrPath, "utf-8"));
+    asr.transcripts[0].transcript = "遇到英文或产品名称时,例如OpenAI, MacStudio, VoxCPM2和TestFly,我会用平常说话的方式读出来。";
+    await writeFile(asrPath, `${JSON.stringify(asr, null, 2)}\n`, "utf-8");
+    const outPath = path.join(tmpRoot, "brand-asr-validation.json");
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--profile-json",
+      profilePath,
+      "--asr-json",
+      asrPath,
+      "--out",
+      outPath,
+      "--strict",
+    ]);
+
+    expect(JSON.parse(stdout)).toMatchObject({
+      status: "pass",
+      total: 2,
+      passed: 2,
+      failed: 0,
+    });
+    const report = JSON.parse(await readFile(outPath, "utf-8"));
+    expect(report.textScoringPolicy.brandEquivalence).toBe("common_asr_brand_variants");
   });
 
   it("fails strict validation when ASR contradicts a profile transcript", async () => {

@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { modelId, runsRoot, type CloneEnv } from "@/lib/clone-config";
-import type { CloneInput, QualityPreset, SourceKind } from "@/lib/clone-request";
-import type { PronunciationOverride } from "@/lib/text-prep";
+import type { CloneInput, CloneProfileReference, QualityPreset, SourceKind } from "@/lib/clone-request";
+import { prepareVoiceText, type PreparedVoiceText, type PronunciationOverride } from "@/lib/text-prep";
 import type {
   CloneReadyPayload,
   CloneWorkerMissingPayload,
@@ -25,6 +25,8 @@ export interface RunHistoryRecord {
   promptTranscript: string;
   quality: QualityPreset;
   pronunciationOverrides?: PronunciationOverride[];
+  profileReference?: CloneProfileReference;
+  textPreparation?: RunHistoryTextPreparation;
   audioUrl?: string;
   referenceQuality?: ReferenceQuality;
   targetLanguage?: string | null;
@@ -44,6 +46,8 @@ export interface RunHistoryItem {
   promptTranscript: string;
   quality: QualityPreset;
   pronunciationOverrides?: PronunciationOverride[];
+  profileReference?: CloneProfileReference;
+  textPreparation?: RunHistoryTextPreparation;
   audioUrl?: string;
   referenceQuality?: ReferenceQuality;
   targetLanguage?: string | null;
@@ -56,6 +60,11 @@ export interface RunHistoryItem {
 interface RunHistoryStore {
   version: 1;
   records: RunHistoryRecord[];
+}
+
+export interface RunHistoryTextPreparation {
+  targetText: PreparedVoiceText;
+  promptTranscript: PreparedVoiceText;
 }
 
 const MAX_RECORDS_PER_USER = 50;
@@ -200,6 +209,8 @@ function toRunHistoryItem(record: RunHistoryRecord): RunHistoryItem {
     promptTranscript: record.promptTranscript,
     quality: record.quality,
     pronunciationOverrides: record.pronunciationOverrides,
+    profileReference: record.profileReference,
+    textPreparation: record.textPreparation,
     audioUrl: record.audioUrl,
     referenceQuality: record.referenceQuality,
     targetLanguage: record.targetLanguage,
@@ -212,6 +223,13 @@ function toRunHistoryItem(record: RunHistoryRecord): RunHistoryItem {
 
 function baseHistoryRecord(userId: string, jobId: string, input: CloneInput, status: RunHistoryStatus): RunHistoryRecord {
   const createdAt = new Date().toISOString();
+  const textPreparation: RunHistoryTextPreparation = {
+    targetText: prepareVoiceText(input.targetText, {
+      pronunciationOverrides: input.pronunciationOverrides,
+      autoApplyPresetPronunciations: true,
+    }),
+    promptTranscript: prepareVoiceText(input.promptTranscript),
+  };
   return {
     id: jobId,
     userId,
@@ -225,6 +243,8 @@ function baseHistoryRecord(userId: string, jobId: string, input: CloneInput, sta
     promptTranscript: input.promptTranscript,
     quality: input.quality,
     pronunciationOverrides: input.pronunciationOverrides,
+    profileReference: input.profileReference,
+    textPreparation,
     createdAt,
   };
 }

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -12,6 +13,30 @@ const script = path.join(process.cwd(), "scripts", "voice_clone_regression.py");
 
 let tmpRoot: string;
 const coverage = ["zh_hant", "numbers_dates", "latin_terms", "polyphones", "punctuation_rhythm"];
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+async function canonicalProfileSha256(profilePath: string): Promise<string> {
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  delete profile.createdAt;
+  delete profile.loraPath;
+  delete profile.loraAdapter;
+  delete profile.preferredBackend;
+  return createHash("sha256").update(canonicalJson(profile), "utf-8").digest("hex");
+}
 
 beforeEach(async () => {
   tmpRoot = await mkdtemp(path.join(os.tmpdir(), "anyvoice-regression-script-"));
@@ -36,6 +61,7 @@ async function writeTranscriptValidation(
     `${JSON.stringify({
       version: 1,
       profile: profilePath,
+      profileSha256: await canonicalProfileSha256(profilePath),
       status,
       summary: {
         total: sourceRunIds.length,
@@ -71,6 +97,11 @@ async function writeStrictReadyProfile(name = "profile-match"): Promise<{
       sourceRunId: "plain",
       transcriptRaw: "你好，我正在錄製一段穩定聲音樣本。世界很安靜。",
       coverageFeatures: ["zh_hant", "punctuation_rhythm"],
+    },
+    {
+      sourceRunId: "voxcpm",
+      transcriptRaw: "遇到 VoxCPM2 這個產品名稱時，我會保持自然清楚。",
+      coverageFeatures: ["zh_hant", "latin_terms", "punctuation_rhythm"],
     },
     {
       sourceRunId: "terms",
@@ -194,13 +225,75 @@ describe("voice_clone_regression.py", () => {
     expect(html).toContain("Best overall");
     expect(html).toContain("Tie / no clear winner");
     expect(html).toContain("Export review JSON");
+    expect(html).toContain("Save review.json");
     expect(html).toContain("Download review.json");
+    expect(html).toContain("Next unanswered");
+    expect(html).toContain("data-choice-key=");
+    expect(html).toContain("chooseCurrent(\"A\")");
+    expect(html).toContain("goToNextUnanswered()");
+    expect(html).toContain("reviewScope");
+    expect(html).toContain("minimumReviewedRounds");
+    expect(html).toContain("selected rounds only");
+    expect(html).toContain("maybeAutoSave");
+    expect(html).toContain("Auto-saved");
+    expect(html).toContain("key === \"s\"");
+    expect(html).toContain("playCurrentSample");
+    expect(html).toContain("key === \"1\"");
+    expect(html).toContain("pauseAllAudio");
+    expect(html).toContain("review-progress-title");
+    expect(html).toContain("rounds reviewed");
+    expect(html).toContain("Draft choices are saved in this browser");
+    expect(html).toContain("updateProgress()");
     expect(html).toContain("reportSha256");
     expect(html).toContain("expectedSaveAs");
+    expect(html).toContain("candidateWinRate");
+    expect(html).toContain("missingChoices");
     expect(html).toContain(path.join(tmpRoot, "review.json"));
     expect(html).toContain("Reveal key after listening");
     expect(html).not.toContain("prompt / zh_hant_polyphones");
     expect(html).not.toContain("hifi / zh_hant_polyphones");
+  });
+
+  it("exits non-zero while preserving reports when a non-dry-run render fails", async () => {
+    const referenceAudio = path.join(tmpRoot, "render-failure-reference.wav");
+    await writeFile(referenceAudio, Buffer.from("RIFF"));
+    let error: unknown;
+    try {
+      await execFileAsync(python, [
+        script,
+        "--python",
+        "false",
+        "--reference-audio",
+        referenceAudio,
+        "--prompt-text",
+        "你好，這是我的聲音。",
+        "--clone-mode",
+        "hifi",
+        "--repeats",
+        "1",
+        "--case",
+        "history_failed_self_voice",
+        "--out-dir",
+        path.join(tmpRoot, "render-failure-out"),
+      ]);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toMatchObject({ code: 2 });
+    const stdout = String((error as { stdout?: string }).stdout || "");
+    const payload = JSON.parse(stdout);
+    expect(payload).toMatchObject({
+      status: "error",
+      groups: 1,
+      failedRenders: 1,
+    });
+    const report = JSON.parse(await readFile(payload.report, "utf-8"));
+    expect(report.groups[0].renders[0]).toMatchObject({
+      status: "error",
+      returnCode: 1,
+    });
+    await expect(readFile(payload.html, "utf-8")).resolves.toContain("AnyVoice Blind A/B Review");
   });
 
   it("rejects Simplified or mixed Chinese eval cases for profile-based regression", async () => {
@@ -456,6 +549,122 @@ describe("voice_clone_regression.py", () => {
     await expect(readFile(render.promptTextFile, "utf-8")).resolves.toContain("行長");
   });
 
+  it("infers newly-added pronunciation preset coverage from stale profile clip metadata", async () => {
+    const { profilePath } = await writeStrictReadyProfile("profile-stale-ganjing");
+    const profile = JSON.parse(await readFile(profilePath, "utf-8")) as {
+      clips: Array<Record<string, unknown>>;
+      referenceClipIds: string[];
+      summary: Record<string, unknown>;
+    };
+    const profileDir = path.dirname(profilePath);
+    const cleanAudioPath = path.join(profileDir, "clean.wav");
+    await writeFile(cleanAudioPath, Buffer.from([8, 9, 10]));
+    profile.clips.push({
+      sourceRunId: "clean",
+      transcriptRaw: "請確認錄音環境安靜、沒有回音，讓聲音保持乾淨自然。",
+      coverageFeatures: ["zh_hant", "polyphones", "punctuation_rhythm"],
+      pronunciationPresetIds: [],
+      audioPath: cleanAudioPath,
+      transcriptScript: "zh_hant",
+      sourceKind: "scripted",
+      quality: {
+        grade: "A",
+        durationSec: 7,
+        snrDb: 28,
+        clippingRatio: 0,
+        vadActiveRatio: 0.8,
+        warnings: [],
+      },
+    });
+    profile.referenceClipIds.push("clean");
+    profile.summary.selectedClips = profile.referenceClipIds.length;
+    profile.summary.eligibleClips = profile.referenceClipIds.length;
+    await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf-8");
+    const transcriptValidation = await writeTranscriptValidation(profilePath, profile.referenceClipIds);
+    const evalPath = path.join(tmpRoot, "stale-ganjing-eval.json");
+    await writeFile(
+      evalPath,
+      `${JSON.stringify({
+        cases: [
+          {
+            id: "target-ganjing",
+            text: "如果錄音品質夠乾淨，聲音就可以使用。",
+            tags: ["polyphone"],
+          },
+        ],
+      }, null, 2)}\n`,
+      "utf-8",
+    );
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--dry-run",
+      "--profile-json",
+      profilePath,
+      "--transcript-validation-json",
+      transcriptValidation,
+      "--eval-set",
+      evalPath,
+      "--clone-mode",
+      "hifi",
+      "--repeats",
+      "1",
+      "--out-dir",
+      path.join(tmpRoot, "stale-ganjing-out"),
+    ]);
+
+    const payload = JSON.parse(stdout);
+    const report = JSON.parse(await readFile(payload.report, "utf-8"));
+    const render = report.groups[0].renders[0];
+    expect(render.profileClipId).toBe("clean");
+    expect(render.targetPronunciationPresetIds).toEqual(["polyphone:ganjing"]);
+    expect(render.matchedPronunciationPresetIds).toEqual(["polyphone:ganjing"]);
+    expect(render.profilePronunciationPresetIds).toEqual(expect.arrayContaining(["polyphone:ganjing"]));
+  });
+
+  it("uses target pronunciation order to break equal profile reference ties", async () => {
+    const { profilePath, transcriptValidation } = await writeStrictReadyProfile("profile-brand-priority");
+    const evalPath = path.join(tmpRoot, "brand-priority-eval.json");
+    await writeFile(
+      evalPath,
+      `${JSON.stringify({
+        cases: [
+          {
+            id: "target-brand-priority",
+            text: "請幫我把 AnyVoice 和 VoxCPM2 的結果整理好。",
+            tags: ["mixed-language"],
+          },
+        ],
+      }, null, 2)}\n`,
+      "utf-8",
+    );
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--dry-run",
+      "--profile-json",
+      profilePath,
+      "--transcript-validation-json",
+      transcriptValidation,
+      "--eval-set",
+      evalPath,
+      "--clone-mode",
+      "hifi",
+      "--repeats",
+      "1",
+      "--out-dir",
+      path.join(tmpRoot, "brand-priority-out"),
+    ]);
+
+    const payload = JSON.parse(stdout);
+    const report = JSON.parse(await readFile(payload.report, "utf-8"));
+    const render = report.groups[0].renders[0];
+    expect(render.profileClipId).toBe("terms");
+    expect(render.targetPronunciationPresetIds).toEqual(["brand:anyvoice", "brand:voxcpm2"]);
+    expect(render.matchedPronunciationPresetIds).toEqual(["brand:anyvoice"]);
+    expect(render.profilePronunciationPresetIds).toEqual(expect.arrayContaining(["brand:anyvoice", "brand:voxcpm2"]));
+  });
+
   it("requires strict profile readiness before profile-based regression", async () => {
     const clipAudio = path.join(tmpRoot, "single-clip.wav");
     const profilePath = path.join(tmpRoot, "single-profile.json");
@@ -511,8 +720,8 @@ describe("voice_clone_regression.py", () => {
             text: "這次請把行長、長樂和 TSMC 的讀法固定下來。",
             tags: ["repair"],
             pronunciationOverrides: [
-              "pinyin:行長=xing2 zhang3",
-              "長樂[reading]=chang2 le4",
+              "行長=行 長",
+              "長樂=長 樂",
               { term: "TSMC", replacement: "T S M C", kind: "brand" },
             ],
           },
@@ -541,16 +750,16 @@ describe("voice_clone_regression.py", () => {
     const render = report.groups[0].renders[0];
     expect(render.stabilitySeed).toBe(1337);
     expect(render.textPreparation.targetText.model).toBe(
-      "這次請把xing2 zhang3、chang2 le4和 T S M C 的讀法固定下來。",
+      "這次請把行 長、長 樂和 T S M C 的讀法固定下來。",
     );
     expect(render.textPreparation.targetText.pronunciationOverrides).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ term: "行長", replacement: "xing2 zhang3", kind: "pinyin", source: "custom" }),
-        expect.objectContaining({ term: "長樂", replacement: "chang2 le4", kind: "reading", source: "custom" }),
+        expect.objectContaining({ term: "行長", replacement: "行 長", kind: "polyphone", source: "preset", presetId: "polyphone:bank-president" }),
+        expect.objectContaining({ term: "長樂", replacement: "長 樂", kind: "polyphone", source: "preset", presetId: "polyphone:changle" }),
         expect.objectContaining({ term: "TSMC", replacement: "T S M C", kind: "brand", source: "custom" }),
       ]),
     );
     await expect(readFile(render.targetTextRawFile, "utf-8")).resolves.toContain("行長、長樂和 TSMC");
-    await expect(readFile(render.targetTextFile, "utf-8")).resolves.toContain("xing2 zhang3、chang2 le4和 T S M C");
+    await expect(readFile(render.targetTextFile, "utf-8")).resolves.toContain("行 長、長 樂和 T S M C");
   });
 });

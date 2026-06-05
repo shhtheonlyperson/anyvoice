@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { NextRequest } from "next/server";
 import { shouldReturnWorkerMissing } from "@/lib/clone-config";
 import { cloneInputToFormData, isCloneInputError, type CloneInput, type CloneInputError } from "@/lib/clone-request";
+import { hasPreferredExternalProfileBackend } from "@/lib/clone-runner";
 import { localCloneStreamResponse, workerMissingStreamResponse } from "@/lib/clone-stream";
 import { parseCloneFormWithProfile } from "@/lib/profile-clone-input";
 import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
@@ -85,7 +86,7 @@ export async function POST(req: NextRequest) {
   }
 
   const jobId = nanoid(10);
-  if (shouldReturnWorkerMissing()) {
+  if (shouldReturnWorkerMissing() && !hasPreferredExternalProfileBackend(input)) {
     return withAnyVoiceUserCookie(workerMissingStreamResponse(jobId, input, { userId: session.userId }), session);
   }
 

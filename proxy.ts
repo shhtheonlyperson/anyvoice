@@ -9,6 +9,17 @@ import { ANYVOICE_USER_HEADER, userIdForEmail } from "@/lib/user-session";
 // are fine here. All matched routes pass through this, and we OVERWRITE the
 // identity header, so a client cannot spoof it.
 export const proxy = auth((req) => {
+  const isLocalhost = req.nextUrl.hostname === "localhost" || req.nextUrl.hostname === "127.0.0.1";
+  const localRecordingControl =
+    req.nextUrl.pathname === "/recording-kit-control" ||
+    req.nextUrl.pathname.startsWith("/api/voice-profile/recording-kit") ||
+    req.nextUrl.pathname === "/api/voice-profile/import";
+  if (isLocalhost && localRecordingControl) {
+    const headers = new Headers(req.headers);
+    headers.set(ANYVOICE_USER_HEADER, userIdForEmail("shh@theonlyperson.com"));
+    return NextResponse.next({ request: { headers } });
+  }
+
   const email = req.auth?.user?.email;
   if (!isAllowedEmail(email)) {
     const url = new URL("/api/auth/signin", req.nextUrl.origin);

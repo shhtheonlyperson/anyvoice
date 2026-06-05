@@ -1,6 +1,7 @@
 import path from "node:path";
 import { synthesizeSegment } from "@/lib/clone-runner";
-import { buildVoiceProfileSummary } from "@/lib/voice-profile";
+import { loadVoiceProfileManifest } from "@/lib/voice-profile";
+import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 import {
   bookDir,
   loadBookMeta,
@@ -22,7 +23,12 @@ export function isBookSynthesisRunning(id: string): boolean {
 }
 
 async function resolveReference(voiceProfileId?: string): Promise<{ audioPath: string; transcript: string }> {
-  const profile = await buildVoiceProfileSummary(voiceProfileId ? { profileId: voiceProfileId } : undefined);
+  const verification = await verifyVoiceProfileReadiness({
+    profileId: voiceProfileId || "local-default",
+    requireTranscriptValidation: true,
+  });
+  if (verification.status !== "ready") throw new Error("voice profile is not strict-ready");
+  const profile = await loadVoiceProfileManifest(verification.profile);
   const clip = profile.clips[0];
   if (!clip) throw new Error("voice profile has no usable clip");
   return { audioPath: clip.audioPath, transcript: clip.transcriptRaw };

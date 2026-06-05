@@ -12,7 +12,27 @@
       "id": "zh_hant_paragraph",
       "locale": "zh-Hant",
       "tags": ["paragraph", "pacing"],
-      "text": "如果今天的錄音品質夠乾淨，這個聲音應該要自然、穩定，而且每一次重新產生都聽起來像同一個人。"
+      "text": "如果今天的錄音品質夠乾淨，這個聲音應該要自然、穩定，而且每一次重新產生都聽起來像同一個人。",
+      "pronunciationOverrides": [
+        {
+          "term": "乾淨",
+          "replacement": "甘淨",
+          "kind": "polyphone"
+        }
+      ],
+      "reviewerPronunciationTargets": [
+        {
+          "term": "乾淨",
+          "pinyin": "gānjìng",
+          "reject": "qiānjìng"
+        }
+      ],
+      "subjectiveReviewNotes": [
+        {
+          "source": "generated/voice-regression/20260604-080700/review.json",
+          "note": "Reviewer heard 乾 as qian2 in all paragraph rounds; keep 乾淨 as gan1 jing4 via the model-facing 甘淨 alias."
+        }
+      ]
     },
     {
       "id": "zh_hant_numbers_dates",
@@ -32,12 +52,24 @@
       "tags": ["polyphone", "pronunciation", "repair"],
       "text": "這次請把行長、長樂和 TSMC 的讀法固定下來，不要每次重試都變得不一樣。",
       "pronunciationOverrides": [
-        "pinyin:行長=xing2 zhang3",
-        "長樂[reading]=chang2 le4",
+        "行長=行 長",
+        "長樂=長 樂",
         {
           "term": "TSMC",
           "replacement": "T S M C",
           "kind": "brand"
+        }
+      ],
+      "asrEquivalenceAliases": [
+        {
+          "text": "這次請把航長、常樂和 TSMC 的讀法固定下來，不要每次重試都變得不一樣。",
+          "reason": "faster-whisper commonly chooses same-pronunciation homophones for 行長/長樂; do not accept 重試 expanded to 重新測試 because the 20260604 blind review rejected that model-facing repair."
+        }
+      ],
+      "subjectiveReviewNotes": [
+        {
+          "source": "generated/voice-regression/20260604-080700/review.json",
+          "note": "Reviewer marked every custom_readings round rerender because audio said 重新測試 while the text says 重試."
         }
       ]
     },
@@ -45,7 +77,45 @@
       "id": "zh_hant_tone_contrast",
       "locale": "zh-Hant",
       "tags": ["tone", "pronunciation"],
-      "text": "媽媽罵馬嗎？買賣慢慢來，明明沒有那麼難。"
+      "text": "請用自然的速度說：媽媽罵馬嗎？買賣慢慢來，明明沒有那麼難。這一句要保持清楚穩定，聽起來像我平常說話。",
+      "pronunciationOverrides": [
+        {
+          "term": "媽媽罵馬嗎",
+          "replacement": "媽 媽 罵 馬 嗎",
+          "kind": "reading"
+        },
+        {
+          "term": "買賣",
+          "replacement": "買 賣",
+          "kind": "reading"
+        }
+      ],
+      "asrEquivalenceAliases": [
+        {
+          "text": "請用自然的速度說：媽媽媽媽媽？買賣慢慢來，明明沒有那麼難。這一句要保持清楚穩定，聽起來像我平常說話。",
+          "reason": "ASR text is not tone-aware enough to verify the 媽/罵/馬/嗎 minimal contrast reliably; the carrier sentence keeps speaker identity measurable."
+        },
+        {
+          "text": "請用自然的速度說：媽媽，罵媽媽，買賣慢慢來，明明沒有那麼難。這一句要保持清楚穩定，聽起來像我平常說話。",
+          "reason": "Observed faster-whisper large-v3 collapse of the tone-minimal phrase despite stable render identity."
+        }
+      ],
+      "reviewerPronunciationTargets": [
+        {
+          "term": "媽媽罵馬嗎",
+          "zhuyin": "ㄇㄚ ˙ㄇㄚ ㄇㄚˋ ㄇㄚˇ ㄇㄚ˙"
+        },
+        {
+          "term": "買賣慢慢來",
+          "zhuyin": "ㄇㄞˇ ㄇㄞˋ ㄇㄢˋ ㄇㄢˋ ㄌㄞˊ"
+        }
+      ],
+      "subjectiveReviewNotes": [
+        {
+          "source": "generated/voice-regression/20260604-080700/review.json",
+          "note": "Reviewer marked every tone_contrast round rerender; next run must preserve the supplied tone targets without making the model read zhuyin literally."
+        }
+      ]
     },
     {
       "id": "mixed_en_zh_models",
@@ -57,7 +127,31 @@
       "id": "tw_terms",
       "locale": "zh-Hant",
       "tags": ["taiwan", "traditional-chinese"],
-      "text": "這個專案要支援繁體中文、台灣用語，以及自然的英文夾雜，不要聽起來像生硬翻譯。"
+      "text": "這個專案要支援繁體中文、台灣用語，以及自然的英文夾雜，不要聽起來像生硬翻譯。",
+      "pronunciationOverrides": [
+        {
+          "term": "生硬",
+          "replacement": "生 硬",
+          "kind": "polyphone"
+        }
+      ]
+    },
+    {
+      "id": "history_failed_self_voice",
+      "locale": "zh-Hant",
+      "tags": ["history", "failure", "identity", "short"],
+      "text": "你好，這是我的聲音。",
+      "source": {
+        "kind": "local_run_history",
+        "runIds": ["Xutn2Tkeoa", "xnm1LpUCeD"],
+        "reason": "Prior local generation attempts for this user-provided target failed before producing durable output."
+      },
+      "subjectiveReviewNotes": [
+        {
+          "source": "generated/voice-regression/20260604-080700/review.json",
+          "note": "Reviewer marked every history_failed_self_voice round rerender after hearing a leading extra syllable before the target sentence."
+        }
+      ]
     }
   ]
 }

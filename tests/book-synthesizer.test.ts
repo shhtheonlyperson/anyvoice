@@ -10,8 +10,14 @@ vi.mock("@/lib/clone-runner", () => ({
   }),
 }));
 vi.mock("@/lib/voice-profile", () => ({
-  buildVoiceProfileSummary: vi.fn(async () => ({
+  loadVoiceProfileManifest: vi.fn(async () => ({
     clips: [{ audioPath: "/ref/clip.wav", transcriptRaw: "你好。" }],
+  })),
+}));
+vi.mock("@/lib/voice-profile-verify", () => ({
+  verifyVoiceProfileReadiness: vi.fn(async () => ({
+    status: "ready",
+    profile: "/tmp/profile.json",
   })),
 }));
 

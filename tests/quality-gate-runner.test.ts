@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -12,6 +13,34 @@ const script = path.join(process.cwd(), "scripts", "run_voice_quality_gate.py");
 
 let tmpRoot: string;
 const coverage = ["zh_hant", "numbers_dates", "latin_terms", "polyphones", "punctuation_rhythm"];
+
+async function fileSha256(filePath: string): Promise<string> {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+async function canonicalProfileSha256(profilePath: string): Promise<string> {
+  const profile = JSON.parse(await readFile(profilePath, "utf-8")) as Record<string, unknown>;
+  delete profile.createdAt;
+  delete profile.loraPath;
+  delete profile.loraAdapter;
+  delete profile.preferredBackend;
+  return createHash("sha256").update(canonicalJson(profile), "utf-8").digest("hex");
+}
 
 async function writeReadyProfile(): Promise<string> {
   const profileDir = path.join(tmpRoot, "profile");
@@ -73,6 +102,7 @@ async function writeTranscriptValidation(profilePath: string, sourceRunIds = ["c
     `${JSON.stringify({
       version: 1,
       profile: profilePath,
+      profileSha256: await canonicalProfileSha256(profilePath),
       status: "pass",
       summary: { total: sourceRunIds.length, passed: sourceRunIds.length, failed: 0 },
       clips: sourceRunIds.map((sourceRunId) => {
@@ -249,6 +279,24 @@ describe("run_voice_quality_gate.py", () => {
       selected: gate.inputs.selectedSpeakerBackend,
       required: null,
     });
+    expect(gate.proofs.artifacts).toMatchObject({
+      report: {
+        path: path.join(resolvedOutDir, "report.json"),
+        sha256: await fileSha256(path.join(resolvedOutDir, "report.json")),
+      },
+      asr: {
+        path: path.join(resolvedOutDir, "asr.json"),
+        sha256: await fileSha256(path.join(resolvedOutDir, "asr.json")),
+      },
+      speaker: {
+        path: path.join(resolvedOutDir, "speaker.json"),
+        sha256: await fileSha256(path.join(resolvedOutDir, "speaker.json")),
+      },
+      score: {
+        path: path.join(resolvedOutDir, "score.json"),
+        sha256: null,
+      },
+    });
     expect(gate.steps.map((step: { name: string }) => step.name)).toEqual(["regression", "asr", "speaker_similarity"]);
     expect(gate.steps[0].command).toContain("--seed 1337");
     expect(gate.steps[0].command).toContain("--python");
@@ -295,6 +343,45 @@ describe("run_voice_quality_gate.py", () => {
     expect(gate.commands.score).toContain("--candidate-clone-mode hifi");
     expect(gate.commands.score).toContain("--min-paired-reduction-pct 55.0");
     expect(gate.commands.score).toContain("--require-paired-improvement");
+  });
+
+  it("records LoRA adapter file evidence when a local adapter path is configured", async () => {
+    const outDir = path.join(tmpRoot, "gate-lora-adapter");
+    const adapterPath = path.join(tmpRoot, "lora_weights.ckpt");
+    const adapterBytes = Buffer.from("fake adapter\n", "utf8");
+    await writeFile(adapterPath, adapterBytes);
+    const resolvedAdapterPath = await realpath(adapterPath);
+
+    await execFileAsync(
+      python,
+      [
+        script,
+        "--dry-run",
+        "--out-dir",
+        outDir,
+        "--case",
+        "zh_hant_polyphones",
+        "--clone-mode",
+        "hifi",
+        "--repeats",
+        "1",
+      ],
+      {
+        env: {
+          ...process.env,
+          ANYVOICE_VOXCPM_LORA_PATH: adapterPath,
+        },
+      },
+    );
+
+    const gate = JSON.parse(await readFile(path.join(outDir, "quality-gate.json"), "utf-8"));
+    expect(gate.inputs.loraPath).toBe(resolvedAdapterPath);
+    expect(gate.proofs.loraAdapter).toMatchObject({
+      path: resolvedAdapterPath,
+      exists: true,
+      bytes: adapterBytes.byteLength,
+      sha256: createHash("sha256").update(adapterBytes).digest("hex"),
+    });
   });
 
   it("blocks before rendering when the selected speaker backend does not satisfy the required product backend", async () => {
@@ -385,12 +472,15 @@ describe("run_voice_quality_gate.py", () => {
 
     const gate = JSON.parse(await readFile(path.join(outDir, "quality-gate.json"), "utf-8"));
     const resolvedOutDir = await realpath(outDir);
+    const transcriptValidationSha256 = await fileSha256(path.join(resolvedOutDir, "profile-transcript-validation.json"));
     expect(gate.status).toBe("failed");
     expect(gate.inputs.profileJson).toContain(path.join("profile", "profile.json"));
+    expect(gate.inputs.profileSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(gate.inputs).toMatchObject({
       skipProfileVerify: false,
       skipTranscriptValidation: false,
       asrPython: fakeAsrPython,
+      transcriptValidationSha256,
     });
     expect(gate.proofs).toMatchObject({
       profileVerifyRequired: true,
@@ -399,6 +489,7 @@ describe("run_voice_quality_gate.py", () => {
       transcriptValidationRequired: true,
       transcriptValidationSkipped: false,
       transcriptValidationPassed: false,
+      transcriptValidationSha256,
     });
     expect(gate.inputs.transcriptValidationJson).toBe(path.join(resolvedOutDir, "profile-transcript-validation.json"));
     expect(gate.steps.map((step: { name: string }) => step.name)).toEqual([
@@ -433,10 +524,13 @@ describe("run_voice_quality_gate.py", () => {
     ]);
 
     const gate = JSON.parse(await readFile(path.join(outDir, "quality-gate.json"), "utf-8"));
+    const transcriptValidationSha256 = await fileSha256(transcriptValidation);
     expect(gate.status).toBe("planned");
     expect(gate.inputs.transcriptValidationJson).toBe(await realpath(transcriptValidation));
+    expect(gate.inputs.transcriptValidationSha256).toBe(transcriptValidationSha256);
     expect(gate.proofs).toMatchObject({
       transcriptValidationPassed: true,
+      transcriptValidationSha256,
       strictProfileProofRequired: true,
       strictProfileProofPassed: true,
     });
@@ -447,6 +541,8 @@ describe("run_voice_quality_gate.py", () => {
       "speaker_similarity",
     ]);
     expect(gate.steps[1].command).toContain("--transcript-validation-json");
+    expect(gate.steps[3].command).toContain("--profile-json");
+    expect(gate.steps[3].command).toContain(profilePath);
   });
 
   it("records skipped profile proof flags in the quality-gate report", async () => {

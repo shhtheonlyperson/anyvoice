@@ -13,10 +13,7 @@ import { fetchProfiles, type ProfileListItem } from "./lib/anyvoice-client";
 /** Backend two-status model → design status enum. */
 function toDesignStatus(p: ProfileListItem): VoiceStatus {
   if (p.clipCount === 0) return "empty";
-  // "ready" once the profile meets its OWN bar — strict for local-default,
-  // lenient (minClips:1) for imports — so a captured YouTube voice isn't shown
-  // as perpetually "building" while it chases studio-grade phoneme coverage.
-  if (p.meetsRequirements || p.studioGrade) return "ready";
+  if (p.studioGrade) return "ready";
   return "building";
 }
 
@@ -110,10 +107,10 @@ function Workspace({
 
       {activeTab === "audiobook" && (
         <div className="legacy-tab-slot">
-          {activeProfile?.usable ? (
+          {activeProfile?.studioGrade ? (
             <BookReader
               locale={localeForLegacy}
-              profileReady={Boolean(activeProfile?.usable)}
+              profileReady={Boolean(activeProfile?.studioGrade)}
               profileId={activeProfile.id}
             />
           ) : (

@@ -23,17 +23,19 @@ beforeAll(() => {
 
 import { VoiceCloneStudio } from "@/components/VoiceCloneStudio";
 
-type ProfileStatus = "ready" | "needs_enrollment";
+type ProfileStatus = "ready" | "needs_enrollment" | "usable";
 
 function profilePayload(status: ProfileStatus) {
   return {
     profile: {
-      status,
+      status: status === "usable" ? "needs_enrollment" : status,
+      usable: status === "ready" || status === "usable",
+      studioGrade: status === "ready",
       summary: {
-        eligibleClips: status === "ready" ? 5 : 0,
-        selectedClips: status === "ready" ? 5 : 0,
+        eligibleClips: status === "ready" ? 5 : status === "usable" ? 1 : 0,
+        selectedClips: status === "ready" ? 5 : status === "usable" ? 1 : 0,
         rejectedClips: 0,
-        remainingClipsNeeded: status === "ready" ? 0 : 5,
+        remainingClipsNeeded: status === "ready" ? 0 : status === "usable" ? 4 : 5,
       },
       requirements: { minClips: 5, maxClips: 10, minDurationSec: 6, maxDurationSec: 20, passingGrades: ["A", "B"] },
     },
@@ -172,6 +174,21 @@ describe("VoiceCloneStudio (behavior)", () => {
     container.remove();
   });
 
+  it("keeps Audiobook locked for a usable draft profile", async () => {
+    stubFetch("usable");
+    const { container, root } = await mount();
+    const genPill = Array.from(container.querySelectorAll("nav .pillbtn")).find((b) =>
+      (b.textContent || "").includes("產生聲音"),
+    ) as HTMLButtonElement;
+    const bookPill = Array.from(container.querySelectorAll("nav .pillbtn")).find((b) =>
+      (b.textContent || "").includes("有聲書"),
+    ) as HTMLButtonElement;
+    expect(genPill.disabled).toBe(false);
+    expect(bookPill.disabled).toBe(true);
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   it("blocks profile generation when target text is Simplified/mixed Chinese", async () => {
     const fetchMock = stubFetch("ready");
     const { container, root } = await mount();
@@ -210,6 +227,26 @@ describe("VoiceCloneStudio (behavior)", () => {
     const chip = container.querySelector(".pron-chip");
     expect(chip).not.toBeNull();
     expect(chip?.textContent).toContain("→");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("shows the model-facing target text before generation", async () => {
+    stubFetch("ready");
+    const { container, root } = await mount();
+    gotoGenerate(container);
+    await flush();
+    const textarea = container.querySelector("textarea.target") as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(textarea, "我在用 AnyVoice 和重慶做測試");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    const preview = container.querySelector(".model-preview") as HTMLElement;
+    expect(preview).not.toBeNull();
+    expect(preview.textContent).toContain("我在用 AnyVoice 和重慶做測試");
+    expect(preview.textContent).toContain("我在用 Any Voice 和重 慶做測試");
     await act(async () => root.unmount());
     container.remove();
   });

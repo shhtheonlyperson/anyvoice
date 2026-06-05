@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
+import {
+  parsePronunciationOverrides,
+  prepareVoiceText,
+  serializePronunciationOverride,
+  strictTraditionalChineseScriptErrors,
+  suggestPronunciationOverrides,
+  type PronunciationOverride,
+} from "@/lib/text-prep";
 import { useLang, useT, type VoiceView } from "./i18n";
 import { VoiceMark } from "./VoiceMark";
 import { MiniWaveform, StaticWaveform } from "./waveforms";
@@ -344,12 +351,17 @@ export function GenerateTab({
   const [result, setResult] = useState<ResultGen | null>(null);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [progress, setProgress] = useState<string>("");
+  const [pronText, setPronText] = useState("");
 
   // Default the picker to the active rail voice (if ready), else first ready voice.
   useEffect(() => {
     const activeReady = readyVoices.find((v) => v.id === activeVoiceId);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- default the picker to the active rail voice
-    setVoiceId((cur) => cur ?? activeReady?.id ?? readyVoices[0]?.id ?? null);
+    setVoiceId((cur) =>
+      cur && readyVoices.some((v) => v.id === cur)
+        ? cur
+        : activeReady?.id ?? readyVoices[0]?.id ?? null,
+    );
   }, [activeVoiceId, readyVoices]);
 
   const loadRuns = async () => setRuns(await fetchRuns(12));
@@ -359,11 +371,32 @@ export function GenerateTab({
   }, []);
 
   const scriptBlocked = isUnstableChineseScript(text);
+  const pronParsed = useMemo(() => parsePronunciationOverrides(pronText), [pronText]);
+  const pronOverrides = pronParsed.overrides;
+  const pronSuggestions = useMemo(
+    () => suggestPronunciationOverrides(text, pronOverrides),
+    [text, pronOverrides],
+  );
+  const preparedTarget = useMemo(
+    () => prepareVoiceText(text, { pronunciationOverrides: pronOverrides, autoApplyPresetPronunciations: true }),
+    [text, pronOverrides],
+  );
+  const showModelPreview = text.trim().length > 0 && preparedTarget.raw !== preparedTarget.model;
+  const pronInvalid = pronText.trim().length > 0 && pronParsed.rejected.length > 0;
   const charCount = text.length;
   const estSec = Math.max(3, Math.round(charCount / 12));
-  const genDisabled = generating || !text.trim() || !voiceId || scriptBlocked;
+  const genDisabled = generating || !text.trim() || !voiceId || scriptBlocked || pronInvalid;
 
   const dialTip = t("gen.dial.uiOnly");
+
+  function applyPronunciation(term: string, override: PronunciationOverride) {
+    setPronText((current) => {
+      const parsed = parsePronunciationOverrides(current);
+      if (parsed.overrides.some((o) => o.term === term)) return current;
+      const line = serializePronunciationOverride(override);
+      return current.trim() ? `${current.trim()}\n${line}` : line;
+    });
+  }
 
   async function onGenerate() {
     if (genDisabled || !voiceId) return;
@@ -371,9 +404,12 @@ export function GenerateTab({
     setProgress("");
     const picked = voices.find((v) => v.id === voiceId);
     try {
-      const res = await generateFromProfile({ profileId: voiceId, targetText: text }, (phase, done, total) => {
-        setProgress(done && total ? `${done}/${total}` : phase);
-      });
+      const res = await generateFromProfile(
+        { profileId: voiceId, targetText: text, pronunciationOverrides: pronText },
+        (phase, done, total) => {
+          setProgress(done && total ? `${done}/${total}` : phase);
+        },
+      );
       if (res.status === "ready" && res.audioUrl) {
         const id = res.jobId || `gen_${Date.now()}`;
         setResult({
@@ -431,6 +467,51 @@ export function GenerateTab({
             rows={3}
           />
         </div>
+        {text.trim().length > 0 && (
+          <div className="compose-pron">
+            <div className="compose-pron-head">
+              <span>{t("gen.pron.title")}</span>
+              {pronInvalid && (
+                <span className="compose-pron-error">
+                  {t("gen.pron.invalid", { line: pronParsed.rejected[0]?.line ?? 1 })}
+                </span>
+              )}
+            </div>
+            {pronSuggestions.length > 0 && (
+              <div className="compose-pron-chips">
+                {pronSuggestions.map((s) => (
+                  <button
+                    key={s.term}
+                    className="compose-pron-chip"
+                    onClick={() => applyPronunciation(s.term, s)}
+                    type="button"
+                  >
+                    {t("gen.pron.apply", { term: s.term, replacement: s.replacement })}
+                  </button>
+                ))}
+              </div>
+            )}
+            <textarea
+              className="compose-pron-field"
+              value={pronText}
+              onChange={(e) => setPronText(e.target.value)}
+              placeholder={t("gen.pron.placeholder")}
+              aria-label={t("gen.pron.fieldLabel")}
+              rows={2}
+            />
+          </div>
+        )}
+        {showModelPreview && (
+          <div className="compose-model-preview" aria-label={t("gen.modelPreview.title")}>
+            <span className="compose-model-preview-title">{t("gen.modelPreview.title")}</span>
+            <div className="compose-model-preview-grid">
+              <span className="compose-model-preview-label">{t("gen.modelPreview.raw")}</span>
+              <span className="compose-model-preview-text">{preparedTarget.raw}</span>
+              <span className="compose-model-preview-label">{t("gen.modelPreview.model")}</span>
+              <span className="compose-model-preview-text model">{preparedTarget.model}</span>
+            </div>
+          </div>
+        )}
         <div className="compose-toolbar">
           <div className="compose-tools-left">
             <VoicePicker voices={voices} value={voiceId} onChange={setVoiceId} />

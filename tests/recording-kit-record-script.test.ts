@@ -29,6 +29,10 @@ function textSha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+async function fileSha256(filePath: string): Promise<string> {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+}
+
 function wavBuffer(durationSec: number): Buffer {
   const sampleRate = 8000;
   const frames = Math.max(1, Math.round(durationSec * sampleRate));
@@ -1070,7 +1074,11 @@ describe("record_voice_profile_recording_kit.py", () => {
         recordingMetadataExists: true,
         recordingMetadataTranscriptSha256: textSha256(staleTranscript),
         expectedTranscriptSha256: textSha256(transcripts[1]),
-        recordingMetadataErrors: ["recording_metadata_transcript_mismatch"],
+        recordingMetadataErrors: expect.arrayContaining([
+          "recording_metadata_transcript_mismatch",
+          "recording_metadata_audio_path_missing",
+          "recording_metadata_audio_hash_missing",
+        ]),
       });
     }
   });
@@ -1434,8 +1442,12 @@ describe("record_voice_profile_recording_kit.py", () => {
     const sidecar = JSON.parse(
       await readFile(path.join(tmpRoot, "kit", "recordings", "profile-clip-01.wav.recording.json"), "utf-8"),
     );
+    const audioPath = path.join(resolvedRoot, "kit", "recordings", "profile-clip-01.wav");
     expect(sidecar).toMatchObject({
       id: "profile-clip-01",
+      audioPath,
+      audioBytes: expect.any(Number),
+      audioSha256: await fileSha256(audioPath),
       transcript: transcripts[0],
       transcriptSha256: textSha256(transcripts[0]),
       pronunciationPresetIds: [],

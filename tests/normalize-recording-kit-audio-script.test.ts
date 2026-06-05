@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -23,6 +23,10 @@ const transcripts = [
 
 function sha256Text(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
 }
 
 function wavBuffer(durationSec: number): Buffer {
@@ -128,10 +132,17 @@ describe("normalize_voice_profile_recording_kit_audio.py", () => {
     expect(firstRow.method).toBe(hasM4a ? "convert" : "copy");
 
     const target = path.join(tmpRoot, "kit", "recordings", "profile-clip-01.wav");
+    const resolvedTarget = await realpath(target);
     await expect(stat(target)).resolves.toMatchObject({ size: expect.any(Number) });
     const metadata = JSON.parse(await readFile(`${target}.recording.json`, "utf-8"));
     expect(metadata).toMatchObject({
       id: "profile-clip-01",
+      audioPath: resolvedTarget,
+      audioBytes: expect.any(Number),
+      audioSha256: await sha256File(target),
+      sourceAudioPath: expect.stringContaining(hasM4a ? "profile-clip-01.m4a" : "profile-clip-01.wav"),
+      sourceAudioBytes: expect.any(Number),
+      sourceAudioSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       transcript: transcripts[0],
       transcriptSha256: sha256Text(transcripts[0]),
       normalizer: "normalize_voice_profile_recording_kit_audio.py",
@@ -145,6 +156,66 @@ describe("normalize_voice_profile_recording_kit_audio.py", () => {
     ).rejects.toMatchObject({
       code: 2,
       stdout: expect.stringContaining('"status": "blocked"'),
+    });
+  });
+
+  it("can normalize only present external files and leave missing clips for later recording", async () => {
+    const manifest = await writeKit();
+    const sourceDir = path.join(tmpRoot, "partial-phone-recordings");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "profile-clip-01.wav"), wavBuffer(7));
+    await writeFile(path.join(sourceDir, "profile-clip-03.wav"), wavBuffer(9));
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--manifest",
+      manifest,
+      "--source-dir",
+      sourceDir,
+      "--only-present",
+      "--profile-id",
+      "local-test",
+    ]);
+
+    const payload = JSON.parse(stdout);
+    expect(payload.status).toBe("partial_normalized");
+    expect(payload.onlyPresent).toBe(true);
+    expect(payload.summary).toMatchObject({ normalized: 2, missingSources: 3, failures: 0 });
+    expect(payload.nextCommands.normalizePresentSources).toContain("--only-present");
+    expect(payload.rows.find((row: { id: string }) => row.id === "profile-clip-02")).toMatchObject({
+      status: "missing_source_skipped",
+    });
+    await expect(stat(path.join(tmpRoot, "kit", "recordings", "profile-clip-01.wav"))).resolves.toMatchObject({
+      size: expect.any(Number),
+    });
+    await expect(stat(path.join(tmpRoot, "kit", "recordings", "profile-clip-02.wav"))).rejects.toBeTruthy();
+  });
+
+  it("uses suffixed WAV exports from the recordings directory without treating them as kit targets", async () => {
+    const manifest = await writeKit();
+    const recordingsDir = path.join(tmpRoot, "kit", "recordings");
+    await mkdir(recordingsDir, { recursive: true });
+    await writeFile(path.join(recordingsDir, "profile-clip-01.source.wav"), wavBuffer(7));
+
+    const { stdout } = await execFileAsync(python, [
+      script,
+      "--manifest",
+      manifest,
+      "--only-present",
+      "--profile-id",
+      "local-test",
+    ]);
+
+    const payload = JSON.parse(stdout);
+    const firstRow = payload.rows.find((row: { id: string }) => row.id === "profile-clip-01");
+    expect(payload.status).toBe("partial_normalized");
+    expect(firstRow).toMatchObject({
+      status: "normalized",
+      method: "copy",
+      sourceAudioPath: expect.stringMatching(/profile-clip-01\.source\.wav$/),
+    });
+    await expect(stat(path.join(recordingsDir, "profile-clip-01.wav"))).resolves.toMatchObject({
+      size: expect.any(Number),
     });
   });
 });

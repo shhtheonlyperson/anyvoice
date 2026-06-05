@@ -8,7 +8,11 @@ import {
   type CloneInputError,
 } from "@/lib/clone-request";
 import { detectChineseScript } from "@/lib/text-prep";
-import { buildVoiceProfileSummary, loadVoiceProfileManifest, selectVoiceProfileClipForTarget } from "@/lib/voice-profile";
+import {
+  buildVoiceProfileSummary,
+  loadVoiceProfileManifest,
+  selectVoiceProfileClipForTarget,
+} from "@/lib/voice-profile";
 import { verifyVoiceProfileReadiness } from "@/lib/voice-profile-verify";
 
 export type ParsedCloneInput = CloneInput | CloneInputError;
@@ -22,6 +26,13 @@ export function wantsVoiceProfile(form: FormData): boolean {
     .trim()
     .toLowerCase();
   return value === "yes" || value === "true" || value === "1" || value === "profile";
+}
+
+function allowsDraftVoiceProfile(form: FormData): boolean {
+  const value = String(form.get("allowDraftVoiceProfile") || form.get("profileMode") || "")
+    .trim()
+    .toLowerCase();
+  return value === "yes" || value === "true" || value === "1" || value === "draft";
 }
 
 function contentTypeForAudio(filePath: string): string {
@@ -41,6 +52,15 @@ function contentTypeForAudio(filePath: string): string {
   }
 }
 
+function stripEvidenceBoundProfilePolicies(profile: Awaited<ReturnType<typeof buildVoiceProfileSummary>>) {
+  return {
+    ...profile,
+    loraPath: null,
+    loraAdapter: undefined,
+    preferredBackend: undefined,
+  };
+}
+
 export async function parseCloneFormWithProfile(form: FormData): Promise<ParsedCloneInput> {
   if (!wantsVoiceProfile(form)) return parseCloneForm(form);
 
@@ -58,31 +78,42 @@ export async function parseCloneFormWithProfile(form: FormData): Promise<ParsedC
   }
 
   const profileId = String(form.get("profileId") || "").trim() || undefined;
-  const summary = await buildVoiceProfileSummary(profileId ? { profileId } : undefined);
-  // P0.1/P0.2 — Generation only requires a *usable* voice (≥1 passing A/B clip,
-  // the zero-shot path the headline copy promises). The strict studio-grade bar
-  // governs LoRA/quality-gate/audiobook-at-scale, never routine "speak in my
-  // voice". A single-clip local-default profile is enough to generate.
-  if (!summary.usable) {
+  let summary = await buildVoiceProfileSummary(profileId ? { profileId } : undefined);
+  const allowDraft = allowsDraftVoiceProfile(form);
+
+  if (!allowDraft) {
+    let verification;
+    try {
+      verification = await verifyVoiceProfileReadiness({
+        profileId: summary.voiceProfileId,
+        requireTranscriptValidation: true,
+      });
+    } catch {
+      verification = null;
+    }
+    if (verification?.status !== "ready") {
+      return error(
+        409,
+        `voice profile is not strict-ready yet: complete the recording kit, transcript validation, and strict profile verifier before profile clone`,
+      );
+    }
+    summary = await loadVoiceProfileManifest(verification.profile);
+  } else if (!summary.usable) {
     return error(
       409,
       `voice profile is not usable yet: record at least one clean reference clip to generate`,
     );
   }
 
-  // Optional studio-grade enrichment (NEVER blocking): for the curated default
-  // voice, if it already passes the strict verifier we prefer that verified
-  // manifest (it may carry a curated clip selection). If the strict check fails,
-  // we still generate from the usable summary — usability is the only gate.
-  let profile = summary;
-  if (summary.voiceProfileId === "local-default" && summary.studioGrade) {
+  let profile = allowDraft ? stripEvidenceBoundProfilePolicies(summary) : summary;
+  if (allowDraft && summary.voiceProfileId === "local-default" && summary.studioGrade) {
     try {
       const verification = await verifyVoiceProfileReadiness({
         profileId: summary.voiceProfileId,
         requireTranscriptValidation: false,
       });
       if (verification.status === "ready") {
-        profile = await loadVoiceProfileManifest(verification.profile);
+        profile = stripEvidenceBoundProfilePolicies(await loadVoiceProfileManifest(verification.profile));
       }
     } catch {
       /* studio-grade verification is best-effort; a usable voice still generates */
@@ -130,6 +161,10 @@ export async function parseCloneFormWithProfile(form: FormData): Promise<ParsedC
       transcriptScript: clip.transcriptScript,
       coverageFeatures: clip.coverageFeatures,
       pronunciationPresetIds: clip.pronunciationPresetIds,
+      referenceQuality: clip.quality,
+      loraPath: profile.loraPath,
+      loraAdapter: profile.loraAdapter,
+      preferredBackend: profile.preferredBackend,
       targetCoverageFeatures: selection.targetCoverageFeatures,
       matchedCoverageFeatures: selection.matchedCoverageFeatures,
       targetPronunciationPresetIds: selection.targetPronunciationPresetIds,

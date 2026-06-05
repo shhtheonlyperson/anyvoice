@@ -5,7 +5,7 @@ import { maxUploadBytes, modelId, normalizeTargetText } from "@/lib/clone-config
 import { fileExtension, parseReferenceQuality, type ReferenceQuality } from "@/lib/clone-runner";
 import type { SourceKind } from "@/lib/clone-request";
 import { safeRunDir } from "@/lib/run-paths";
-import { detectChineseScript, prepareVoiceText, simplifiedOrMixedChineseScriptErrors } from "@/lib/text-prep";
+import { detectChineseScript, prepareVoiceText, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
 
 type EnrollmentSourceKind = Exclude<SourceKind, "profile" | "sample">;
 
@@ -13,8 +13,18 @@ export interface VoiceProfileEnrollmentInput {
   voice: File;
   promptTranscript: string;
   sourceKind?: EnrollmentSourceKind;
+  browserCaptureSettings?: BrowserCaptureSettings;
+  recordingKitClipId?: string;
   /** Which voice profile this clip enrolls into (defaults to local-default). */
   voiceProfileId?: string;
+}
+
+export interface BrowserCaptureSettings {
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  autoGainControl?: boolean;
+  sampleRate?: number;
+  channelCount?: number;
 }
 
 export interface VoiceProfileEnrollmentError {
@@ -65,6 +75,52 @@ function parseEnrollmentSourceKind(value: FormDataEntryValue | null): Enrollment
   return SOURCE_KINDS.has(candidate) ? (candidate as EnrollmentSourceKind) : undefined;
 }
 
+function coerceBrowserCaptureSettings(raw: unknown): BrowserCaptureSettings | undefined {
+  if (raw === null || raw === undefined || raw === "") return undefined;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("browserCaptureSettings must be valid JSON");
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("browserCaptureSettings must be an object");
+  }
+  const input = parsed as Record<string, unknown>;
+  const output: BrowserCaptureSettings = {};
+  for (const key of ["echoCancellation", "noiseSuppression", "autoGainControl"] as const) {
+    if (input[key] === undefined) continue;
+    if (typeof input[key] !== "boolean") throw new Error(`browserCaptureSettings.${key} must be boolean`);
+    output[key] = input[key];
+  }
+  for (const key of ["sampleRate", "channelCount"] as const) {
+    if (input[key] === undefined) continue;
+    if (typeof input[key] !== "number" || !Number.isFinite(input[key])) {
+      throw new Error(`browserCaptureSettings.${key} must be a finite number`);
+    }
+    output[key] = input[key];
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+export function parseBrowserCaptureSettings(raw: unknown): BrowserCaptureSettings | undefined {
+  return coerceBrowserCaptureSettings(raw);
+}
+
+export function browserCaptureSettingsError(settings: BrowserCaptureSettings | undefined): string | null {
+  if (!settings) return null;
+  const enabled = [
+    settings.echoCancellation ? "echoCancellation" : null,
+    settings.noiseSuppression ? "noiseSuppression" : null,
+    settings.autoGainControl ? "autoGainControl" : null,
+  ].filter(Boolean);
+  return enabled.length > 0
+    ? `browser capture settings still have microphone processing enabled (${enabled.join(", ")}); disable it and re-record`
+    : null;
+}
+
 export function parseVoiceProfileEnrollmentForm(
   form: FormData,
 ): VoiceProfileEnrollmentInput | VoiceProfileEnrollmentError {
@@ -73,6 +129,12 @@ export function parseVoiceProfileEnrollmentForm(
   const promptTranscript = normalizeTargetText(String(form.get("promptTranscript") || ""));
   const sourceKindRaw = form.get("sourceKind");
   const sourceKind = parseEnrollmentSourceKind(sourceKindRaw);
+  let browserCaptureSettings: BrowserCaptureSettings | undefined;
+  try {
+    browserCaptureSettings = coerceBrowserCaptureSettings(form.get("browserCaptureSettings"));
+  } catch (err) {
+    return error(400, err instanceof Error ? err.message : "browserCaptureSettings is invalid");
+  }
   const voiceProfileIdRaw = form.get("voiceProfileId");
   const voiceProfileId =
     typeof voiceProfileIdRaw === "string" && voiceProfileIdRaw.trim() ? voiceProfileIdRaw.trim() : undefined;
@@ -84,19 +146,21 @@ export function parseVoiceProfileEnrollmentForm(
     return error(400, "reference transcript required: type exactly what the reference clip says");
   }
   const transcriptScript = detectChineseScript(promptTranscript);
-  const scriptErrors = simplifiedOrMixedChineseScriptErrors(promptTranscript);
+  const scriptErrors = strictTraditionalChineseScriptErrors(promptTranscript);
   if (scriptErrors.length > 0) {
     return error(
       400,
-      `profile transcript must not use Simplified or mixed Chinese; Simplified clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
+      `profile transcript must be proven Traditional Chinese; Simplified, mixed, or unproven Chinese clips are not accepted for the Traditional Mandarin voice profile (${transcriptScript})`,
     );
   }
   if (sourceKindRaw !== null && sourceKind === undefined) {
     return error(400, "only user recordings or user-uploaded audio can be added to a voice profile");
   }
+  const captureError = browserCaptureSettingsError(browserCaptureSettings);
+  if (captureError) return error(400, captureError);
   if (consent !== "yes") return error(400, "voice permission confirmation required");
 
-  return { voice, promptTranscript, sourceKind, voiceProfileId };
+  return { voice, promptTranscript, sourceKind, browserCaptureSettings, voiceProfileId };
 }
 
 function runCommand(command: string, args: string[], cwd: string): Promise<CommandResult> {
@@ -172,7 +236,12 @@ async function writeEnrollmentFiles(jobId: string, input: VoiceProfileEnrollment
         voiceType: input.voice.type,
         voiceSize: input.voice.size,
         sourceKind: input.sourceKind ?? "uploaded",
-        referenceSource: { kind: input.sourceKind ?? "uploaded" },
+        referenceSource: {
+          kind: input.sourceKind ?? "uploaded",
+          ...(input.browserCaptureSettings ? { browserCaptureSettings: input.browserCaptureSettings } : {}),
+        },
+        ...(input.recordingKitClipId ? { recordingKitClipId: input.recordingKitClipId } : {}),
+        ...(input.browserCaptureSettings ? { browserCaptureSettings: input.browserCaptureSettings } : {}),
         voiceProfileId: input.voiceProfileId?.trim() || "local-default",
         createdAt: new Date().toISOString(),
         textPreparation: {

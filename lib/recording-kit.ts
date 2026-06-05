@@ -279,10 +279,14 @@ function requiredPronunciationPresetIds(promptSet: unknown): string[] {
 }
 
 function clipPronunciationPresetIds(clip: Record<string, unknown>, transcript: string): string[] {
+  const ids = new Set<string>();
   if (Array.isArray(clip.pronunciationPresetIds)) {
-    return clip.pronunciationPresetIds.filter((presetId): presetId is string => typeof presetId === "string");
+    for (const presetId of clip.pronunciationPresetIds) {
+      if (typeof presetId === "string" && presetId.length > 0) ids.add(presetId);
+    }
   }
-  return detectPronunciationPresetIds(transcript);
+  for (const presetId of detectPronunciationPresetIds(transcript)) ids.add(presetId);
+  return [...ids];
 }
 
 function summarizeKitCoverage(clips: Array<Record<string, unknown>>, promptSet: unknown): VoiceProfileRecordingKit["summary"] {

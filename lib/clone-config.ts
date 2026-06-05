@@ -9,6 +9,9 @@ export interface CloneEnv {
   ANYVOICE_VOXCPM_CLONE_MODE?: string;
   ANYVOICE_VOXCPM_LORA_PATH?: string;
   ANYVOICE_STABILITY_SEED?: string;
+  ANYVOICE_PROFILE_BACKEND_MODE?: string;
+  ANYVOICE_PROFILE_BACKEND_RENDER_COMMAND?: string;
+  ANYVOICE_BACKEND_RENDER_COMMAND?: string;
   ANYVOICE_MAX_UPLOAD_MB?: string;
   ANYVOICE_RUNS_DIR?: string;
   ANYVOICE_WORKER_URL?: string;
@@ -19,6 +22,7 @@ export interface CloneEnv {
 }
 
 export type VoxCpmCloneMode = "hifi" | "prompt";
+export type ProfileBackendMode = "preferred" | "voxcpm-first";
 
 export function modelId(env: CloneEnv = process.env): string {
   return env.ANYVOICE_MODEL_ID || "openbmb/VoxCPM2";
@@ -43,6 +47,15 @@ export function stabilitySeed(env: CloneEnv = process.env): number | null {
 
 export function hotWorkerUrl(env: CloneEnv = process.env): string {
   return (env.ANYVOICE_HOT_WORKER_URL || "").trim();
+}
+
+export function profileBackendRenderCommand(env: CloneEnv = process.env): string {
+  return (env.ANYVOICE_PROFILE_BACKEND_RENDER_COMMAND || env.ANYVOICE_BACKEND_RENDER_COMMAND || "").trim();
+}
+
+export function profileBackendMode(env: CloneEnv = process.env): ProfileBackendMode {
+  const value = (env.ANYVOICE_PROFILE_BACKEND_MODE || "preferred").trim().toLowerCase();
+  return value === "voxcpm-first" ? "voxcpm-first" : "preferred";
 }
 
 export function maxUploadBytes(env: CloneEnv = process.env): number {
