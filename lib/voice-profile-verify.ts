@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { canonicalVoiceProfileSha256 } from "@/lib/voice-profile";
+import { canonicalVoiceProfileSha256, voiceProfileRoot as canonicalVoiceProfileRoot } from "@/lib/voice-profile";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,7 +43,7 @@ function assertSafeProfileId(profileId: string): string {
 }
 
 function voiceProfileRoot(): string {
-  return path.resolve(process.env.ANYVOICE_VOICE_PROFILE_ROOT || path.join(process.cwd(), ".anyvoice", "voices"));
+  return path.resolve(canonicalVoiceProfileRoot());
 }
 
 function transcriptValidationRoot(): string {

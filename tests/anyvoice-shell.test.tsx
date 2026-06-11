@@ -50,8 +50,8 @@ const EMPTY_PROFILE = {
 
 const USABLE_DRAFT_PROFILE = {
   id: "vp_draft",
-  displayName: "草稿聲音",
-  status: "needs_enrollment",
+  displayName: "匯入聲音",
+  status: "ready",
   usable: true,
   studioGrade: false,
   meetsRequirements: true,
@@ -289,18 +289,18 @@ describe("AnyVoice workspace shell", () => {
     container.remove();
   });
 
-  it("keeps Generate locked for a usable non-studio voice", async () => {
+  it("enables Generate for an imported ready non-studio voice", async () => {
     const fetchMock = stubFetch([USABLE_DRAFT_PROFILE]);
     const { container, root } = await mount();
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     setTextValue(textarea, "請用我的聲音說這句話。");
     await flush();
 
-    expect(container.textContent).toContain("尚無已就緒的聲音");
+    expect(container.textContent).not.toContain("尚無已就緒的聲音");
     const generateButton = Array.from(container.querySelectorAll("button.btn.btn--primary")).find((button) =>
       (button.textContent || "").includes("生成"),
     ) as HTMLButtonElement | undefined;
-    expect(generateButton?.disabled).toBe(true);
+    expect(generateButton?.disabled).toBe(false);
     const cloneCalls = fetchMock.mock.calls.filter((call) => String(call[0]).includes("/api/clone/stream"));
     expect(cloneCalls).toHaveLength(0);
 
@@ -378,15 +378,15 @@ describe("Build tab — adaptive state from real summary", () => {
     container.remove();
   });
 
-  it("keeps a usable non-studio voice in the reviewing build state", async () => {
+  it("shows an imported ready non-studio voice as complete in Build", async () => {
     stubFetch([USABLE_DRAFT_PROFILE]);
     const { container, root } = await mount();
     await act(async () => clickTab(container, "建立聲音"));
     await flush();
     const readyPanel = container.querySelector(".build-status.ready");
-    expect(readyPanel).toBeNull();
-    expect(container.textContent).toContain("繼續錄音");
-    expect(container.textContent).not.toContain("你的聲音已準備好");
+    expect(readyPanel).not.toBeNull();
+    expect(container.textContent).toContain("你的聲音已準備好");
+    expect(container.textContent).not.toContain("繼續錄音");
     await act(async () => root.unmount());
     container.remove();
   });
@@ -466,6 +466,17 @@ describe("Build tab — adaptive state from real summary", () => {
 });
 
 describe("Audiobook tab — re-skinned reader", () => {
+  it("keeps Audiobook locked for an imported ready non-studio voice", async () => {
+    stubFetch([USABLE_DRAFT_PROFILE]);
+    const { container, root } = await mount();
+    await act(async () => clickTab(container, "有聲書"));
+    await flush();
+    expect(container.querySelector(".book-grid")).toBeNull();
+    expect(container.textContent).toContain("有聲書需要錄音室等級聲音");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   it("renders the library grid + upload card from /api/books", async () => {
     const { container, root } = await mount();
     await act(async () => clickTab(container, "有聲書"));

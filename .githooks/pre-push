@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# pre-push: pre-commit work + production build + fast E2E subset (e2e:fast).
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "[pre-push] Vercel path-length guard"
+node scripts/check_vercel_path_lengths.mjs
+
+echo "[pre-push] typecheck"
+npm run typecheck
+
+echo "[pre-push] lint"
+npm run lint
+
+echo "[pre-push] unit + integration (vitest)"
+npm test
+
+echo "[pre-push] production build"
+npm run build
+
+echo "[pre-push] e2e (smoke subset)"
+npm run test:e2e:fast

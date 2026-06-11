@@ -55,7 +55,7 @@ Define a typed client layer (`lib/anyvoice-client.ts`) wrapping fetches; never c
 
 | Screen action | Endpoint | Wiring notes |
 |---|---|---|
-| Load rail voices | `GET /api/voice-profile/profiles` | Map `{status,usable,studioGrade,clipCount}` → UI status: `clipCount===0→empty`, `studioGrade→ready`, else `building`. `importing` is a client-only transient. |
+| Load rail voices | `GET /api/voice-profile/profiles` | Map `{status,usable,studioGrade,meetsRequirements,clipCount}` → UI status: `clipCount===0→empty`, `status===ready || meetsRequirements→ready`, else `building`. `studioGrade` remains the strict long-form/audiobook gate. `importing` is a client-only transient. |
 | Per-voice detail (Build) | `GET /api/voice-profile?profileId=` | summary (usable/studioGrade/requirements/diagnostics). |
 | Create voice | `POST /api/voice-profile/profiles {displayName}` | Then route by source. |
 | Record path enroll | `POST /api/voice-profile/enroll` (multipart) | Per-clip enroll. The 24-line loop is the gap (§4). |

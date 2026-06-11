@@ -354,7 +354,7 @@ const COPY: Record<Locale, Copy> = {
     enrollClipping: "音量過大造成削波，請降低輸入音量或離麥克風遠一點。",
     enrollScriptBlocked: "稿件含簡體或混用字，無法錄製。",
     youtubeTitle: "從 YouTube 匯入聲音",
-    youtubeHint: "貼上 YouTube 影片網址即可擷取聲音來複製。網址含 &t=（例如 &t=300 代表從 5:00 開始）就會從該時間點掃描約 90 秒，自動切成多段參考片段建立聲音。逐字稿會自動從字幕或語音辨識取得；下方欄位選填，只在想修正時才需填寫。",
+    youtubeHint: "貼上 YouTube 影片網址即可擷取聲音來複製。網址含 &t=（例如 &t=300 代表從 5:00 開始）就會從該時間點掃描約 3 分鐘，自動切成多段參考片段建立聲音。逐字稿會自動從字幕或語音辨識取得；下方欄位選填，只在想修正時才需填寫。",
     youtubeNotice: "僅供個人與研究用途。請確認你有權使用這段聲音。",
     youtubeUrlPlaceholder: "https://www.youtube.com/watch?v=…&t=300",
     youtubeConsent: "我確認此匯入僅供個人／研究用途，且我有權使用這段聲音。",
@@ -454,7 +454,7 @@ const COPY: Record<Locale, Copy> = {
     enrollClipping: "Volume too high (clipping). Lower input gain or move back from the mic.",
     enrollScriptBlocked: "Script is Simplified or mixed Chinese and can't be recorded.",
     youtubeTitle: "Import a voice from YouTube",
-    youtubeHint: "Paste a YouTube URL to grab a voice to clone. A URL with &t= (e.g. &t=300 = start at 5:00) scans ~90s from that point and auto-splits it into several reference clips. The transcript is captured automatically from captions or speech recognition; the field below is optional, for corrections only.",
+    youtubeHint: "Paste a YouTube URL to grab a voice to clone. A URL with &t= (e.g. &t=300 = start at 5:00) scans ~3 minutes from that point and auto-splits it into several reference clips. The transcript is captured automatically from captions or speech recognition; the field below is optional, for corrections only.",
     youtubeNotice: "Personal & research use only. Confirm you have the right to use this voice.",
     youtubeUrlPlaceholder: "https://www.youtube.com/watch?v=…&t=300",
     youtubeConsent: "I confirm this import is for personal/research use and I have the right to use this voice.",
@@ -616,7 +616,7 @@ export function VoiceCloneStudio() {
   const [profile, setProfile] = useState<VoiceProfilePayload | null>(null);
   // Draft generation can use a usable voice; audiobook requires the strict curated bar.
   const profileUsable = profile?.usable ?? profile?.status === "ready";
-  const profileReady = profile?.status === "ready"; // studio-grade (kept for the build done-band)
+  const profileReady = Boolean(profile?.studioGrade); // studio-grade (kept for Book/long-form gates)
   // ---- multiple voice profiles
   const [profiles, setProfiles] = useState<VoiceProfileListItem[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("local-default");

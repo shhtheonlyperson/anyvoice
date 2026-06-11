@@ -65,25 +65,25 @@ describe("clampWindow", () => {
 });
 
 describe("clampScanWindow", () => {
-  it("defaults to a 90s scan window", () => {
-    expect(clampScanWindow(100)).toEqual({ start: 100, end: 190 });
+  it("defaults to a 180s scan window", () => {
+    expect(clampScanWindow(100)).toEqual({ start: 100, end: 280 });
   });
-  it("clamps the scan span to 30–120s", () => {
+  it("clamps the scan span to 30–300s", () => {
     expect(clampScanWindow(100, 10)).toEqual({ start: 100, end: 130 });
-    expect(clampScanWindow(100, 600)).toEqual({ start: 100, end: 220 });
+    expect(clampScanWindow(100, 600)).toEqual({ start: 100, end: 400 });
   });
 });
 
 describe("planSegments", () => {
-  // 90s of evenly-spaced 6s cues starting at t=300.
-  const cues: VttCue[] = Array.from({ length: 15 }, (_, i) => ({
+  // 180s of evenly-spaced 6s cues starting at t=300.
+  const cues: VttCue[] = Array.from({ length: 30 }, (_, i) => ({
     start: 300 + i * 6,
     end: 306 + i * 6,
     text: `句子${i + 1}`,
   }));
 
   it("chunks captions into several ~6–18s clips aligned to cue boundaries", () => {
-    const segs = planSegments(cues, 300, 390);
+    const segs = planSegments(cues, 300, 480);
     expect(segs.length).toBeGreaterThanOrEqual(5); // enough to clear the 5-clip bar
     for (const s of segs) {
       const dur = s.end - s.start;
@@ -93,7 +93,7 @@ describe("planSegments", () => {
     }
     // Segments stay within the window and don't overlap.
     expect(segs[0].start).toBeGreaterThanOrEqual(300);
-    expect(segs[segs.length - 1].end).toBeLessThanOrEqual(390);
+    expect(segs[segs.length - 1].end).toBeLessThanOrEqual(480);
   });
 
   it("drops rolling auto-caption duplicates within a clip", () => {

@@ -31,11 +31,11 @@ const MAX_WINDOW_SEC = 20;
 /**
  * Scan window: instead of one short clip, grab a longer span and auto-chunk it
  * into several reference clips so a single video can establish a full profile
- * (incl. the strict 5-clip studio-grade bar). 90s ≈ six ~14s clips.
+ * for imported voices. 3min ≈ twelve ~14s clips; the route caps enrolled clips.
  */
-const DEFAULT_SCAN_SEC = 90;
+const DEFAULT_SCAN_SEC = 180;
 const MIN_SCAN_SEC = 30;
-const MAX_SCAN_SEC = 120;
+const MAX_SCAN_SEC = 300;
 /** Per-clip duration band used when chunking the scan window. */
 const SEGMENT_TARGET_SEC = 14;
 const SEGMENT_MIN_SEC = 6;
@@ -110,8 +110,8 @@ export function clampWindow(
 }
 
 /**
- * Clamp the requested *scan* window (default 90s, 30–120s) — the longer span we
- * download and then chunk into multiple reference clips.
+ * Clamp the requested *scan* window (default 180s, 30–300s) — the longer span
+ * we download and then chunk into multiple reference clips.
  */
 export function clampScanWindow(
   start: number,

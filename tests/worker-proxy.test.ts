@@ -3,6 +3,7 @@ import {
   constantTimeEqual,
   isWorkerMode,
   workerAudioUrl,
+  workerApiUrl,
   workerBaseUrl,
   workerCloneStreamUrl,
   workerCloneUrl,
@@ -17,6 +18,9 @@ describe("worker proxy", () => {
     expect(workerCloneUrl(env)).toBe("https://worker.example/api/local-worker/clone");
     expect(workerCloneStreamUrl(env)).toBe("https://worker.example/api/local-worker/clone/stream");
     expect(workerAudioUrl("abc123", env)).toBe("https://worker.example/api/runs/abc123/audio");
+    expect(workerApiUrl("/api/voice-profile/enroll/youtube", env)).toBe(
+      "https://worker.example/api/voice-profile/enroll/youtube",
+    );
   });
 
   it("accepts a clone endpoint URL while still deriving the audio base", () => {

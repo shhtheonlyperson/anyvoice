@@ -13,7 +13,7 @@ import { fetchProfiles, type ProfileListItem } from "./lib/anyvoice-client";
 /** Backend two-status model → design status enum. */
 function toDesignStatus(p: ProfileListItem): VoiceStatus {
   if (p.clipCount === 0) return "empty";
-  if (p.studioGrade) return "ready";
+  if (p.status === "ready" || p.meetsRequirements) return "ready";
   return "building";
 }
 

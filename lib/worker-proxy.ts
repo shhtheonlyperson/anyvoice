@@ -61,6 +61,11 @@ function joinWorkerPath(base: string, pathname: string): string {
   return url.toString();
 }
 
+export function workerApiUrl(pathname: string, env: WorkerEnv = process.env): string {
+  const base = workerBaseUrl(env);
+  return base ? joinWorkerPath(base, pathname) : "";
+}
+
 export function isWorkerProxyConfigured(env: WorkerEnv = process.env): boolean {
   return Boolean(configuredWorkerUrl(env));
 }

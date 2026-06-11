@@ -128,6 +128,45 @@ describe("POST /api/voice-profile/enroll/youtube", () => {
     expect(downloadMock).not.toHaveBeenCalled();
   });
 
+  it("forwards YouTube imports to the worker when configured", async () => {
+    process.env.ANYVOICE_WORKER_URL = "https://worker.example";
+    process.env.ANYVOICE_WORKER_TOKEN = "secret";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(String(_url)).toBe("https://worker.example/api/voice-profile/enroll/youtube");
+      expect(init?.method).toBe("POST");
+      expect((init?.headers as Headers).get("authorization")).toBe("Bearer secret");
+      expect((init?.headers as Headers).get("x-anyvoice-user")).toMatch(/^av_/);
+      expect(init?.body).toBe(
+        JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", consent: "yes", profileId: "vp_worker" }),
+      );
+      return Response.json({ status: "enrolled", profile: { voiceProfileId: "vp_worker" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await POST(
+      makeReq({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", consent: "yes", profileId: "vp_worker" }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("enrolled");
+    expect(downloadMock).not.toHaveBeenCalled();
+  });
+
+  it("worker mode: rejects missing or wrong Bearer tokens in-handler", async () => {
+    process.env.ANYVOICE_WORKER_MODE = "1";
+    process.env.ANYVOICE_WORKER_TOKEN = "secret";
+
+    const unauthenticated = await POST(makeReq({ url: "https://youtu.be/dQw4w9WgXcQ", consent: "yes" }));
+    expect(unauthenticated.status).toBe(401);
+
+    const wrongToken = new Request("http://localhost/api/voice-profile/enroll/youtube", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer wrong" },
+      body: JSON.stringify({ url: "https://youtu.be/dQw4w9WgXcQ", consent: "yes" }),
+    }) as unknown as import("next/server").NextRequest;
+    expect((await POST(wrongToken)).status).toBe(401);
+    expect(downloadMock).not.toHaveBeenCalled();
+  });
+
   it("converts Simplified captions and enrolls with a Traditional transcript", async () => {
     stubDownload({ withCaptions: true });
     const res = await POST(makeReq({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=300", consent: "yes" }));
@@ -136,8 +175,8 @@ describe("POST /api/voice-profile/enroll/youtube", () => {
     const body = await res.json();
     expect(body.status).toBe("enrolled");
     expect(body.profile.status).toBe("ready");
-    // Scan window is 90s; the single 10s caption cue yields one aligned clip.
-    expect(downloadMock).toHaveBeenCalledWith(expect.objectContaining({ videoId: "dQw4w9WgXcQ", start: 300, end: 390 }));
+    // Default scan window is 180s; the single 10s caption cue yields one aligned clip.
+    expect(downloadMock).toHaveBeenCalledWith(expect.objectContaining({ videoId: "dQw4w9WgXcQ", start: 300, end: 480 }));
     expect(enrollMock).toHaveBeenCalledTimes(1);
     const transcript = enrollMock.mock.calls[0][1].promptTranscript;
     expect(transcript).toContain("這");

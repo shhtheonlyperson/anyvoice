@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildVoiceProfileSummary, selectVoiceProfileClipForTarget } from "@/lib/voice-profile";
+import { buildVoiceProfileSummary, selectVoiceProfileClipForTarget, voiceProfileRoot } from "@/lib/voice-profile";
 
 let tmpRoot: string;
 const profileTranscriptFixtures = [
@@ -16,7 +16,7 @@ const profileTranscriptFixtures = [
 async function writeRun(
   id: string,
   quality: { grade: string; durationSec: number; warnings?: string[] },
-  options: { transcript?: string; sourceKind?: string; recordingKitClipId?: string } = {},
+  options: { transcript?: string; sourceKind?: string; recordingKitClipId?: string; voiceProfileId?: string } = {},
 ) {
   const runDir = path.join(tmpRoot, id);
   await mkdir(runDir, { recursive: true });
@@ -27,7 +27,7 @@ async function writeRun(
     "utf-8",
   );
   await writeFile(path.join(runDir, "target.txt"), "target words", "utf-8");
-  if (options.sourceKind || options.recordingKitClipId) {
+  if (options.sourceKind || options.recordingKitClipId || options.voiceProfileId) {
     const request: Record<string, unknown> = {};
     if (options.sourceKind) {
       request.sourceKind = options.sourceKind;
@@ -35,6 +35,9 @@ async function writeRun(
     }
     if (options.recordingKitClipId) {
       request.recordingKitClipId = options.recordingKitClipId;
+    }
+    if (options.voiceProfileId) {
+      request.voiceProfileId = options.voiceProfileId;
     }
     await writeFile(
       path.join(runDir, "request.json"),
@@ -120,6 +123,24 @@ describe("buildVoiceProfileSummary", () => {
     expect(profile.studioGrade).toBe(false);
     expect(profile.status).toBe("needs_enrollment");
     expect(profile.summary.eligibleClips).toBe(1);
+  });
+
+  it("marks an imported profile ready once its lighter tier has a passing clip", async () => {
+    await writeRun("solo-import", { grade: "A", durationSec: 8 }, {
+      transcript: "請錄製真實聲音樣本。",
+      voiceProfileId: "vp_import",
+    });
+
+    const profile = await buildVoiceProfileSummary({
+      env: { ANYVOICE_RUNS_DIR: tmpRoot },
+      profileId: "vp_import",
+    });
+
+    expect(profile.usable).toBe(true);
+    expect(profile.studioGrade).toBe(false);
+    expect(profile.status).toBe("ready");
+    expect(profile.summary.selectedClips).toBe(1);
+    expect(profile.summary.remainingClipsNeeded).toBe(0);
   });
 
   it("marks the full curated set studio-grade (and usable)", async () => {
@@ -450,5 +471,13 @@ describe("buildVoiceProfileSummary", () => {
 
     expect(profile.summary.eligibleClips).toBe(1);
     expect(profile.clips[0].sourceRunId).toBe("real-recording");
+  });
+});
+
+describe("voiceProfileRoot", () => {
+  it("keeps relative profile roots under tmpdir on Vercel", () => {
+    expect(voiceProfileRoot({ ANYVOICE_VOICE_PROFILE_ROOT: ".anyvoice/voices", VERCEL: "1" })).toBe(
+      path.join(os.tmpdir(), ".anyvoice/voices"),
+    );
   });
 });

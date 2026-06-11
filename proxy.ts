@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth, isAllowedEmail } from "@/auth";
 import { ANYVOICE_USER_HEADER, userIdForEmail } from "@/lib/user-session";
+import { isWorkerMode, workerAuthFailure } from "@/lib/worker-proxy";
 
 // Gate the whole app behind the Google-OAuth allowlist (see auth.ts) and inject
 // the authenticated identity so voice data follows the Google account.
@@ -9,6 +10,23 @@ import { ANYVOICE_USER_HEADER, userIdForEmail } from "@/lib/user-session";
 // are fine here. All matched routes pass through this, and we OVERWRITE the
 // identity header, so a client cannot spoof it.
 export const proxy = auth((req) => {
+  // Machine-to-machine Bearer auth is honored ONLY on a worker deployment
+  // (ANYVOICE_WORKER_MODE=1), where the caller is the trusted Vercel frontend
+  // and x-anyvoice-user carries the already-authenticated identity. The public
+  // deployment never accepts Bearer callers — users go through OAuth, and the
+  // identity header is overwritten below so a client cannot spoof it.
+  const workerApiRequest =
+    req.nextUrl.pathname.startsWith("/api/local-worker/") ||
+    req.nextUrl.pathname === "/api/voice-profile/profiles" ||
+    req.nextUrl.pathname === "/api/voice-profile/enroll/youtube";
+  if (isWorkerMode() && workerApiRequest && req.headers.get("authorization")) {
+    const authFailure = workerAuthFailure(req);
+    if (authFailure) {
+      return NextResponse.json(authFailure.body, { status: authFailure.statusCode });
+    }
+    return NextResponse.next({ request: { headers: new Headers(req.headers) } });
+  }
+
   const isLocalhost = req.nextUrl.hostname === "localhost" || req.nextUrl.hostname === "127.0.0.1";
   const localRecordingControl =
     req.nextUrl.pathname === "/recording-kit-control" ||

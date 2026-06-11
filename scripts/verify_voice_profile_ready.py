@@ -486,12 +486,19 @@ def readiness_report(
     )
     rejection_reasons = diagnostics_rejection_reasons(profile)
 
+    # This verifier is the strict studio-grade gate. status=="ready" now only
+    # means the profile's own (possibly lighter import) tier is complete, so
+    # key on studioGrade; legacy manifests without the field used status.
+    studio_grade = profile.get("studioGrade")
+    if not isinstance(studio_grade, bool):
+        studio_grade = profile.get("status") == "ready"
+
     checks: list[dict[str, Any]] = []
     checks.append(
         check(
             "profile_status",
-            profile.get("status") == "ready",
-            f"profile status is {profile.get('status') or 'missing'}",
+            studio_grade,
+            f"profile status is {profile.get('status') or 'missing'}; studioGrade is {profile.get('studioGrade')}",
         )
     )
     checks.append(

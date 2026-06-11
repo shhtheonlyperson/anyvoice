@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { buildVoiceProfileSummary, type VoiceProfileSummary } from "@/lib/voice-profile";
+import { buildVoiceProfileSummary, voiceProfileRoot as canonicalVoiceProfileRoot, type VoiceProfileSummary } from "@/lib/voice-profile";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,7 +62,7 @@ function assertSafeProfileId(profileId: string): string {
 }
 
 function voiceProfileRoot(): string {
-  return path.resolve(process.env.ANYVOICE_VOICE_PROFILE_ROOT || path.join(process.cwd(), ".anyvoice", "voices"));
+  return path.resolve(canonicalVoiceProfileRoot());
 }
 
 function profileOutDir(profileId: string): string {

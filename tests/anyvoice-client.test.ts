@@ -4,6 +4,7 @@ import {
   enrollFromUpload,
   fetchVoiceCloneGoalAudit,
   fetchVoiceProfileDetail,
+  generateFromProfile,
   importVoiceProfileDraftClips,
   refreshVoiceProfileProofChain,
 } from "@/components/anyvoice/lib/anyvoice-client";
@@ -40,6 +41,30 @@ describe("anyvoice client", () => {
     expect((body as FormData).get("sourceKind")).toBe("uploaded");
     expect((body as FormData).get("voiceProfileId")).toBe("local-test");
     expect((body as FormData).get("consent")).toBe("yes");
+  });
+
+  it("generates with the usable-profile flag so imported voices do not need strict-ready proof", async () => {
+    const fetchMock = vi.fn<FetchMock>(async () =>
+      new Response(JSON.stringify({ status: "ready", audioUrl: "/api/runs/job/audio", jobId: "job" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateFromProfile({ profileId: "vp_import", targetText: "請用這個聲音說一句話。" });
+
+    expect(result.status).toBe("ready");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/clone/stream",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get("useVoiceProfile")).toBe("yes");
+    expect(body.get("profileId")).toBe("vp_import");
+    expect(body.get("allowDraftVoiceProfile")).toBe("yes");
+    expect(body.get("consent")).toBe("yes");
   });
 
   it("fetches the authoritative voice-clone goal audit checklist", async () => {
