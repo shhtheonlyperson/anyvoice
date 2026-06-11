@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from anyvoice_python_env import resolve_analyzer_python
 from build_voice_profile import detect_chinese_script, strict_traditional_script_errors
 
 
@@ -443,12 +444,7 @@ def main() -> None:
         raise SystemExit(2)
     runs_dir = Path(args.runs_dir).expanduser().resolve()
     voices_dir = Path(args.voices_dir).expanduser().resolve()
-    brenda_python = Path("/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python")
-    analyzer_python = (
-        args.analyzer_python
-        or os.environ.get("ANYVOICE_VOXCPM_PYTHON")
-        or (str(brenda_python) if brenda_python.exists() else sys.executable)
-    )
+    analyzer_python = resolve_analyzer_python(override=args.analyzer_python)
     recording_kit_check: dict[str, Any] = {
         "required": is_recording_kit_manifest,
         "skipped": bool(args.skip_kit_check and is_recording_kit_manifest),

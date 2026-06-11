@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from anyvoice_python_env import resolve_analyzer_python
 from build_voice_profile import (
     CHINESE_SCRIPT_MARKER_PAIRS,
     PRODUCT_PRONUNCIATION_PRESET_IDS,
@@ -460,7 +461,7 @@ def main() -> None:
     open_cue_sheet_command = command(["python3", "-m", "webbrowser", "-t", cue_sheet_html.as_uri()])
 
     import_command = (
-        "/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python "
+        f"{resolve_analyzer_python()} "
         f"scripts/import_voice_profile_clips.py --manifest {manifest_path} --build-profile"
     )
     check_command = f"python3 scripts/check_voice_profile_recording_kit.py --manifest {manifest_path} --profile-id {args.profile_id}"

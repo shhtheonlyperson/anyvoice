@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from anyvoice_python_env import resolve_analyzer_python
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUNS_DIR = REPO_ROOT / ".anyvoice" / "runs"
@@ -50,8 +52,7 @@ def profile_path(voices_dir: Path, profile_id: str) -> Path:
 
 
 def default_analyzer_python() -> str:
-    brenda_python = Path("/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python")
-    return str(brenda_python) if brenda_python.exists() else sys.executable
+    return resolve_analyzer_python(override=local_env_value("ANYVOICE_VOXCPM_PYTHON"))
 
 
 def local_env_value(key: str) -> str:

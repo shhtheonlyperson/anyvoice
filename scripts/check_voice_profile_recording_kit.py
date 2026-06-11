@@ -13,6 +13,7 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from anyvoice_python_env import resolve_analyzer_python
 from build_voice_profile import (
     CHINESE_SCRIPT_MARKER_PAIRS,
     PRODUCT_PRONUNCIATION_PRESET_IDS,
@@ -877,7 +878,7 @@ def check_manifest(
                 "--auto-duration",
             ]),
             "importProfileClips": command([
-                "/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python",
+                resolve_analyzer_python(),
                 "scripts/import_voice_profile_clips.py",
                 "--manifest",
                 str(manifest_path),
