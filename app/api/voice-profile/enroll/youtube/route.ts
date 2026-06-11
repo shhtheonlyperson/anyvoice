@@ -5,9 +5,10 @@ import { NextRequest } from "next/server";
 import { enrollVoiceProfileClip } from "@/lib/profile-enrollment";
 import { safeRunDir } from "@/lib/run-paths";
 import { detectChineseScript, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
-import { getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
+import { ANYVOICE_USER_HEADER, getOrCreateAnyVoiceUserSession, withAnyVoiceUserCookie } from "@/lib/user-session";
 import { guardVoiceProfileAccess } from "@/lib/voice-profile-access";
 import { persistVoiceProfileManifest } from "@/lib/voice-profile";
+import { isWorkerMode, isWorkerProxyConfigured, workerApiUrl, workerAuthFailure, workerAuthHeaders, workerToken } from "@/lib/worker-proxy";
 import {
   clampScanWindow,
   downloadYoutubeReference,
@@ -24,10 +25,12 @@ import {
 } from "@/lib/youtube-import";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+// The forwarded import waits on the worker's full scan→ASR→enroll pipeline
+// (default 180s scan, up to 300s), so the function ceiling must exceed it.
+export const maxDuration = 300;
 
 /** Cap clips per import so enroll time stays bounded. */
-const MAX_CLIPS = 8;
+const MAX_CLIPS = 10;
 /** Highest grade wins when reporting the headline referenceQuality. */
 const GRADE_RANK: Record<string, number> = { A: 4, B: 3, C: 2, D: 1 };
 
@@ -44,10 +47,49 @@ function json(data: unknown, init?: ResponseInit) {
   return Response.json(data, init);
 }
 
+async function forwardYoutubeEnrollToWorker(req: NextRequest, session: ReturnType<typeof getOrCreateAnyVoiceUserSession>) {
+  const url = workerApiUrl("/api/voice-profile/enroll/youtube");
+  if (!url) return json({ status: "error", message: "ANYVOICE_WORKER_URL is invalid" }, { status: 500 });
+  if (!workerToken()) {
+    return json({ status: "error", message: "ANYVOICE_WORKER_TOKEN is required when ANYVOICE_WORKER_URL is set" }, { status: 500 });
+  }
+
+  const headers = new Headers(workerAuthHeaders());
+  headers.set(ANYVOICE_USER_HEADER, session.userId);
+  const contentType = req.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: await req.text(),
+      cache: "no-store",
+    });
+    return new Response(await response.text(), {
+      status: response.status,
+      headers: { "content-type": response.headers.get("content-type") || "application/json" },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "worker request failed";
+    return json({ status: "error", message }, { status: 502 });
+  }
+}
+
 export async function POST(req: NextRequest) {
+  // In worker mode the proxy already enforces Bearer auth; re-check in-handler
+  // (like the clone/audio routes) so identity never rests on middleware matching.
+  if (isWorkerMode()) {
+    const authFailure = workerAuthFailure(req);
+    if (authFailure) return json(authFailure.body, { status: authFailure.statusCode });
+  }
   const session = getOrCreateAnyVoiceUserSession(req);
   const reply = (data: unknown, init?: ResponseInit) =>
     withAnyVoiceUserCookie(json(data, init), session);
+
+  if (isWorkerProxyConfigured() && !isWorkerMode()) {
+    return withAnyVoiceUserCookie(await forwardYoutubeEnrollToWorker(req, session), session);
+  }
 
   let body: YoutubeImportBody;
   try {

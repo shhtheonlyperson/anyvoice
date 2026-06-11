@@ -204,7 +204,9 @@ export function assertSafeProfileId(profileId: string): string {
 
 export function voiceProfileRoot(env: CloneEnv = process.env): string {
   const configured = env.ANYVOICE_VOICE_PROFILE_ROOT || ".anyvoice/voices";
-  return path.isAbsolute(configured) ? configured : path.join(process.cwd(), configured);
+  if (path.isAbsolute(configured)) return configured;
+  if (env.VERCEL) return path.join(os.tmpdir(), configured);
+  return path.join(process.cwd(), configured);
 }
 
 export function voiceProfileManifestPath(profileIdInput = "local-default", env: CloneEnv = process.env): string {
@@ -727,11 +729,13 @@ export async function buildVoiceProfileSummary({
   // - `studioGrade`: meets the full strict curated bar (DEFAULT_REQUIREMENTS),
   //   always evaluated against the strict tier regardless of how this profile
   //   was scanned (imports use a lighter requirement set for their own status).
+  // - `status`: whether this profile's own requirement tier is complete
+  //   (strict for local-default, lighter for imports). Do not use it to gate
+  //   10x/studio-grade flows; those must continue to read `studioGrade`.
   const usable = eligible.some((clip) => PASSING_GRADES.has(clip.quality.grade));
   const studioGrade = meetsStrictRequirements(eligible);
 
-  // `status` stays binary for backward compatibility: "ready" iff studio-grade.
-  const status: VoiceProfileStatus = studioGrade ? "ready" : "needs_enrollment";
+  const status: VoiceProfileStatus = meetsRequestedTier ? "ready" : "needs_enrollment";
 
   return {
     version: 1,

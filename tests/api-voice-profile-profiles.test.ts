@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/voice-profile-registry", () => ({
   listVoiceProfiles: vi.fn(),
@@ -22,6 +22,7 @@ const listMock = vi.mocked(listVoiceProfiles);
 const createMock = vi.mocked(createVoiceProfile);
 const renameMock = vi.mocked(renameVoiceProfile);
 const deleteMock = vi.mocked(deleteVoiceProfile);
+const originalEnv = { ...process.env };
 
 function jsonReq(method: string, body?: unknown): import("next/server").NextRequest {
   return new Request("http://localhost/api/voice-profile/profiles", {
@@ -32,6 +33,12 @@ function jsonReq(method: string, body?: unknown): import("next/server").NextRequ
 }
 
 beforeEach(() => vi.clearAllMocks());
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
+  Object.assign(process.env, originalEnv);
+});
 
 describe("/api/voice-profile/profiles", () => {
   it("GET lists profiles and sets the user cookie", async () => {
@@ -59,6 +66,55 @@ describe("/api/voice-profile/profiles", () => {
     const res = await POST(jsonReq("POST", { displayName: "  " }));
     expect(res.status).toBe(400);
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards profile creation to the worker when configured", async () => {
+    process.env.ANYVOICE_WORKER_URL = "https://worker.example";
+    process.env.ANYVOICE_WORKER_TOKEN = "secret";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(String(_url)).toBe("https://worker.example/api/voice-profile/profiles");
+      expect(init?.method).toBe("POST");
+      expect((init?.headers as Headers).get("authorization")).toBe("Bearer secret");
+      expect((init?.headers as Headers).get("x-anyvoice-user")).toMatch(/^av_/);
+      expect(init?.body).toBe(JSON.stringify({ displayName: "新聲音" }));
+      return Response.json({ profile: { id: "vp_worker" } }, { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await POST(jsonReq("POST", { displayName: "新聲音" }));
+    expect(res.status).toBe(201);
+    expect((await res.json()).profile.id).toBe("vp_worker");
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("worker mode: rejects missing or wrong Bearer tokens in-handler", async () => {
+    process.env.ANYVOICE_WORKER_MODE = "1";
+    process.env.ANYVOICE_WORKER_TOKEN = "secret";
+
+    const unauthenticated = await GET(jsonReq("GET"));
+    expect(unauthenticated.status).toBe(401);
+
+    const wrongToken = new Request("http://localhost/api/voice-profile/profiles", {
+      method: "GET",
+      headers: { authorization: "Bearer wrong" },
+    }) as unknown as import("next/server").NextRequest;
+    expect((await GET(wrongToken)).status).toBe(401);
+    expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it("worker mode: serves with a valid Bearer token and trusts the forwarded identity", async () => {
+    process.env.ANYVOICE_WORKER_MODE = "1";
+    process.env.ANYVOICE_WORKER_TOKEN = "secret";
+    const forwardedUser = "av_00000000-0000-0000-0000-000000000000";
+    listMock.mockResolvedValue([]);
+
+    const req = new Request("http://localhost/api/voice-profile/profiles", {
+      method: "GET",
+      headers: { authorization: "Bearer secret", "x-anyvoice-user": forwardedUser },
+    }) as unknown as import("next/server").NextRequest;
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    expect(listMock).toHaveBeenCalledWith(forwardedUser);
   });
 
   it("PATCH renames; 404 when not found", async () => {

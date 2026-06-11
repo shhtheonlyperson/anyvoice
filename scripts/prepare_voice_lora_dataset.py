@@ -109,7 +109,13 @@ def require_ready_profile(profile_path: Path, profile: dict[str, Any], min_clips
     selected = summary_int(profile, "selectedClips", len(clips))
     eligible = summary_int(profile, "eligibleClips", selected)
     remaining = summary_int(profile, "remainingClipsNeeded", max(0, min_clips - selected))
-    if profile.get("status") == "ready" and selected >= min_clips and len(clips) >= min_clips:
+    # LoRA training needs the strict curated tier. status=="ready" now only
+    # means the profile's own (possibly lighter import) tier is complete, so
+    # key on studioGrade; legacy manifests without the field used status.
+    studio_grade = profile.get("studioGrade")
+    if not isinstance(studio_grade, bool):
+        studio_grade = profile.get("status") == "ready"
+    if studio_grade and selected >= min_clips and len(clips) >= min_clips:
         return
     raise SystemExit(
         "voice profile is not ready for LoRA dataset export: "

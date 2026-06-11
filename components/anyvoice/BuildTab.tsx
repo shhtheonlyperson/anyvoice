@@ -4,8 +4,8 @@
  * usable / studioGrade), mapped to the design states:
  *
  *   empty      clipCount === 0           cream card + Start recording + 3 options
- *   reviewing  usable, not studioGrade   cream card + progress donut + Continue
- *   ready      studioGrade               coral hero + Start generating + Listen back
+ *   reviewing  usable, but tier incomplete   cream card + progress donut + Continue
+ *   ready      profile tier complete         coral hero + Start generating + Listen back
  *   recording  user clicked a record CTA the in-browser 24-line record-and-grade stage
  *
  * The recording state is the heart of the product: the handoff's dark recording
@@ -90,9 +90,9 @@ type LineStatus = "todo" | "draft" | "pass" | "retry" | "recording" | "processin
 /** Map the real summary to the design state. */
 function deriveState(p: ProfileListItem | undefined): Exclude<BuildState, "recording"> {
   if (!p || p.clipCount === 0) return "empty";
-  // Done only when the strict curated bar is met. A lighter/imported profile
-  // can be usable for draft work, but it should not look 10x-ready.
-  if (p.studioGrade) return "ready";
+  // Done means this profile's own tier is complete. Studio-grade / 10x remains
+  // a separate stricter gate exposed via p.studioGrade.
+  if (p.status === "ready" || p.meetsRequirements) return "ready";
   return "reviewing";
 }
 

@@ -445,6 +445,7 @@ export async function generateFromProfile(
   form.set("quality", args.quality ?? "balanced");
   form.set("useVoiceProfile", "yes");
   form.set("profileId", args.profileId);
+  form.set("allowDraftVoiceProfile", "yes");
   if (args.pronunciationOverrides?.trim()) form.set("pronunciationOverrides", args.pronunciationOverrides);
 
   const res = await fetch("/api/clone/stream", { method: "POST", body: form });
