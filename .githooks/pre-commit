@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# pre-commit: path guard + typecheck + lint + unit + integration (vitest)
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "[pre-commit] Vercel path-length guard"
+node scripts/check_vercel_path_lengths.mjs
+
+echo "[pre-commit] typecheck"
+npm run typecheck
+
+echo "[pre-commit] lint"
+npm run lint
+
+echo "[pre-commit] unit + integration (vitest)"
+npm test

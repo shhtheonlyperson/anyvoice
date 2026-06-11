@@ -12,6 +12,10 @@
     "voice:clone:audit:json": "python3 scripts/audit_voice_clone_goal.py --json",
     "voice:clone:review": "python3 scripts/serve_voice_review.py --open",
     "test": "vitest run",
+    "test:unit": "vitest run --exclude 'tests/api-*.test.ts'",
+    "test:integration": "vitest run api-",
+    "test:e2e": "playwright test",
+    "test:e2e:fast": "playwright test --grep @smoke",
     "coverage": "vitest run --coverage --coverage.all --coverage.include=lib/** --coverage.include=app/** --coverage.include=components/**"
   },
   "dependencies": {

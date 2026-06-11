@@ -10,14 +10,7 @@ generated/
 .vercel/
 .anyvoice/
 *.tsbuildinfo
-.vercel
 __pycache__/
 *.pyc
 my-voice-*.wav
-
-# playwright output
-test-results/
-playwright-report/
-
-# unzipped design handoff reference (source kept as handoff.zip)
 .handoff/
