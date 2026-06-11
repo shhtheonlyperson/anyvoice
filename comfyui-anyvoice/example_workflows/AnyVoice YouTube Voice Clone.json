@@ -1,0 +1,175 @@
+{
+  "revision": 0,
+  "last_node_id": 10,
+  "last_link_id": 8,
+  "nodes": [
+    {
+      "id": 10,
+      "type": "Note",
+      "pos": [40, 40],
+      "size": [480, 230],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "AnyVoice：YouTube 連結 → 聲音複製\n\n1. 在 AnyVoice YouTube Import 貼上影片連結（網址裡的 t= 參數決定起點），勾選 consent 確認已取得授權。\n2. Queue 後：先聽 section/clips 預覽，Enroll Profile 會評級並建立可在 AnyVoice 網頁版看到的聲音設定檔。\n3. 在 Voice Clone 輸入要合成的繁體中文文字，輸出即為複製聲音。\n\nRequires: yt-dlp + ffmpeg, the AnyVoice repo's VoxCPM Python env (ANYVOICE_VOXCPM_PYTHON), and optionally the hot worker on :8765 for fast synthesis."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 1,
+      "type": "AnyVoiceYouTubeImport",
+      "pos": [40, 330],
+      "size": [430, 380],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        { "name": "clips", "type": "ANYVOICE_CLIPS", "links": [1, 2], "slot_index": 0 },
+        { "name": "section_audio", "type": "AUDIO", "links": [3], "slot_index": 1 },
+        { "name": "report", "type": "STRING", "links": [], "slot_index": 2 }
+      ],
+      "properties": { "Node name for S&R": "AnyVoiceYouTubeImport" },
+      "widgets_values": ["", false, -1, 180, "", "zh"]
+    },
+    {
+      "id": 6,
+      "type": "AnyVoiceClipsPreview",
+      "pos": [540, 700],
+      "size": [330, 120],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [{ "name": "clips", "type": "ANYVOICE_CLIPS", "link": 2 }],
+      "outputs": [
+        { "name": "audio", "type": "AUDIO", "links": [8], "slot_index": 0 },
+        { "name": "transcript", "type": "STRING", "links": [], "slot_index": 1 }
+      ],
+      "properties": { "Node name for S&R": "AnyVoiceClipsPreview" },
+      "widgets_values": [-1]
+    },
+    {
+      "id": 7,
+      "type": "PreviewAudio",
+      "pos": [540, 880],
+      "size": [330, 100],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [{ "name": "audio", "type": "AUDIO", "link": 3 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAudio" },
+      "widgets_values": []
+    },
+    {
+      "id": 2,
+      "type": "AnyVoiceEnrollProfile",
+      "pos": [540, 330],
+      "size": [370, 240],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [{ "name": "clips", "type": "ANYVOICE_CLIPS", "link": 1 }],
+      "outputs": [
+        { "name": "profile", "type": "ANYVOICE_PROFILE", "links": [4], "slot_index": 0 },
+        { "name": "reference_audio", "type": "AUDIO", "links": [5], "slot_index": 1 },
+        { "name": "report", "type": "STRING", "links": [], "slot_index": 2 }
+      ],
+      "properties": { "Node name for S&R": "AnyVoiceEnrollProfile" },
+      "widgets_values": ["YouTube 聲音", 10, ""]
+    },
+    {
+      "id": 8,
+      "type": "PreviewAudio",
+      "pos": [960, 700],
+      "size": [330, 100],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [{ "name": "audio", "type": "AUDIO", "link": 5 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAudio" },
+      "widgets_values": []
+    },
+    {
+      "id": 9,
+      "type": "PreviewAudio",
+      "pos": [960, 880],
+      "size": [330, 100],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [{ "name": "audio", "type": "AUDIO", "link": 8 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAudio" },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "AnyVoiceVoiceClone",
+      "pos": [960, 330],
+      "size": [410, 330],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [{ "name": "profile", "type": "ANYVOICE_PROFILE", "link": 4 }],
+      "outputs": [
+        { "name": "audio", "type": "AUDIO", "links": [6, 7], "slot_index": 0 },
+        { "name": "metadata", "type": "STRING", "links": [], "slot_index": 1 }
+      ],
+      "properties": { "Node name for S&R": "AnyVoiceVoiceClone" },
+      "widgets_values": [
+        "你好，這是用 AnyVoice 從 YouTube 建立的聲音複製測試。",
+        "balanced",
+        "hifi",
+        1337,
+        true
+      ]
+    },
+    {
+      "id": 4,
+      "type": "PreviewAudio",
+      "pos": [1440, 330],
+      "size": [340, 100],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [{ "name": "audio", "type": "AUDIO", "link": 6 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAudio" },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "SaveAudio",
+      "pos": [1440, 500],
+      "size": [340, 120],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [{ "name": "audio", "type": "AUDIO", "link": 7 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "SaveAudio" },
+      "widgets_values": ["audio/AnyVoiceClone"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "ANYVOICE_CLIPS"],
+    [2, 1, 0, 6, 0, "ANYVOICE_CLIPS"],
+    [3, 1, 1, 7, 0, "AUDIO"],
+    [4, 2, 0, 3, 0, "ANYVOICE_PROFILE"],
+    [5, 2, 1, 8, 0, "AUDIO"],
+    [6, 3, 0, 4, 0, "AUDIO"],
+    [7, 3, 0, 5, 0, "AUDIO"],
+    [8, 6, 0, 9, 0, "AUDIO"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

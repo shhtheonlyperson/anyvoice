@@ -1,0 +1,4 @@
+# Installed into the ComfyUI Python environment (not auto-installed by core
+# ComfyUI — run: pip install -r requirements.txt).
+# Simplified→Traditional (Taiwan + phrases) conversion, pure Python.
+opencc-python-reimplemented>=0.1.7

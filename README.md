@@ -72,6 +72,16 @@ records `effectiveParams.loraEnabled`, `effectiveParams.loraPath`, and the LoRA
 config so zero-shot profile renders and LoRA renders can be compared in the same
 regression report.
 
+## ComfyUI Workflow
+
+The YouTube-link → voice-clone journey is also available as a ComfyUI graph:
+the custom node pack in [`comfyui-anyvoice/`](comfyui-anyvoice/README.md)
+(YouTube import → clip preview → profile enroll → VoxCPM2 clone) writes the
+same `.anyvoice/runs` + `.anyvoice/voices` artifacts as the web app, so voices
+created in either UI are usable in both. Symlink the pack into
+`<ComfyUI>/custom_nodes/`, install its `requirements.txt` into the ComfyUI
+Python, and load the bundled "AnyVoice YouTube Voice Clone" template.
+
 ## Local Persistence
 
 The browser keeps the last user-recorded or user-uploaded reference voice in IndexedDB so local testing does not require recording the same clip repeatedly. The sample voice does not overwrite that saved user reference. The studio also exposes a download button beside the current reference audio, so a good recording can be saved as a real file and reused in a recording kit or manifest later. Clearing a user recording or upload removes the saved browser reference.
