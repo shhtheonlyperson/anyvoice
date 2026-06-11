@@ -19,6 +19,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      # The vitest suite shells out to scripts/*.py, which import numpy at
+      # module load even in dry-run mode.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
