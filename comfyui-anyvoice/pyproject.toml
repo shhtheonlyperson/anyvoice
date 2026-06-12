@@ -1,0 +1,10 @@
+[project]
+name = "comfyui-anyvoice"
+version = "0.1.0"
+description = "AnyVoice for ComfyUI: import a YouTube link, build a Traditional-Chinese voice profile, and synthesize a VoxCPM2 voice clone."
+requires-python = ">=3.10"
+dependencies = ["opencc-python-reimplemented>=0.1.7"]
+
+[tool.comfy]
+DisplayName = "AnyVoice Voice Clone"
+PublisherId = "shh"

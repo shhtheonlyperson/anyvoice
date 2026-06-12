@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+# Server mode: progress is delivered as NDJSON events, so VoxCPM2's internal
+# tqdm bars serve nobody — and they crash synthesis with BrokenPipeError when
+# the worker is detached from its terminal and stderr dies. Disable before
+# voxcpm/tqdm import; an explicit TQDM_DISABLE in the environment still wins.
+os.environ.setdefault("TQDM_DISABLE", "1")
 
 import soundfile as sf
 from voxcpm import VoxCPM

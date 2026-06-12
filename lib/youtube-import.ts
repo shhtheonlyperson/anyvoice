@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import * as OpenCC from "opencc-js";
+import { asrPython } from "@/lib/voxcpm-python";
 
 /**
  * Helpers for importing a voice-profile reference clip from a YouTube video:
@@ -303,8 +304,7 @@ export function simplifiedToTraditional(text: string): string {
  * the caller can degrade gracefully (e.g. ask for a typed transcript).
  */
 export async function transcribeAudioFile(audioPath: string, language = "zh"): Promise<string> {
-  const python =
-    process.env.ANYVOICE_ASR_PYTHON || process.env.ANYVOICE_VOXCPM_PYTHON || process.env.PYTHON || "python3";
+  const python = asrPython();
   const script = path.join(process.cwd(), "scripts", "transcribe_audio_anyvoice.py");
   const model = process.env.ANYVOICE_ASR_MODEL || "large-v3";
   const args = [script, "--audio", audioPath, "--language", language, "--model", model];

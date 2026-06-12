@@ -5,11 +5,12 @@ virtualenv, not the system Python. Resolution order:
 
 1. Explicit ``override`` argument (a CLI flag or pre-resolved env value).
 2. ``ANYVOICE_VOXCPM_PYTHON`` environment variable.
-3. This repo's own ``.venv-voxcpm/`` (see ``requirements-voxcpm.txt``).
-4. A sibling ``brenda-voice`` checkout's ``.venv-voxcpm/`` — the venv this
+3. The shared local service venv at ``../shh-voxcpm-service/.venv/``.
+4. This repo's own ``.venv-voxcpm/`` (see ``requirements-voxcpm.txt``).
+5. A sibling ``brenda-voice`` checkout's ``.venv-voxcpm/`` — the venv this
    repo historically borrowed, derived from the repo location rather than a
    hardcoded home directory, so a moved or absent checkout degrades cleanly.
-5. ``sys.executable`` as the last resort.
+6. ``sys.executable`` as the last resort.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def candidate_venv_pythons() -> list[Path]:
     return [
+        REPO_ROOT.parent / "shh-voxcpm-service" / ".venv" / "bin" / "python",
         REPO_ROOT / ".venv-voxcpm" / "bin" / "python",
         REPO_ROOT.parent / "brenda-voice" / ".venv-voxcpm" / "bin" / "python",
     ]

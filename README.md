@@ -21,6 +21,11 @@ npm run dev
 
 The local bridge is `scripts/synthesize_voxcpm_anyvoice.py`. It accepts mp3, wav, m4a, and other ffmpeg-readable audio, converts the reference to 16k mono wav, then calls `openbmb/VoxCPM2` through the `voxcpm` Python package.
 
+Local VoxCPM is maintained by the shared service repo at
+`/Users/shh/proj/shh-voxcpm-service`. That repo owns the Python 3.12 venv,
+`voxcpm==2.0.3` pin, update checks, and shared adapter CLI. AnyVoice still
+owns uploads, run directories, validation, and browser-facing audio routes.
+
 **Ultimate mode is required.** The script always expects `--prompt-text` / `--prompt-text-file` containing an exact, verified transcript of the reference clip. There is no auto-transcribe fallback — a wrong transcript is the dominant cause of mispronounced output, so the contract pushes that responsibility to the caller. In the UI this is satisfied either by the scripted-recording flow (user reads a known script) or by the freeform/upload flow (user types the transcript).
 
 The UI sends `quality=speed|balanced|quality`. The Python bridge maps those presets to VoxCPM2 timesteps / CFG / denoise settings and returns the effective parameters in `metadata.json`. These are Brenda-derived stability presets, not "more is always better" presets:
@@ -40,7 +45,7 @@ record the effective seed in metadata as `stabilitySeed`.
 For local/Mac Studio inference, prefer the hot worker so VoxCPM2 loads once at process startup instead of on every request:
 
 ```bash
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/voxcpm_hot_worker_anyvoice.py \
   --host 127.0.0.1 \
   --port 8765
@@ -71,6 +76,16 @@ model cache key and reloads only when the LoRA path/config changes. Run metadata
 records `effectiveParams.loraEnabled`, `effectiveParams.loraPath`, and the LoRA
 config so zero-shot profile renders and LoRA renders can be compared in the same
 regression report.
+
+## ComfyUI Workflow
+
+The YouTube-link → voice-clone journey is also available as a ComfyUI graph:
+the custom node pack in [`comfyui-anyvoice/`](comfyui-anyvoice/README.md)
+(YouTube import → clip preview → profile enroll → VoxCPM2 clone) writes the
+same `.anyvoice/runs` + `.anyvoice/voices` artifacts as the web app, so voices
+created in either UI are usable in both. Symlink the pack into
+`<ComfyUI>/custom_nodes/`, install its `requirements.txt` into the ComfyUI
+Python, and load the bundled "AnyVoice YouTube Voice Clone" template.
 
 ## Local Persistence
 
@@ -135,7 +150,7 @@ through as unknown Chinese.
 To compare the old prompt-only path against the new Hi-Fi prompt+reference path, run the regression harness with a consented reference clip:
 
 ```bash
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/voice_clone_regression.py \
   --reference-audio /path/to/reference.wav \
   --prompt-text-file /path/to/reference-transcript.txt \
@@ -164,7 +179,7 @@ preset version, and `text-prep.json` is passed into the Python worker metadata.
 To run the measurable digital-voice gate in one command:
 
 ```bash
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/run_voice_quality_gate.py \
   --profile-json .anyvoice/voices/local-default/profile.json \
   --hot-worker-url http://127.0.0.1:8765 \
@@ -185,7 +200,7 @@ pronunciation, repeat stability, and speaker identity all pass their gates.
 For debugging individual phases, run the same steps manually:
 
 ```bash
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/transcribe_voice_regression.py \
   generated/voice-regression/<timestamp>/report.json \
   --out generated/voice-regression/<timestamp>/asr.json \
@@ -790,7 +805,7 @@ For manual debugging, the individual phases remain available:
 python3 scripts/check_voice_profile_recording_kit.py \
   --manifest /tmp/anyvoice-profile-kit/manifest.json
 
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/import_voice_profile_clips.py \
   --manifest /tmp/anyvoice-profile-kit/manifest.json \
   --build-profile
@@ -899,7 +914,7 @@ reuse the loaded LoRA model.
 If the hot worker is already running, avoid repeated model loads:
 
 ```bash
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/voice_clone_regression.py \
   --hot-worker-url http://127.0.0.1:8765 \
   --reference-audio /path/to/reference.wav \

@@ -6,6 +6,7 @@ import { fileExtension, parseReferenceQuality, type ReferenceQuality } from "@/l
 import type { SourceKind } from "@/lib/clone-request";
 import { safeRunDir } from "@/lib/run-paths";
 import { detectChineseScript, prepareVoiceText, strictTraditionalChineseScriptErrors } from "@/lib/text-prep";
+import { voxcpmPython } from "@/lib/voxcpm-python";
 
 type EnrollmentSourceKind = Exclude<SourceKind, "profile" | "sample">;
 
@@ -279,7 +280,7 @@ export async function enrollVoiceProfileClip(
   input: VoiceProfileEnrollmentInput,
 ): Promise<VoiceProfileEnrollmentResult> {
   const files = await writeEnrollmentFiles(jobId, input);
-  const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
+  const python = voxcpmPython();
   const script = path.join(process.cwd(), "scripts", "analyze_voice_reference.py");
   const args = [
     script,
