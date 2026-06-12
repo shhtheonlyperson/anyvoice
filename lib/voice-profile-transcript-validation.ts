@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { voiceProfileRoot as canonicalVoiceProfileRoot } from "@/lib/voice-profile";
 import { promisify } from "node:util";
+import { asrPython } from "@/lib/voxcpm-python";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,7 +26,7 @@ export interface ValidateVoiceProfileTranscriptOptions {
 }
 
 function defaultAsrPython(): string {
-  return process.env.ANYVOICE_ASR_PYTHON || process.env.ANYVOICE_VOXCPM_PYTHON || process.env.PYTHON || "python3";
+  return asrPython();
 }
 
 function assertSafeProfileId(profileId: string): string {

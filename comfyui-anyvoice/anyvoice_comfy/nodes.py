@@ -18,8 +18,9 @@ from pathlib import Path
 from comfy_api.latest import ComfyExtension, io
 
 from . import env
-from .comfy_audio import concat_comfy_audio, wav_to_comfy_audio
+from .comfy_audio import comfy_audio_to_wav, concat_comfy_audio, wav_to_comfy_audio
 from .enroll import EnrolledClip, enroll_clips
+from .reference_import import ReferenceImportError, import_audio_reference
 from .synth import select_reference_clip, synthesize
 from .textgate import (
     simplified_or_mixed_chinese_script_errors,
@@ -152,6 +153,7 @@ class AnyVoiceYouTubeImport(io.ComfyNode):
         clips_payload = {
             "version": 1,
             "baseRunDir": str(result.base_run_dir),
+            "sourceKind": "uploaded",
             "videoId": result.video_id,
             "transcriptSource": result.transcript_source,
             "subtitleLang": result.subtitle_lang,
@@ -183,6 +185,126 @@ class AnyVoiceYouTubeImport(io.ComfyNode):
         )
         section_audio = wav_to_comfy_audio(result.section_wav)
         return io.NodeOutput(clips_payload, section_audio, report)
+
+
+class AnyVoiceReferenceFromAudio(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AnyVoiceReferenceFromAudio",
+            display_name="AnyVoice Reference From Audio",
+            category="AnyVoice",
+            description=(
+                "Turn any AUDIO (Load Audio file: mp3/m4a/wav/mp4…, or Record "
+                "Audio mic take) into gated reference clips. A typed zh-Hant "
+                "transcript covers a short (≤20s) clip; longer audio is "
+                "auto-chunked and Whisper-transcribed. 將上傳檔案或麥克風錄音"
+                "變成參考片段。"
+            ),
+            inputs=[
+                io.Audio.Input("audio", tooltip="Connect Load Audio (file upload) or Record Audio (mic)"),
+                io.String.Input(
+                    "transcript",
+                    multiline=True,
+                    default="",
+                    tooltip=(
+                        "Exact Traditional-Chinese transcript of the clip head (≤ ~18s). "
+                        "Leave empty to auto-transcribe with Whisper. 錄音流程請照著此文字唸。"
+                    ),
+                ),
+                io.Boolean.Input(
+                    "consent",
+                    default=False,
+                    tooltip="Confirm you have permission to clone this voice (consent gate, same as the web app)",
+                ),
+                io.Combo.Input(
+                    "source_kind",
+                    options=["uploaded", "scripted", "freeform"],
+                    default="uploaded",
+                    tooltip="uploaded = file import; scripted = mic take reading the given text; freeform = mic take in own words",
+                ),
+                io.Boolean.Input(
+                    "auto_transcribe",
+                    default=True,
+                    tooltip="When transcript is empty, slice and transcribe with Whisper (like the YouTube no-captions fallback)",
+                ),
+                io.String.Input(
+                    "asr_language",
+                    default="zh",
+                    optional=True,
+                    tooltip="Whisper language hint for auto-transcription",
+                ),
+            ],
+            outputs=[
+                AnyVoiceClips.Output(display_name="clips"),
+                io.String.Output(display_name="report"),
+            ],
+        )
+
+    @classmethod
+    def validate_inputs(cls, consent):
+        if not consent:
+            return CONSENT_MESSAGE
+        return True
+
+    @classmethod
+    def execute(cls, audio, transcript, consent, source_kind, auto_transcribe, asr_language="zh") -> io.NodeOutput:
+        if not consent:
+            raise ValueError(CONSENT_MESSAGE)
+        base_run_dir = env.runs_root() / env.new_job_id()
+        base_run_dir.mkdir(parents=True, exist_ok=False)
+        source_wav = comfy_audio_to_wav(audio, base_run_dir / "audio-source.wav")
+        try:
+            result = import_audio_reference(
+                source_wav,
+                transcript=transcript or "",
+                auto_transcribe=auto_transcribe,
+                language=(asr_language or "zh").strip() or "zh",
+                source_kind=source_kind,
+                convert_simplified=simplified_to_traditional,
+                strict_script_errors=strict_traditional_chinese_script_errors,
+                on_progress=_progress_reporter(),
+                check_interrupted=_check_interrupted,
+            )
+        except ReferenceImportError as exc:
+            raise ValueError(f"audio import failed: {exc}") from exc
+        if not result.clips:
+            skipped = ", ".join(sorted({s["reason"] for s in result.skipped})) or "none"
+            raise ValueError(
+                "no clip passed the Traditional-Chinese transcript gate "
+                f"(skipped reasons: {skipped}) — type the exact zh-Hant transcript"
+            )
+
+        clips_payload = {
+            "version": 1,
+            "baseRunDir": str(result.base_run_dir),
+            "sourceKind": source_kind,
+            "transcriptSource": result.transcript_source,
+            "clips": [
+                {
+                    "audioPath": str(clip.wav_path),
+                    "transcript": clip.transcript,
+                    "relStart": clip.rel_start,
+                    "durationSec": clip.duration,
+                }
+                for clip in result.clips
+            ],
+            "skipped": result.skipped,
+        }
+        report = json.dumps(
+            {
+                "sourceKind": source_kind,
+                "durationSec": round(result.duration_sec, 2),
+                "truncatedAtSec": result.truncated_at_sec,
+                "transcriptSource": result.transcript_source,
+                "clips": len(result.clips),
+                "skipped": result.skipped,
+                "baseRunDir": str(result.base_run_dir),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        return io.NodeOutput(clips_payload, report)
 
 
 class AnyVoiceClipsPreview(io.ComfyNode):
@@ -278,11 +400,13 @@ class AnyVoiceEnrollProfile(io.ComfyNode):
                 "local-default is the curated self-recorded profile — enroll YouTube imports into their own profile"
             )
         clip_specs = [(Path(entry["audioPath"]), entry["transcript"]) for entry in entries]
+        source_kind = clips.get("sourceKind") or "uploaded"
         selected, rejected, manifest_path = enroll_clips(
             clip_specs,
             profile_id=resolved_profile_id,
             display_name=display_name.strip() or "YouTube 聲音",
             max_clips=max_clips,
+            source_kind=source_kind,
             on_progress=_progress_reporter(),
             check_interrupted=_check_interrupted,
         )
@@ -406,6 +530,7 @@ class AnyVoiceExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             AnyVoiceYouTubeImport,
+            AnyVoiceReferenceFromAudio,
             AnyVoiceClipsPreview,
             AnyVoiceEnrollProfile,
             AnyVoiceVoiceClone,

@@ -293,6 +293,7 @@ def enroll_clips(
     display_name: str,
     model_id: str | None = None,
     max_clips: int = 10,
+    source_kind: str = "uploaded",
     on_progress: Callable[[int, int, str], None] | None = None,
     check_interrupted: Callable[[], None] | None = None,
 ) -> tuple[list[EnrolledClip], list[tuple[EnrolledClip, list[str]]], Path]:
@@ -308,10 +309,18 @@ def enroll_clips(
             check_interrupted()
         run_id = env.new_job_id()
         run_dir = runs / run_id
-        write_enrollment_run(run_dir, clip_wav, transcript, profile_id, resolved_model_id)
-        quality = run_analyzer(run_dir, resolved_model_id)
+        write_enrollment_run(
+            run_dir, clip_wav, transcript, profile_id, resolved_model_id, source_kind=source_kind
+        )
+        quality = run_analyzer(run_dir, resolved_model_id, source_kind=source_kind)
         enrolled.append(
-            EnrolledClip(run_id=run_id, run_dir=run_dir, transcript=transcript, reference_quality=quality)
+            EnrolledClip(
+                run_id=run_id,
+                run_dir=run_dir,
+                transcript=transcript,
+                reference_quality=quality,
+                source_kind=source_kind,
+            )
         )
         if on_progress:
             grade = quality.get("grade")

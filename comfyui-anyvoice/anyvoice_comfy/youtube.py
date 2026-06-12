@@ -472,6 +472,50 @@ class ImportedClip:
     duration: float
 
 
+def gate_and_slice_planned(
+    planned: list[tuple[float, float, str]],
+    section_wav: Path,
+    base_run_dir: Path,
+    max_clips: int = 10,
+    convert: Callable[[str], str] | None = None,
+    gate: Callable[[str], list[str]] | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    check_interrupted: Callable[[], None] | None = None,
+) -> tuple[list[ImportedClip], list[dict]]:
+    """Shared clip-finishing core: convert each planned (rel_start, duration,
+    transcript) through OpenCC, apply the strict zh-Hant gate, and slice passing
+    clips to 16k mono wavs. Like the web route, only the first max_clips planned
+    segments are considered — gated-out clips are not back-filled."""
+    convert = convert or (lambda text: text)
+    gate = gate or (lambda text: [])
+    clips: list[ImportedClip] = []
+    skipped: list[dict] = []
+    for rel_start, duration, raw_text in planned[:max_clips]:
+        if check_interrupted:
+            check_interrupted()
+        transcript = convert(raw_text).strip()
+        if not transcript:
+            skipped.append({"reason": "empty", "transcript": raw_text})
+            continue
+        errors = gate(transcript)
+        if errors:
+            reason = (
+                "simplified_or_mixed"
+                if "invalid_chinese_script" in errors
+                else "unproven_chinese_script"
+            )
+            skipped.append({"reason": reason, "transcript": transcript})
+            continue
+        clip_path = base_run_dir / f"clip-{len(clips):03d}.wav"
+        slice_audio_segment(section_wav, rel_start, duration, clip_path)
+        clips.append(
+            ImportedClip(wav_path=clip_path, transcript=transcript, rel_start=rel_start, duration=duration)
+        )
+        if on_progress:
+            on_progress(75 + round(20 * len(clips) / max_clips), 100, f"sliced clip {len(clips)}")
+    return clips, skipped
+
+
 @dataclass
 class YoutubeImportResult:
     base_run_dir: Path
@@ -564,34 +608,16 @@ def import_youtube_reference(
             422,
         )
 
-    convert = convert_simplified or (lambda text: text)
-    gate = strict_script_errors or (lambda text: [])
-
-    # Like the route: take the first max_clips planned segments, then gate each
-    # (gated-out clips are not back-filled from later segments).
-    clips: list[ImportedClip] = []
-    skipped: list[dict] = []
-    for rel_start, duration, raw_text in planned[:max_clips]:
-        interrupted()
-        transcript = convert(raw_text).strip()
-        if not transcript:
-            skipped.append({"reason": "empty", "transcript": raw_text})
-            continue
-        errors = gate(transcript)
-        if errors:
-            reason = (
-                "simplified_or_mixed"
-                if "invalid_chinese_script" in errors
-                else "unproven_chinese_script"
-            )
-            skipped.append({"reason": reason, "transcript": transcript})
-            continue
-        clip_path = base_run_dir / f"clip-{len(clips):03d}.wav"
-        slice_audio_segment(section_wav, rel_start, duration, clip_path)
-        clips.append(
-            ImportedClip(wav_path=clip_path, transcript=transcript, rel_start=rel_start, duration=duration)
-        )
-        progress(75 + round(20 * len(clips) / max_clips), 100, f"sliced clip {len(clips)}")
+    clips, skipped = gate_and_slice_planned(
+        planned,
+        section_wav,
+        base_run_dir,
+        max_clips=max_clips,
+        convert=convert_simplified,
+        gate=strict_script_errors,
+        on_progress=on_progress,
+        check_interrupted=check_interrupted,
+    )
 
     result = YoutubeImportResult(
         base_run_dir=base_run_dir,

@@ -92,6 +92,7 @@ def voxcpm_python() -> str:
         return explicit
     repo = repo_root()
     candidates = [
+        repo.parent / "shh-voxcpm-service" / ".venv" / "bin" / "python",
         repo / ".venv-voxcpm" / "bin" / "python",
         repo.parent / "brenda-voice" / ".venv-voxcpm" / "bin" / "python",
     ]

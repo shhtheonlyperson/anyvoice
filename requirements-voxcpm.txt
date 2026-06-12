@@ -1,3 +1,5 @@
-voxcpm
-soundfile
-numpy
+# Fallback local install only. The maintained runtime lives in
+# /Users/shh/proj/shh-voxcpm-service and pins the full dependency lock there.
+voxcpm==2.0.3
+soundfile>=0.13,<0.14
+numpy>=2,<3

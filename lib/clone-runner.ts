@@ -23,6 +23,7 @@ import {
 } from "@/lib/clone-request";
 import { packSentences, splitSentences } from "@/lib/book-segment";
 import { safeRunDir } from "@/lib/run-paths";
+import { voxcpmPython } from "@/lib/voxcpm-python";
 
 // Beyond this many characters, VoxCPM2's single-pass synthesis drifts (quality
 // degrades and background noise creeps in past ~1 minute of audio). We split
@@ -1949,7 +1950,7 @@ async function synthesizeChunkedToOutput(
   const seed = stabilitySeed();
   const loraPath = effectiveLoraPath(input);
   const base = hotWorkerUrl();
-  const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
+  const python = voxcpmPython();
   const script = path.join(process.cwd(), "scripts", "synthesize_voxcpm_anyvoice.py");
   const wavPaths: string[] = [];
   const chunkPlan: Array<{
@@ -2115,7 +2116,7 @@ async function runVoxCpmClone(
     return;
   }
 
-  const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
+  const python = voxcpmPython();
   const loraPath = effectiveLoraPath(input);
   const seed = stabilitySeed();
   const script = path.join(process.cwd(), "scripts", "synthesize_voxcpm_anyvoice.py");
@@ -2274,7 +2275,7 @@ export async function synthesizeSegment(input: SegmentSynthInput): Promise<void>
       fallbackQuality: quality,
     });
   } else {
-    const python = process.env.ANYVOICE_VOXCPM_PYTHON || "python3";
+    const python = voxcpmPython();
     const script = path.join(process.cwd(), "scripts", "synthesize_voxcpm_anyvoice.py");
     const args = [
       script,

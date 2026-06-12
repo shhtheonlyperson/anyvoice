@@ -1,9 +1,10 @@
 # comfyui-anyvoice
 
-AnyVoice 的 ComfyUI 節點包：貼上 YouTube 連結 → 擷取參考音訊與繁體逐字稿 →
-建立聲音設定檔 → 用 VoxCPM2 合成聲音複製。
-A ComfyUI node pack that ports AnyVoice's "import a YouTube link → create a
-voice clone" user journey into a graph workflow.
+AnyVoice 的 ComfyUI 節點包：貼上 YouTube 連結、上傳音訊檔案，或直接對麥克風
+錄音 → 擷取參考音訊與繁體逐字稿 → 建立聲音設定檔 → 用 VoxCPM2 合成聲音複製。
+A ComfyUI node pack that ports AnyVoice's "create a voice clone" user journey
+into graph workflows, with three entry points: a YouTube link, an audio file
+(mp3 / m4a / wav / flac / mp4 audio track), or a direct mic recording.
 
 The nodes are thin wrappers around the same contracts the AnyVoice web app
 uses (`yt-dlp` section download, caption/ASR segment planning, the strict
@@ -17,6 +18,7 @@ AnyVoice web app, and vice versa.
 | Node | Does |
 | --- | --- |
 | **AnyVoice YouTube Import** | Parse URL (`t=` param sets the start), download a 30–300s audio section + subtitles via yt-dlp, chunk into 6–18s caption-aligned clips (Whisper ASR fallback), convert transcripts with OpenCC s2twp, gate out non-zh-Hant clips, slice 16k mono wavs |
+| **AnyVoice Reference From Audio** | Bridge any `AUDIO` (core **Load Audio** file upload — mp3/m4a/wav/flac/mp4 audio track — or **Record Audio** mic take) into gated reference clips: a typed zh-Hant transcript covers a short (≤20s) clip; longer audio is auto-chunked + Whisper-transcribed like the no-captions YouTube fallback |
 | **AnyVoice Clips Preview** | Audition extracted clips (single or all-in-sequence) and read transcripts |
 | **AnyVoice Enroll Profile** | Grade each clip A–D with the AnyVoice analyzer, enroll passing clips as tagged run dirs, write `meta.json` + `profile.json` (imported tier: ≥1 A/B clip) |
 | **AnyVoice Voice Clone (VoxCPM2)** | Pick the best reference clip, synthesize target text via the hot worker (`ANYVOICE_HOT_WORKER_URL`, NDJSON progress) or the one-shot bridge; quality presets speed/balanced/quality, stability seed 1337, clone modes hifi/prompt |
@@ -41,7 +43,8 @@ ln -s /Users/shh/proj/anyvoice/comfyui-anyvoice \
 
 External requirements (same as the web app): `yt-dlp`, `ffmpeg`, and the
 VoxCPM Python env (`ANYVOICE_VOXCPM_PYTHON`, falls back to
-`../brenda-voice/.venv-voxcpm`). Configuration is read from process env first,
+`../shh-voxcpm-service/.venv`, then `../brenda-voice/.venv-voxcpm`).
+Configuration is read from process env first,
 then the repo's `.env.local` (`ANYVOICE_YTDLP`, `ANYVOICE_FFMPEG`,
 `ANYVOICE_HOT_WORKER_URL`, `ANYVOICE_RUNS_DIR`, `ANYVOICE_VOICE_PROFILE_ROOT`,
 `ANYVOICE_ASR_PYTHON`, `ANYVOICE_ASR_MODEL`, `ANYVOICE_MODEL_ID`).
@@ -49,12 +52,15 @@ then the repo's `.env.local` (`ANYVOICE_YTDLP`, `ANYVOICE_FFMPEG`,
 For fast synthesis keep the hot worker running:
 
 ```bash
-/Users/shh/proj/brenda-voice/.venv-voxcpm/bin/python \
+/Users/shh/proj/shh-voxcpm-service/.venv/bin/python \
   scripts/voxcpm_hot_worker_anyvoice.py --host 127.0.0.1 --port 8765
 ```
 
-## The journey
+## The journeys
 
+Three templates, one pipeline (consent → clips → grade/enroll → clone):
+
+**YouTube link** (`AnyVoice YouTube Voice Clone`)
 1. Paste a YouTube URL (add `&t=300` to start at 5:00) and tick **consent** —
    the same permission gate the web app enforces. 勾選 consent 表示你已確認取得
    此聲音的使用授權。
@@ -65,6 +71,20 @@ For fast synthesis keep the hot worker running:
    clip (A–D) and builds the profile — `report` lists grades and rejections.
 4. Type Traditional-Chinese target text into the clone node and queue again:
    the output is your voice clone. Save/preview with core audio nodes.
+
+**Audio file** (`AnyVoice Audio File Voice Clone`)
+Upload via the core Load Audio node — mp3, m4a, wav, flac, or an mp4's audio
+track. For a short clip (≤20s) type its exact zh-Hant transcript; leave the
+transcript empty on longer audio and it is auto-chunked + Whisper-transcribed
+(capped at the first 300s). Lossy/noisy sources may grade below the A/B bar —
+the `report` output shows why a clip was rejected.
+
+**Direct recording** (`AnyVoice Record Voice Clone`)
+Click record on the core Record Audio node and read the default script
+prefilled in the transcript box (約 12–15 秒，落在 6–20 秒甜蜜區)。If you
+deviate from the script, edit the transcript to match what you actually said —
+the transcript must be exact (`source_kind=scripted` marks the take as a
+scripted read, like the web app's guided recording).
 
 ## Tests
 

@@ -46,6 +46,31 @@ def wav_to_comfy_audio(path: str | Path) -> dict:
     return {"waveform": waveform.unsqueeze(0), "sample_rate": int(sample_rate)}
 
 
+def comfy_audio_to_wav(audio: dict, path: str | Path) -> Path:
+    """Write an AUDIO dict (first batch item) to a 16-bit PCM wav. The pipeline
+    re-normalizes to 16k mono via ffmpeg afterwards, so channels/rate are kept
+    as-is here."""
+    import torch
+
+    path = Path(path)
+    waveform = audio["waveform"]
+    if waveform.ndim != 3 or waveform.shape[2] == 0:
+        raise ValueError(f"expected AUDIO waveform [B, C, T], got shape {tuple(waveform.shape)}")
+    sample_rate = int(audio["sample_rate"])
+    item = waveform[0].cpu().clamp(-1.0, 1.0)  # [C, T]
+    pcm = (item * 32767.0).round().to(torch.int16).t().contiguous()  # [T, C] interleaved
+
+    import wave
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(item.shape[0])
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm.numpy().tobytes())
+    return path
+
+
 def concat_comfy_audio(audios: list[dict], gap_seconds: float = 0.4) -> dict:
     """Concatenate same-provenance AUDIO dicts on the time axis with short
     silence gaps (for auditioning extracted clips in sequence)."""
