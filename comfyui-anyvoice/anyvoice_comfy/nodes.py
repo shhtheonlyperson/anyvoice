@@ -1,9 +1,10 @@
-"""ComfyUI nodes for the AnyVoice YouTube-link → voice-clone journey.
+"""ComfyUI nodes for the AnyVoice source → voice-clone journey.
 
 Graph shape (see example_workflows/):
 
-    AnyVoiceYouTubeImport ─ clips ─→ AnyVoiceEnrollProfile ─ profile ─→ AnyVoiceVoiceClone ─ audio ─→ Preview/Save
-                          └ clips ─→ AnyVoiceClipsPreview (audition the extracted reference clips)
+    YouTube / uploaded audio / recording ─ clips ─→ lazy source switches
+        └→ AnyVoiceEnrollProfile ─ profile ─→ AnyVoiceVoiceClone ─ audio ─→ Preview/Save
+        └→ AnyVoiceClipsPreview (audition the selected reference clips)
 
 The nodes exchange file paths and write the same .anyvoice run/profile
 artifacts as the web app, so a voice cloned here is immediately usable there.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 from comfy_api.latest import ComfyExtension, io
@@ -208,7 +210,8 @@ class AnyVoiceReferenceFromAudio(io.ComfyNode):
                     multiline=True,
                     default="",
                     tooltip=(
-                        "Exact Traditional-Chinese transcript of the clip head (≤ ~18s). "
+                        "Exact Traditional-Chinese transcript — covers the whole clip when ≤20s, "
+                        "else its first 18s. Simplified is rejected, not converted. "
                         "Leave empty to auto-transcribe with Whisper. 錄音流程請照著此文字唸。"
                     ),
                 ),
@@ -221,7 +224,12 @@ class AnyVoiceReferenceFromAudio(io.ComfyNode):
                     "source_kind",
                     options=["uploaded", "scripted", "freeform"],
                     default="uploaded",
-                    tooltip="uploaded = file import; scripted = mic take reading the given text; freeform = mic take in own words",
+                    tooltip=(
+                        "uploaded = file import; scripted = mic take reading the given text; "
+                        "freeform = mic take in own words. Note: ComfyUI's recorder applies "
+                        "browser mic processing (echo cancellation/AGC) that the web app's "
+                        "guided flow forbids — prefer a quiet room and check the grade in report."
+                    ),
                 ),
                 io.Boolean.Input(
                     "auto_transcribe",
@@ -251,29 +259,44 @@ class AnyVoiceReferenceFromAudio(io.ComfyNode):
     def execute(cls, audio, transcript, consent, source_kind, auto_transcribe, asr_language="zh") -> io.NodeOutput:
         if not consent:
             raise ValueError(CONSENT_MESSAGE)
+        from .youtube import MAX_SCAN_SEC
+
+        original_duration_sec = audio["waveform"].shape[2] / int(audio["sample_rate"])
         base_run_dir = env.runs_root() / env.new_job_id()
         base_run_dir.mkdir(parents=True, exist_ok=False)
-        source_wav = comfy_audio_to_wav(audio, base_run_dir / "audio-source.wav")
         try:
+            # Cap the written source at the scan window — nothing past it is
+            # ever consumed, and an hour-long take would otherwise persist
+            # hundreds of MB in the run dir.
+            source_wav = comfy_audio_to_wav(
+                audio, base_run_dir / "audio-source.wav", max_seconds=MAX_SCAN_SEC
+            )
             result = import_audio_reference(
                 source_wav,
                 transcript=transcript or "",
                 auto_transcribe=auto_transcribe,
                 language=(asr_language or "zh").strip() or "zh",
                 source_kind=source_kind,
+                original_duration_sec=original_duration_sec,
                 convert_simplified=simplified_to_traditional,
                 strict_script_errors=strict_traditional_chinese_script_errors,
                 on_progress=_progress_reporter(),
                 check_interrupted=_check_interrupted,
             )
-        except ReferenceImportError as exc:
+            if not result.clips:
+                skipped = ", ".join(sorted({s["reason"] for s in result.skipped})) or "none"
+                raise ValueError(
+                    "no clip passed the Traditional-Chinese transcript gate "
+                    f"(skipped reasons: {skipped}) — type the exact zh-Hant transcript"
+                )
+        except (ReferenceImportError, YoutubeImportError) as exc:
+            # Failed imports must not leave orphan run dirs holding the
+            # decoded source wav in the shared .anyvoice/runs root.
+            shutil.rmtree(base_run_dir, ignore_errors=True)
             raise ValueError(f"audio import failed: {exc}") from exc
-        if not result.clips:
-            skipped = ", ".join(sorted({s["reason"] for s in result.skipped})) or "none"
-            raise ValueError(
-                "no clip passed the Traditional-Chinese transcript gate "
-                f"(skipped reasons: {skipped}) — type the exact zh-Hant transcript"
-            )
+        except Exception:
+            shutil.rmtree(base_run_dir, ignore_errors=True)
+            raise
 
         clips_payload = {
             "version": 1,

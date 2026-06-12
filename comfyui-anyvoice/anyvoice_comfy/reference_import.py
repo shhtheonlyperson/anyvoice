@@ -61,14 +61,20 @@ def import_audio_reference(
     language: str = "zh",
     max_clips: int = 10,
     source_kind: str = "uploaded",
+    original_duration_sec: float | None = None,
     convert_simplified: Callable[[str], str] | None = None,
     strict_script_errors: Callable[[str], list[str]] | None = None,
     on_progress: Callable[[int, int, str], None] | None = None,
     check_interrupted: Callable[[], None] | None = None,
 ) -> AudioImportResult:
     """source_wav must already live inside the base run dir (the node writes the
-    AUDIO tensor there). Plans clips, gates transcripts, slices 16k mono wavs,
-    and writes the audio-import.json provenance sidecar."""
+    AUDIO tensor there, possibly pre-truncated — pass original_duration_sec for
+    honest provenance). Plans clips, gates transcripts, slices 16k mono wavs,
+    and writes the audio-import.json provenance sidecar.
+
+    A typed transcript is taken verbatim (the strict gate rejects Simplified —
+    the web upload/scripted/freeform rule); OpenCC conversion only applies to
+    ASR output, which Whisper often emits in Simplified."""
 
     def progress(done: int, total: int, message: str) -> None:
         if on_progress:
@@ -76,6 +82,7 @@ def import_audio_reference(
 
     base_run_dir = source_wav.parent
     duration = wav_duration_seconds(source_wav)
+    original_duration = original_duration_sec if original_duration_sec and original_duration_sec > duration else duration
     transcript = (transcript or "").strip()
 
     if duration < MIN_WINDOW_SEC:
@@ -84,13 +91,17 @@ def import_audio_reference(
             f"for an eligible clip (6–20s sweet spot)"
         )
 
-    truncated_at: float | None = None
+    truncated_at: float | None = duration if original_duration > duration else None
     planned: list[tuple[float, float, str]] = []  # (rel_start, duration, transcript)
+    apply_conversion = False
     if transcript:
         transcript_source = "provided"
-        # A typed transcript describes the clip head, like the YouTube
-        # transcript_override: one clip of at most ~18s from the start.
-        planned.append((0.0, min(SEGMENT_MAX_SEC, MAX_WINDOW_SEC, duration), transcript))
+        # A short take fits the 6–20s enrollment band whole, so the typed
+        # transcript covers all of it (web upload semantics — no truncation).
+        # Only longer audio falls back to head-of-clip semantics like the
+        # YouTube transcript_override.
+        clip_duration = duration if duration <= MAX_WINDOW_SEC else SEGMENT_MAX_SEC
+        planned.append((0.0, clip_duration, transcript))
     else:
         if not auto_transcribe:
             raise ReferenceImportError(
@@ -98,6 +109,7 @@ def import_audio_reference(
                 "(the VoxCPM2 contract needs a verified reference transcript)"
             )
         transcript_source = "asr"
+        apply_conversion = True
         span = duration
         if span > MAX_SCAN_SEC:
             truncated_at = float(MAX_SCAN_SEC)
@@ -123,7 +135,7 @@ def import_audio_reference(
         source_wav,
         base_run_dir,
         max_clips=max_clips,
-        convert=convert_simplified,
+        convert=convert_simplified if apply_conversion else None,
         gate=strict_script_errors,
         on_progress=on_progress,
         check_interrupted=check_interrupted,
@@ -142,7 +154,7 @@ def import_audio_reference(
     provenance = {
         "source": "audio",
         "sourceKind": source_kind,
-        "originalDurationSec": round(duration, 3),
+        "originalDurationSec": round(original_duration, 3),
         "truncatedAtSec": truncated_at,
         "transcriptSource": transcript_source,
         "clips": [

@@ -499,10 +499,13 @@ def gate_and_slice_planned(
             continue
         errors = gate(transcript)
         if errors:
+            # Same catch-all as the web route: only unproven keeps its own
+            # label; simplified/mixed AND non-Chinese both map to
+            # simplified_or_mixed so comfy and web sidecars agree.
             reason = (
-                "simplified_or_mixed"
-                if "invalid_chinese_script" in errors
-                else "unproven_chinese_script"
+                "unproven_chinese_script"
+                if "unproven_chinese_script" in errors
+                else "simplified_or_mixed"
             )
             skipped.append({"reason": reason, "transcript": transcript})
             continue

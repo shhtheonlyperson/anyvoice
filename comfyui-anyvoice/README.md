@@ -37,7 +37,7 @@ ln -s /Users/shh/proj/anyvoice/comfyui-anyvoice \
 # 2. Install the pack's Python deps into the ComfyUI venv
 <comfyui-python> -m pip install -r /Users/shh/proj/anyvoice/comfyui-anyvoice/requirements.txt
 
-# 3. Restart ComfyUI; load the template "AnyVoice YouTube Voice Clone"
+# 3. Restart ComfyUI; load the template "AnyVoice Voice Clone"
 #    (Workflow → Browse Templates → comfyui-anyvoice)
 ```
 
@@ -58,9 +58,15 @@ For fast synthesis keep the hot worker running:
 
 ## The journeys
 
-Three templates, one pipeline (consent → clips → grade/enroll → clone):
+One template, three sources, one shared pipeline (consent → clips → grade/enroll → clone).
+The template uses lazy ComfyUI switches, so Queue evaluates only the selected
+source branch:
 
-**YouTube link** (`AnyVoice YouTube Voice Clone`)
+- Default: YouTube (`Use uploaded audio = false`, `Use recording = false`)
+- Audio file: set `Use uploaded audio` to true and keep `Use recording` false
+- Direct recording: set `Use recording` to true; this overrides the other source switch
+
+**YouTube link**
 1. Paste a YouTube URL (add `&t=300` to start at 5:00) and tick **consent** —
    the same permission gate the web app enforces. 勾選 consent 表示你已確認取得
    此聲音的使用授權。
@@ -72,19 +78,25 @@ Three templates, one pipeline (consent → clips → grade/enroll → clone):
 4. Type Traditional-Chinese target text into the clone node and queue again:
    the output is your voice clone. Save/preview with core audio nodes.
 
-**Audio file** (`AnyVoice Audio File Voice Clone`)
+**Audio file**
 Upload via the core Load Audio node — mp3, m4a, wav, flac, or an mp4's audio
-track. For a short clip (≤20s) type its exact zh-Hant transcript; leave the
-transcript empty on longer audio and it is auto-chunked + Whisper-transcribed
-(capped at the first 300s). Lossy/noisy sources may grade below the A/B bar —
+track. For a short clip (≤20s) type its exact zh-Hant transcript and it covers
+the whole clip; on longer audio the transcript covers the first 18s, or leave
+it empty and the audio is auto-chunked + Whisper-transcribed (capped at the
+first 300s). Typed Simplified Chinese is rejected, not converted — only ASR
+output goes through OpenCC. Lossy/noisy sources may grade below the A/B bar —
 the `report` output shows why a clip was rejected.
 
-**Direct recording** (`AnyVoice Record Voice Clone`)
+**Direct recording**
 Click record on the core Record Audio node and read the default script
 prefilled in the transcript box (約 12–15 秒，落在 6–20 秒甜蜜區)。If you
 deviate from the script, edit the transcript to match what you actually said —
 the transcript must be exact (`source_kind=scripted` marks the take as a
-scripted read, like the web app's guided recording).
+scripted read, like the web app's guided recording). Note: ComfyUI's recorder
+uses browser-default mic processing (echo cancellation / noise suppression /
+AGC) that the web app's guided flow deliberately disables — record in a quiet
+room and check the analyzer grade in `report`; bad takes grade C/D and are
+rejected.
 
 ## Tests
 

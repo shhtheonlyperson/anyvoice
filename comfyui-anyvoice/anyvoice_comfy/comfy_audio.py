@@ -46,10 +46,12 @@ def wav_to_comfy_audio(path: str | Path) -> dict:
     return {"waveform": waveform.unsqueeze(0), "sample_rate": int(sample_rate)}
 
 
-def comfy_audio_to_wav(audio: dict, path: str | Path) -> Path:
+def comfy_audio_to_wav(audio: dict, path: str | Path, max_seconds: float | None = None) -> Path:
     """Write an AUDIO dict (first batch item) to a 16-bit PCM wav. The pipeline
     re-normalizes to 16k mono via ffmpeg afterwards, so channels/rate are kept
-    as-is here."""
+    as-is here. max_seconds caps the written length (nothing past the pipeline's
+    scan window is ever consumed); NaNs are zeroed (float→int16 of NaN is
+    undefined behavior)."""
     import torch
 
     path = Path(path)
@@ -57,7 +59,10 @@ def comfy_audio_to_wav(audio: dict, path: str | Path) -> Path:
     if waveform.ndim != 3 or waveform.shape[2] == 0:
         raise ValueError(f"expected AUDIO waveform [B, C, T], got shape {tuple(waveform.shape)}")
     sample_rate = int(audio["sample_rate"])
-    item = waveform[0].cpu().clamp(-1.0, 1.0)  # [C, T]
+    item = waveform[0]
+    if max_seconds is not None:
+        item = item[:, : int(max_seconds * sample_rate)]
+    item = torch.nan_to_num(item.cpu().float(), nan=0.0).clamp(-1.0, 1.0)  # [C, T]
     pcm = (item * 32767.0).round().to(torch.int16).t().contiguous()  # [T, C] interleaved
 
     import wave

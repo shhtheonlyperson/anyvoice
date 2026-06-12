@@ -68,6 +68,19 @@ class TestProvidedTranscript:
         assert clip.duration == pytest.approx(12.0, abs=0.1)
         assert clip.wav_path.exists()
 
+    def test_18_to_20s_take_is_not_truncated(self, run_dir):
+        # 18–20s is inside the web app's accepted 6–20s band; the typed
+        # transcript covers the WHOLE clip (no silent 18s head cut).
+        wav = make_tone_wav(run_dir / "audio-source.wav", 19.0)
+        result = import_audio_reference(
+            wav,
+            transcript="這是繁體中文的測試",
+            strict_script_errors=strict_traditional_chinese_script_errors,
+        )
+        assert len(result.clips) == 1
+        assert result.clips[0].duration == pytest.approx(19.0, abs=0.1)
+        assert result.truncated_at_sec is None
+
     def test_long_audio_with_transcript_takes_head(self, run_dir):
         wav = make_tone_wav(run_dir / "audio-source.wav", 40.0)
         result = import_audio_reference(
@@ -78,17 +91,9 @@ class TestProvidedTranscript:
         assert len(result.clips) == 1
         assert result.clips[0].duration == pytest.approx(18.0, abs=0.1)
 
-    def test_simplified_transcript_is_gated(self, run_dir):
-        wav = make_tone_wav(run_dir / "audio-source.wav", 12.0)
-        result = import_audio_reference(
-            wav,
-            transcript="这是简体测试",
-            strict_script_errors=strict_traditional_chinese_script_errors,
-        )
-        assert result.clips == []
-        assert result.skipped[0]["reason"] == "simplified_or_mixed"
-
-    def test_opencc_conversion_applied(self, run_dir):
+    def test_simplified_transcript_is_rejected_not_converted(self, run_dir):
+        # Typed transcripts mirror the web upload/scripted/freeform rule: hard
+        # reject Simplified — OpenCC conversion is reserved for ASR output.
         pytest.importorskip("opencc")
         from anyvoice_comfy.textgate import simplified_to_traditional
 
@@ -99,8 +104,32 @@ class TestProvidedTranscript:
             convert_simplified=simplified_to_traditional,
             strict_script_errors=strict_traditional_chinese_script_errors,
         )
-        assert len(result.clips) == 1
-        assert "這" in result.clips[0].transcript
+        assert result.clips == []
+        assert result.skipped[0]["reason"] == "simplified_or_mixed"
+
+    def test_non_chinese_transcript_reason_matches_web(self, run_dir):
+        wav = make_tone_wav(run_dir / "audio-source.wav", 12.0)
+        result = import_audio_reference(
+            wav,
+            transcript="hello world this is english",
+            strict_script_errors=strict_traditional_chinese_script_errors,
+        )
+        assert result.clips == []
+        assert result.skipped[0]["reason"] == "simplified_or_mixed"
+
+    def test_pre_truncated_tensor_provenance(self, run_dir):
+        wav = make_tone_wav(run_dir / "audio-source.wav", 12.0)
+        result = import_audio_reference(
+            wav,
+            transcript="這是繁體中文的測試",
+            original_duration_sec=25.0,
+            strict_script_errors=strict_traditional_chinese_script_errors,
+        )
+        assert result.truncated_at_sec == pytest.approx(12.0, abs=0.1)
+        import json
+
+        sidecar = json.loads((run_dir / "audio-import.json").read_text(encoding="utf-8"))
+        assert sidecar["originalDurationSec"] == 25.0
 
 
 class TestAsrFallback:
@@ -123,6 +152,24 @@ class TestAsrFallback:
         # 30s span at ~14s target → 2 slices; duplicate-transcript dedup happens
         # later at enrollment, so both clips survive import.
         assert len(result.clips) == 2
+
+    def test_asr_output_is_opencc_converted(self, run_dir, monkeypatch):
+        # Whisper often emits Simplified — the ASR branch converts before gating.
+        pytest.importorskip("opencc")
+        from anyvoice_comfy.textgate import simplified_to_traditional
+
+        wav = make_tone_wav(run_dir / "audio-source.wav", 12.0)
+        monkeypatch.setattr(
+            reference_import, "transcribe_audio_file", lambda path, language="zh": "这是简体转写结果"
+        )
+        result = import_audio_reference(
+            wav,
+            transcript="",
+            convert_simplified=simplified_to_traditional,
+            strict_script_errors=strict_traditional_chinese_script_errors,
+        )
+        assert len(result.clips) == 1
+        assert "這" in result.clips[0].transcript
 
     def test_truncates_very_long_audio(self, run_dir, monkeypatch):
         wav = make_tone_wav(run_dir / "audio-source.wav", 320.0)

@@ -39,3 +39,17 @@ class TestRoundtrip:
     def test_rejects_bad_shape(self, tmp_path):
         with pytest.raises(ValueError, match="B, C, T"):
             comfy_audio_to_wav({"waveform": torch.zeros(2, 16000), "sample_rate": 16000}, tmp_path / "x.wav")
+
+    def test_nan_samples_become_silence(self, tmp_path):
+        audio = sine_audio()
+        audio["waveform"][0, 0, 100:200] = float("nan")
+        path = comfy_audio_to_wav(audio, tmp_path / "out.wav")
+        back = wav_to_comfy_audio(path)
+        assert torch.isfinite(back["waveform"]).all()
+        assert back["waveform"][0, 0, 100:200].abs().max() == 0.0
+
+    def test_max_seconds_caps_written_length(self, tmp_path):
+        audio = sine_audio(seconds=4.0)
+        path = comfy_audio_to_wav(audio, tmp_path / "out.wav", max_seconds=1.5)
+        back = wav_to_comfy_audio(path)
+        assert back["waveform"].shape[2] == int(1.5 * 16000)
